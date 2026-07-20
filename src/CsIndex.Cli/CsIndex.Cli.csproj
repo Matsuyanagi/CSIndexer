@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>csindex</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CsIndex.Core\CsIndex.Core.csproj" />
+    <ProjectReference Include="..\CsIndex.Storage\CsIndex.Storage.csproj" />
+    <ProjectReference Include="..\CsIndex.Query\CsIndex.Query.csproj" />
+  </ItemGroup>
+</Project>

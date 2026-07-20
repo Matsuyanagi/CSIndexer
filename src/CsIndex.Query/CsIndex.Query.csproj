@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\CsIndex.Core\CsIndex.Core.csproj" />
+    <ProjectReference Include="..\CsIndex.Storage\CsIndex.Storage.csproj" />
+  </ItemGroup>
+</Project>

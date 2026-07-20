@@ -96,6 +96,11 @@ Generated\ Files/
 TestResult.xml
 nunit-*.xml
 
+# CSIndexer local database
+.csindex/
+*.sqlite-wal
+*.sqlite-shm
+
 # Approval Tests result files
 *.received.*
 

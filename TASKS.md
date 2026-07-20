@@ -1,0 +1,42 @@
+# Tasks
+
+- [ ] Phase 1: 基本的な実用版
+  - [x] Windows / .NET 10 のソリューション構成
+  - [x] SQLiteスキーマとマイグレーション基盤
+  - [x] `.sln` / `.slnx` / `.csproj` のMSBuildWorkspaceロード
+  - [x] 型・通常メソッド・コンストラクター・ローカル関数・ラムダの抽出
+  - [x] 呼び出し・直接参照・オーバーライド関係の抽出
+  - [x] シンボル・定義・参照・callers・callees・overrides検索
+  - [x] 名前空間省略・オーバーロード検索
+  - [x] 生成コード判定と検索フィルター
+  - [x] 変更なしのインデックス全体キャッシュ再利用
+  - [ ] 変更時のプロジェクト単位再解析と参照元の保守的無効化
+  - [x] table / JSON出力
+  - [x] 復旧用ドキュメントの骨格
+  - [x] Phase 1受け入れテスト
+- [x] Phase 2: DirectoryMode
+  - [x] AdhocWorkspaceと仮想プロジェクト
+  - [x] 全`.cs`列挙と`obj`常時除外
+  - [x] `--exclude` / `--reference`
+  - [x] `--define` / `--undefine` / `--define-file`
+  - [x] Windows x64プロファイルとTFMシンボル
+  - [x] 条件付きディレクティブ一覧
+  - [x] 未解決呼び出し保存
+  - [x] Phase 2受け入れテスト
+- [ ] Phase 3: Unity対応
+  - [ ] Unityプロジェクト検出とバージョン取得
+  - [ ] `.asmdef` / `.asmref` アセンブリ構築
+  - [ ] Unity既定アセンブリとEditor分離
+  - [ ] Unity参照DLL探索
+  - [ ] Unity解析プロファイルと条件付きシンボル
+  - [ ] asmdef参照・プラットフォーム・define constraints
+  - [ ] Phase 3受け入れテスト
+- [ ] Phase 4: 高度な解析と最適化
+  - [ ] 複数解析プロファイル完全対応
+  - [ ] 非物理Source Generator出力
+  - [ ] ファイル単位差分更新と影響範囲解析
+  - [ ] semantic_hashとコメント変更最適化
+  - [ ] 高度なデリゲート・仮想呼び出し・interface・dynamic解析
+  - [ ] プロパティ・イベント・演算子・変換・関数ポインター
+  - [ ] Source Link・call tree・DOT・YAML・JSONL
+  - [ ] デーモン・監視・IDE連携・大規模性能最適化
