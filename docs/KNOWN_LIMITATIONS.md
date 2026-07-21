@@ -12,6 +12,15 @@
 - 同じProfile名の再インデックスは、そのProfileの以前のデータを原子的に置き換えます。複数Profileは別名で保存できますが、`--all-profiles`横断検索はPhase 4です。
 - Source Linkと外部シンボルのソース取得は未実装です。外部定義はシンボル名、アセンブリ名、「ソースなし」を返します。
 
+## 非同期解析
+
+- `ReturnsAwaitable`は既知の`Task` / `ValueTask` / `UniTask`型をRoslynシンボルで照合します。custom awaitableは実際に`await`された所有関数の`ContainsAwait`としては検出しますが、awaitされずに返却・中継されるだけのcustom awaitableを起点とは判定しません。
+- `ReturnsAsyncEnumerable`は`IAsyncEnumerable<T>`と`IUniTaskAsyncEnumerable<T>`を対象とします。`IAsyncEnumerator<T>`などenumeratorを直接返すAPIは現在このロールに分類しません。
+- `await task;`のtaskが以前の文の呼び出しで生成された場合、所有関数の`ContainsAwait`は記録しますが、データフローを遡って生成元の呼び出し辺を`Awaited`にはしません。
+- 非同期関与の伝播辺は解決済みの通常`Invocation`だけです。`dynamic`呼び出し、高度なdelegate flow、method group経由、reflection、runtime dispatch候補は追跡しません。
+- 伝播は静的に解決されたcalleeからcallerへの逆辺に限定します。仮想・interface呼び出しの実行時target候補を展開した非同期関与は保存しません。
+- `AsyncInvolvementDepth`は非同期起点までの最短距離だけを保存します。到達可能な全起点、全経路、経路を構成する辺は保存しません。
+
 ## Unity / Phase 3
 
 - Unity候補の検出、`.asmdef` / `.asmref`、既定アセンブリ分割、Unity参照DLL探索、Unityバージョンシンボルは未実装です。

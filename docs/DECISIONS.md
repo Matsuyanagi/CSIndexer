@@ -147,3 +147,23 @@ Decision: 公式Unity仕様と実Editor出力を照合するまで推測実装�
 Alternatives: version文字列から近似生成する。
 Consequences: Phase 3着手時の調査項目として残り、現在はUnity version symbolsを生成しない。
 Date: 2026-07-20
+
+## DEC-0016: Async involvement propagation timing and direction
+
+Status: Accepted
+
+Context: 非同期起点へ到達する呼び出し元を検索時に毎回再帰CTEで求めるか、index作成時に導出して保存するかを決める必要がある。呼び出しグラフには自己再帰・相互再帰・複数起点があり、循環停止と決定的な最短距離が必要である。
+Decision: 全Roslyn fact抽出後、解決済み`ReferenceKind.Invocation`の逆辺を作り、全非同期起点をdepth 0とするindex-timeの複数始点BFSを1回実行する。calleeからcallerの方向だけに進み、既訪問距離以下の候補は再展開せず、`AsyncInvolvementDepth`へ最短距離を保存する。query-time再帰CTEは採用しない。
+Alternatives: query-time recursive CTE、起点ごとのDFS、呼び出し先方向への伝播。
+Consequences: すべてのqueryで同じ結果をDB-onlyで返せ、自己再帰・相互再帰でも停止する。index時間と整数1列を使用し、呼び出しグラフ変更時は再indexが必要になる。保存するのは最短距離だけで、全経路や到達した全起点は保持しない。非同期関数から呼ばれる同期関数には伝播しない。
+Date: 2026-07-22
+
+## DEC-0017: Separate direct async roles from derived involvement
+
+Status: Accepted
+
+Context: 宣言`async`、awaitable返却、本文の`await`、非同期ストリームなどの直接事実と、別関数を経由して非同期起点へ到達するという派生事実は、意味と更新元が異なる。
+Decision: Roslynから得る直接事実をflags enum `AsyncRole`、呼び出し辺での消費方法を`AsyncUsageKind`、逆辺BFSで得る派生最短距離をnullable `AsyncInvolvementDepth`として分離する。直接ロールを持つ起点自身もdepth 0を持つ。
+Alternatives: 単一の`IsAsync` boolean、伝播先へ直接ロールをコピー、ロールと距離をquery時だけ合成。
+Consequences: 「なぜ直接非同期か」と「何辺先で非同期へ到達するか」を区別できる。新しい直接ロールを追加しても伝播器の起点集合へ明示的に組み込める一方、モデル・DB・出力の3値を同期して保守する必要がある。
+Date: 2026-07-22

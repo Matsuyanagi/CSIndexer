@@ -984,6 +984,53 @@ enum ReferenceKind
 
 コメントとXML `cref` は含めない。
 
+## 13.4 非同期ロール、呼び出し利用方法、非同期関与
+
+非同期の直接的な性質はシンボルのflags enum `AsyncRole` に保存する。宣言由来の判定にはRoslynのシンボルを、本文由来の判定にはRoslynのoperationを使用し、名前の接尾辞（`Async`など）だけでは判定しない。
+
+| `AsyncRole` | Roslynによる判定条件 |
+|---|---|
+| `None` | 直接ロールなし |
+| `DeclaredAsync` | `IMethodSymbol.IsAsync` |
+| `ReturnsAwaitable` | 戻り値の`OriginalDefinition`が、コンパイル内の`Task` / `Task<T>`、`ValueTask` / `ValueTask<T>`、`Cysharp.Threading.Tasks.UniTask` / `UniTask<T>`のいずれかとシンボル同値 |
+| `ContainsAwait` | 所有関数内にRoslynが構築した`IAwaitOperation`がある |
+| `AsyncIterator` | `IMethodSymbol.IsAsync && IMethodSymbol.IsIterator` |
+| `ReturnsAsyncEnumerable` | 戻り値の`OriginalDefinition`が`IAsyncEnumerable<T>`または`Cysharp.Threading.Tasks.IUniTaskAsyncEnumerable<T>`とシンボル同値 |
+| `AsyncVoid` | `IMethodSymbol.IsAsync && IMethodSymbol.ReturnsVoid` |
+| `UniTaskVoid` | 戻り値が`Cysharp.Threading.Tasks.UniTaskVoid`とシンボル同値。fire-and-forgetを通常のawaitable返却と区別する |
+| `UsesAwaitForEach` | `IForEachLoopOperation.IsAsynchronous` |
+| `UsesAwaitUsing` | `IUsingOperation.IsAsynchronous`または`IUsingDeclarationOperation.IsAsynchronous` |
+
+`Task`、`ValueTask`、`UniTask`の非generic/generic型は`ReturnsAwaitable`として同じ扱いにする。`UniTaskVoid`と非同期ストリームは、それぞれ`UniTaskVoid`、`ReturnsAsyncEnumerable`という別ロールにする。既知型の照合にはmetadata nameから取得したシンボルとの`SymbolEqualityComparer.Default`を使用し、同名の利用者定義型を誤認しない。
+
+ラムダとローカル関数は外側メソッドとは別の所有者である。`FindOwner`が決めた所有者だけへoperation由来ロールをORし、ネストした`await`、`await foreach`、`await using`を外側へ漏らさない。async lambda/local functionはそれ自体が非同期起点になり、起点の`AsyncInvolvementDepth`は0である。
+
+解決済み呼び出し辺にはenum `AsyncUsageKind`を保存する。`IInvocationOperation`から親operationを上へたどり、複数条件に一致するときは次表の上から順に優先する。
+
+| 優先順 | `AsyncUsageKind` | Roslyn operationと例 |
+|---:|---|---|
+| 1 | `Awaited` | `IAwaitOperation`: `await LoadAsync()` |
+| 2 | `Forwarded` | `IReturnOperation`: `return LoadAsync()`、式本体による返却 |
+| 3 | `Discarded` | targetが`IDiscardOperation`の`ISimpleAssignmentOperation`: `_ = LoadAsync()` |
+| 4 | `Stored` | `IVariableInitializerOperation`または`ISimpleAssignmentOperation`: `var task = LoadAsync()` |
+| 5 | `Passed` | `IArgumentOperation`: `WhenAll(LoadAsync())` |
+| 6 | `Unobserved` | `IExpressionStatementOperation`: `LoadAsync();` |
+| 7 | `None` | 上記に該当しない、または非呼び出し参照 |
+
+呼び出し式と`await`が別文のときはデータフローを遡らないため、生成元の呼び出し辺を`Awaited`へ変更しない。ただし実際の`await`は所有関数の`ContainsAwait`として記録する。
+
+非同期関与はnullable整数`AsyncInvolvementDepth`で表す。ソース情報を優先して統合済みのシンボルのうち、`None`以外の直接ロールを1つ以上持つものを起点（depth 0）とする。全ドキュメント抽出後、解決済みの通常呼び出し（`ReferenceKind.Invocation`）から`callee_definition_key -> caller_symbol_key`の逆辺を作り、全起点を同時にキューへ入れる複数始点BFSを1回実行する。呼び出し元はcalleeの距離+1とし、既訪問の最短距離以下になる候補は再投入しない。この停止条件により自己再帰・相互再帰・複数循環でも有限に停止し、複数経路がある場合は最短距離だけを保持する。
+
+伝播方向は「非同期関数へ到達する呼び出し元方向」のみである。非同期起点から呼ばれる同期関数へは伝播せず、非同期起点へ到達しない循環のdepthはnullのままとする。
+
+Coreモデルとschema version 2のSQLite列は次の対応とする。
+
+| Coreモデル | SQLite列 |
+|---|---|
+| `SymbolData.AsyncRole` | `symbols.async_role INTEGER NOT NULL DEFAULT 0` |
+| `SymbolData.AsyncInvolvementDepth` | `symbols.async_involvement_depth INTEGER` |
+| `CallData.AsyncUsageKind` | `calls.async_usage_kind INTEGER NOT NULL DEFAULT 0` |
+
 ---
 
 # 14. シンボル同一性
@@ -1475,6 +1522,9 @@ CREATE TABLE symbols (
     is_virtual            INTEGER NOT NULL DEFAULT 0,
     is_override           INTEGER NOT NULL DEFAULT 0,
 
+    async_role            INTEGER NOT NULL DEFAULT 0,
+    async_involvement_depth INTEGER,
+
     source_document_id    INTEGER,
     source_start          INTEGER,
     source_length         INTEGER,
@@ -1524,6 +1574,7 @@ CREATE TABLE calls (
     dispatch_kind           INTEGER NOT NULL,
     resolution_status       INTEGER NOT NULL,
     resolution_reason       INTEGER NOT NULL,
+    async_usage_kind        INTEGER NOT NULL DEFAULT 0,
 
     document_id             INTEGER NOT NULL,
     source_start            INTEGER NOT NULL,
@@ -1782,6 +1833,13 @@ Undefined in current profile:
 主DBはSQLiteのままにし、JSON、JSONL、YAML、DOTは出力形式として実装する。
 
 初期段階では `table` と `json` を優先してよい。
+
+schema version 2では既存の`table` / `json`出力へ非同期解析情報を追加する。新しいコマンドやフィルターは追加しない。
+
+- symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
+- call JSON: `asyncUsageKind`（enumの文字列表現）
+- symbol table: ロールが`None`かつdepthがnullの場合を除き、`[async: <AsyncRole>; depth: <number|null>]`を付ける
+- call table: 既存の呼び出し情報の後へ`[<AsyncUsageKind>]`を付ける
 
 ---
 

@@ -57,6 +57,26 @@ csindex conditions
 
 検索構文は`[namespace.]type::method[(parameter-types)]`です。namespace省略は全候補へ展開し、parameter list省略は全overload、`()`は引数なしだけを選びます。C# keyword型は`System.*`へ正規化し、大文字小文字は区別します。
 
+### 非同期解析情報の出力
+
+既存の検索コマンドの結果へ非同期解析情報を追加します。非同期専用の新コマンドやフィルターはありません。
+
+symbolを含むJSON objectには次のpropertyを出力します。
+
+- `asyncRole`: `AsyncRole` flagsの文字列表現。例: `"DeclaredAsync, ReturnsAwaitable"`
+- `isAsyncInvolved`: `asyncInvolvementDepth`がnullでないとき`true`
+- `asyncInvolvementDepth`: 非同期起点までの最短呼び出し辺数。起点は`0`、非関与は`null`
+
+callを含むJSON objectには`asyncUsageKind`を出力します。値は`None`、`Awaited`、`Forwarded`、`Stored`、`Passed`、`Discarded`、`Unobserved`のいずれかです。
+
+table出力では、symbolのロールが`None`かつdepthがnullの場合を除き、表示名の後へ次の補足を付けます。
+
+```text
+[async: DeclaredAsync, ReturnsAwaitable; depth: 0]
+```
+
+call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`のような`AsyncUsageKind`を付けます。
+
 ## Exit codes
 
 - `0`: success（警告を含む部分解析も原則success）

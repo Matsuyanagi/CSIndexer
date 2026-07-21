@@ -334,7 +334,7 @@ public sealed class AsyncCases
 }
 ```
 
-テストでは `LeafAsync` に `DeclaredAsync | ReturnsAwaitable | ContainsAwait`、`ForwardTask` に `ReturnsAwaitable`、UniTask系に対応ロール、`StreamAsync` に `AsyncIterator | ReturnsAsyncEnumerable` が付くことを検証する。`ConsumeStreamAsync` には `UsesAwaitForEach`、`DisposeAsync` には `UsesAwaitUsing` が付くことも検証する。ラムダには `DeclaredAsync | ContainsAwait` と距離1が付き、`Outer` には非同期ロールも距離も付かないことを検証する。
+テストでは `LeafAsync` に `DeclaredAsync | ReturnsAwaitable | ContainsAwait`、`ForwardTask` に `ReturnsAwaitable`、UniTask系に対応ロール、`StreamAsync` に `AsyncIterator | ReturnsAsyncEnumerable` が付くことを検証する。`ConsumeStreamAsync` には `UsesAwaitForEach`、`DisposeAsync` には `UsesAwaitUsing` が付くことも検証する。ラムダには `DeclaredAsync | ReturnsAwaitable | ContainsAwait` と起点距離0が付き、`Outer` には非同期ロールも距離も付かないことを検証する。
 
 - [ ] **Step 2: 呼び出し利用方法の失敗テストを書く**
 
