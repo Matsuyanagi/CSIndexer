@@ -98,6 +98,7 @@ nunit-*.xml
 
 # CSIndexer local database
 .csindex/
+.worktrees/
 *.sqlite-wal
 *.sqlite-shm
 
