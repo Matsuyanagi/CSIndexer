@@ -63,6 +63,8 @@ public sealed record SymbolData
     public bool IsAbstract { get; init; }
     public bool IsVirtual { get; init; }
     public bool IsOverride { get; init; }
+    public AsyncRole AsyncRole { get; init; }
+    public int? AsyncInvolvementDepth { get; init; }
     public string? SourceDocumentKey { get; init; }
     public int? SourceStart { get; init; }
     public int? SourceLength { get; init; }
@@ -79,6 +81,7 @@ public sealed record CallData
     public required DispatchKind DispatchKind { get; init; }
     public required ResolutionStatus ResolutionStatus { get; init; }
     public required ResolutionReason ResolutionReason { get; init; }
+    public AsyncUsageKind AsyncUsageKind { get; init; }
     public required string DocumentKey { get; init; }
     public required int SourceStart { get; init; }
     public required int SourceLength { get; init; }

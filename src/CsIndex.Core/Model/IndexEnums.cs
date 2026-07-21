@@ -1,5 +1,31 @@
 namespace CsIndex.Core.Model;
 
+[Flags]
+public enum AsyncRole
+{
+    None = 0,
+    DeclaredAsync = 1 << 0,
+    ReturnsAwaitable = 1 << 1,
+    ContainsAwait = 1 << 2,
+    AsyncIterator = 1 << 3,
+    ReturnsAsyncEnumerable = 1 << 4,
+    AsyncVoid = 1 << 5,
+    UniTaskVoid = 1 << 6,
+    UsesAwaitForEach = 1 << 7,
+    UsesAwaitUsing = 1 << 8,
+}
+
+public enum AsyncUsageKind
+{
+    None = 0,
+    Awaited = 1,
+    Forwarded = 2,
+    Stored = 3,
+    Passed = 4,
+    Discarded = 5,
+    Unobserved = 6,
+}
+
 public enum InputMode
 {
     Solution = 1,
