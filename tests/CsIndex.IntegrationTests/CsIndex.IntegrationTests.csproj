@@ -4,6 +4,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CsIndex.Cli\CsIndex.Cli.csproj" />
     <ProjectReference Include="..\..\src\CsIndex.Core\CsIndex.Core.csproj" />
     <ProjectReference Include="..\..\src\CsIndex.Storage\CsIndex.Storage.csproj" />
     <ProjectReference Include="..\..\src\CsIndex.Query\CsIndex.Query.csproj" />

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CsIndex.Core.Model;
 using CsIndex.Query;
 using CsIndex.Storage;
 
@@ -28,7 +29,8 @@ internal sealed class OutputFormatter(string format)
         Console.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
         foreach (var symbol in context.MatchedSymbols)
         {
-            Console.WriteLine($"  {symbol.DisplayName}{FormatDefinitionLocation(symbol)}");
+            Console.WriteLine(
+                $"  {symbol.DisplayName}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
         }
     }
 
@@ -73,6 +75,7 @@ internal sealed class OutputFormatter(string format)
                     dispatchKind = call.DispatchKind.ToString(),
                     resolutionStatus = call.ResolutionStatus.ToString(),
                     resolutionReason = call.ResolutionReason.ToString(),
+                    asyncUsageKind = call.AsyncUsageKind.ToString(),
                     location = ToLocationObject(call.DocumentPath, call.SourceStart),
                     call.IsGenerated,
                     call.UnresolvedName,
@@ -96,7 +99,7 @@ internal sealed class OutputFormatter(string format)
             var target = call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName ?? call.UnresolvedName ?? "<unresolved>";
             Console.WriteLine(
                 $"  {point.Path}:{point.Line}:{point.Column}  {call.CallerDisplayName} -> {target} " +
-                $"[{call.ReferenceKind}, {call.ResolutionStatus}]");
+                $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]");
         }
 
         if (result.EffectiveCallers.Count > 0)
@@ -188,6 +191,9 @@ internal sealed class OutputFormatter(string format)
             : ToLocationObject(symbol.DocumentPath, symbol.SourceStart.Value),
         symbol.IsGenerated,
         symbol.AssemblyName,
+        asyncRole = symbol.AsyncRole.ToString(),
+        isAsyncInvolved = symbol.AsyncInvolvementDepth is not null,
+        asyncInvolvementDepth = symbol.AsyncInvolvementDepth,
     };
 
     private static object ToLocationObject(string path, int offset)
@@ -205,6 +211,16 @@ internal sealed class OutputFormatter(string format)
 
         var point = SafeResolve(symbol.DocumentPath, symbol.SourceStart.Value);
         return $"  {point.Path}:{point.Line}:{point.Column}";
+    }
+
+    private static string FormatAsyncAnalysis(StoredSymbol symbol)
+    {
+        if (symbol.AsyncRole == AsyncRole.None && symbol.AsyncInvolvementDepth is null)
+        {
+            return string.Empty;
+        }
+
+        return $" [async: {symbol.AsyncRole}; depth: {symbol.AsyncInvolvementDepth?.ToString() ?? "null"}]";
     }
 
     private static SourcePoint SafeResolve(string path, int offset)
