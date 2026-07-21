@@ -12,7 +12,6 @@ public sealed class SchemaMigrator
         try
         {
             await ExecutePragmaAsync(connection, "PRAGMA foreign_keys = ON;", cancellationToken);
-            await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
 
             await using var existsCommand = connection.CreateCommand();
             existsCommand.CommandText =
@@ -20,6 +19,7 @@ public sealed class SchemaMigrator
             var exists = Convert.ToInt64(await existsCommand.ExecuteScalarAsync(cancellationToken)) > 0;
             if (!exists)
             {
+                await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
                 await CreateVersionTwoAsync(connection, cancellationToken);
                 return;
             }
@@ -46,6 +46,8 @@ public sealed class SchemaMigrator
                     $"Unsupported database schema version {versions[0]}; this build supports version {CurrentVersion}. " +
                     "The database was not deleted or modified.");
             }
+
+            await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
         }
         catch (IndexDatabaseException)
         {

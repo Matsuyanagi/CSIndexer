@@ -115,10 +115,13 @@ public sealed class SqliteIndexTests
             DataSource = databasePath,
             Pooling = false,
         }.ToString();
+        string journalModeBefore;
         await using (var connection = new SqliteConnection(connectionString))
         {
             await connection.OpenAsync(cancellationToken);
             await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            journalModeBefore = Assert.IsType<string>(await command.ExecuteScalarAsync(cancellationToken));
             command.CommandText = """
                 CREATE TABLE schema_info(version INTEGER NOT NULL);
                 INSERT INTO schema_info(version) VALUES (1);
@@ -134,6 +137,10 @@ public sealed class SqliteIndexTests
         await using var verificationConnection = new SqliteConnection(connectionString);
         await verificationConnection.OpenAsync(cancellationToken);
         await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = "PRAGMA journal_mode;";
+        var journalModeAfter = Assert.IsType<string>(
+            await verificationCommand.ExecuteScalarAsync(cancellationToken));
+        Assert.Equal(journalModeBefore, journalModeAfter);
         verificationCommand.CommandText = """
             SELECT version,
                    (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'version_one_marker')
