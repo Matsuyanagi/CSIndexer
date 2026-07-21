@@ -99,6 +99,7 @@ nunit-*.xml
 # CSIndexer local database
 .csindex/
 .worktrees/
+.superpowers/
 *.sqlite-wal
 *.sqlite-shm
 
