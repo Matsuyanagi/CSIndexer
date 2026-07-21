@@ -1152,7 +1152,7 @@ void Execute()
 Execute::<lambda#1>
 ```
 
-外側の名前付きメソッド:
+  外側の名前付きメソッド:
 
 ```text
 Execute
