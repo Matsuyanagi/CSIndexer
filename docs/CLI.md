@@ -69,7 +69,7 @@ symbolを含むJSON objectには次のpropertyを出力します。
 
 callを含むJSON objectには`asyncUsageKind`を出力します。値は`None`、`Awaited`、`Forwarded`、`Stored`、`Passed`、`Discarded`、`Unobserved`のいずれかです。
 
-table出力では、symbolのロールが`None`かつdepthがnullの場合を除き、表示名の後へ次の補足を付けます。
+`symbol find`のtable出力では、`WriteSymbols`が出力する一致symbol行に限り、symbolのロールが`None`かつdepthがnullの場合を除いて表示名の後へ次の補足を付けます。`definition`の定義位置行や`callers`のeffective caller行には、このsymbol用補足を付けません。
 
 ```text
 [async: DeclaredAsync, ReturnsAwaitable; depth: 0]

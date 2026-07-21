@@ -55,6 +55,32 @@ public sealed class AsyncInvolvementPropagatorTests
         Assert.Equal(1, snapshot.Symbols["caller"].AsyncInvolvementDepth);
     }
 
+    [Fact(Timeout = 5_000)]
+    public void Apply_SelfRecursiveOriginTerminatesAtDepthZero()
+    {
+        var snapshot = CreateSnapshot();
+        AddMethod(snapshot, "origin", AsyncRole.DeclaredAsync);
+        AddCall(snapshot, "origin", "origin");
+
+        AsyncInvolvementPropagator.Apply(snapshot);
+
+        Assert.Equal(0, snapshot.Symbols["origin"].AsyncInvolvementDepth);
+    }
+
+    [Fact]
+    public void Apply_DoesNotPropagateFromAsyncOriginToSynchronousCallee()
+    {
+        var snapshot = CreateSnapshot();
+        AddMethod(snapshot, "origin", AsyncRole.DeclaredAsync);
+        AddMethod(snapshot, "synchronousCallee", AsyncRole.None);
+        AddCall(snapshot, "origin", "synchronousCallee");
+
+        AsyncInvolvementPropagator.Apply(snapshot);
+
+        Assert.Equal(0, snapshot.Symbols["origin"].AsyncInvolvementDepth);
+        Assert.Null(snapshot.Symbols["synchronousCallee"].AsyncInvolvementDepth);
+    }
+
     private static void AddMethod(IndexSnapshot snapshot, string key, AsyncRole role) =>
         snapshot.Symbols[key] = new SymbolData
         {

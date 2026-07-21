@@ -23,6 +23,9 @@ public sealed class AsyncSemanticExtractorTests
         {
             public async Task LeafAsync() => await Task.Yield();
             public Task ForwardTask() => LeafAsync();
+            public Task<int> GenericTaskResult() => Task.FromResult(1);
+            public ValueTask ValueTaskResult() => default;
+            public ValueTask<int> GenericValueTaskResult() => default;
             public Cysharp.Threading.Tasks.UniTask UniTaskResult() => default;
             public Cysharp.Threading.Tasks.UniTask<int> GenericUniTaskResult() => default;
             public Cysharp.Threading.Tasks.UniTaskVoid FireAndForget() => default;
@@ -44,9 +47,19 @@ public sealed class AsyncSemanticExtractorTests
                 await using var resource = new AsyncResource();
             }
 
+            public async Task DisposeWithStatementAsync()
+            {
+                await using (var resource = new AsyncResource()) { }
+            }
+
             public void Outer()
             {
                 Func<Task> nested = async () => await LeafAsync();
+            }
+
+            public void OuterWithLocal()
+            {
+                async Task NestedLocalAsync() => await LeafAsync();
             }
 
             public async Task Awaited() { await LeafAsync(); }
@@ -55,7 +68,9 @@ public sealed class AsyncSemanticExtractorTests
             public void Passed() { Consume(LeafAsync()); }
             public void Discarded() { _ = LeafAsync(); }
             public void Unobserved() { LeafAsync(); }
+            public void NoneUsage() { if (Check()) { } }
             private static void Consume(Task task) { }
+            private static bool Check() => true;
 
             private sealed class AsyncResource : IAsyncDisposable
             {
@@ -115,6 +130,64 @@ public sealed class AsyncSemanticExtractorTests
                 call.CalleeDefinitionKey == leaf.StableKey);
             Assert.Equal(usageKind, call.AsyncUsageKind);
         }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ClassifiesGenericTaskAsAwaitable()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+
+        AssertRole(snapshot, "GenericTaskResult", AsyncRole.ReturnsAwaitable);
+    }
+
+    [Theory]
+    [InlineData("ValueTaskResult")]
+    [InlineData("GenericValueTaskResult")]
+    public async Task AnalyzeAsync_ClassifiesValueTaskVariantsAsAwaitable(string methodName)
+    {
+        var snapshot = await AnalyzeAsync(Source);
+
+        AssertRole(snapshot, methodName, AsyncRole.ReturnsAwaitable);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_KeepsAsyncLocalFunctionSeparateFromOuterMethod()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+
+        var local = GetMethod(snapshot, "NestedLocalAsync");
+        Assert.Equal(
+            AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable | AsyncRole.ContainsAwait,
+            local.AsyncRole);
+        Assert.Equal(0, local.AsyncInvolvementDepth);
+
+        var outer = GetMethod(snapshot, "OuterWithLocal");
+        Assert.Equal(AsyncRole.None, outer.AsyncRole);
+        Assert.Null(outer.AsyncInvolvementDepth);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ClassifiesAwaitUsingStatementOnOwningMethod()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+
+        AssertRole(
+            snapshot,
+            "DisposeWithStatementAsync",
+            AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable | AsyncRole.UsesAwaitUsing);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ClassifiesInvocationWithoutKnownUsageContextAsNone()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+        var caller = GetMethod(snapshot, "NoneUsage");
+        var callee = GetMethod(snapshot, "Check");
+
+        var call = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == caller.StableKey &&
+            call.CalleeDefinitionKey == callee.StableKey);
+        Assert.Equal(AsyncUsageKind.None, call.AsyncUsageKind);
     }
 
     private static void AssertRole(

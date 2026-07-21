@@ -1838,7 +1838,7 @@ schema version 2では既存の`table` / `json`出力へ非同期解析情報を
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
-- symbol table: ロールが`None`かつdepthがnullの場合を除き、`[async: <AsyncRole>; depth: <number|null>]`を付ける
+- symbol table: `symbol find`で`WriteSymbols`が出力する一致symbol行に限り、ロールが`None`かつdepthがnullの場合を除いて`[async: <AsyncRole>; depth: <number|null>]`を付ける。`definition`の定義位置行や`callers`のeffective caller行は対象外とする
 - call table: 既存の呼び出し情報の後へ`[<AsyncUsageKind>]`を付ける
 
 ---
