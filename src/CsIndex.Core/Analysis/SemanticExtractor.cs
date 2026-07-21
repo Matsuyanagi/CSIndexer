@@ -15,6 +15,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private readonly List<ProjectAnalysisState> _projectStates = [];
     private IndexSnapshot _snapshot = null!;
     private SymbolCanonicalizer _canonicalizer = null!;
+    private Compilation? _currentCompilation;
 
     public async Task ExtractAsync(
         IReadOnlyList<Project> projects,
@@ -83,6 +84,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         {
             await ExtractProjectFactsAsync(state, cancellationToken);
         }
+
+        AsyncInvolvementPropagator.Apply(snapshot);
     }
 
     private async Task ExtractProjectDocumentsAndDeclarationsAsync(
@@ -159,7 +162,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     methodNode.SpanStart,
                     methodNode.Span.Length,
                     generated.IsGenerated,
-                    containingKey);
+                    containingKey) with
+                {
+                    AsyncRole = AsyncSymbolClassifier.Classify(method.OriginalDefinition, projectState.Compilation),
+                };
                 UpsertSymbol(data);
                 _sourceSymbolKeys[method.OriginalDefinition] = data.StableKey;
                 documentState.MethodOwners[methodNode.SpanStart] = data.StableKey;
@@ -182,7 +188,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     localNode.SpanStart,
                     localNode.Span.Length,
                     generated.IsGenerated,
-                    containingKey);
+                    containingKey) with
+                {
+                    AsyncRole = AsyncSymbolClassifier.Classify(method, projectState.Compilation),
+                };
                 UpsertSymbol(data);
                 _sourceSymbolKeys[method] = data.StableKey;
                 documentState.LocalFunctionOwners[localNode.SpanStart] = data.StableKey;
@@ -208,6 +217,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         ProjectAnalysisState projectState,
         CancellationToken cancellationToken)
     {
+        _currentCompilation = projectState.Compilation;
         foreach (var documentState in projectState.Documents.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -218,10 +228,63 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
+            ExtractAsyncOperations(root, model, documentState, cancellationToken);
             ExtractInvocations(root, model, documentState, projectState, cancellationToken);
             ExtractObjectCreations(root, model, documentState, projectState, cancellationToken);
             ExtractMethodReferences(root, model, documentState, cancellationToken);
             ExtractRelations(root, model, cancellationToken);
+        }
+    }
+
+    private void ExtractAsyncOperations(
+        CompilationUnitSyntax root,
+        SemanticModel model,
+        DocumentAnalysisState documentState,
+        CancellationToken cancellationToken)
+    {
+        foreach (var awaitExpression in root.DescendantNodes().OfType<AwaitExpressionSyntax>())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (model.GetOperation(awaitExpression, cancellationToken) is IAwaitOperation)
+            {
+                AddAsyncRole(documentState.FindOwner(awaitExpression), AsyncRole.ContainsAwait);
+            }
+        }
+
+        foreach (var forEachStatement in root.DescendantNodes().OfType<CommonForEachStatementSyntax>())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (model.GetOperation(forEachStatement, cancellationToken) is IForEachLoopOperation
+                {
+                    IsAsynchronous: true,
+                })
+            {
+                AddAsyncRole(documentState.FindOwner(forEachStatement), AsyncRole.UsesAwaitForEach);
+            }
+        }
+
+        foreach (var usingStatement in root.DescendantNodes().OfType<UsingStatementSyntax>())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (model.GetOperation(usingStatement, cancellationToken) is IUsingOperation
+                {
+                    IsAsynchronous: true,
+                })
+            {
+                AddAsyncRole(documentState.FindOwner(usingStatement), AsyncRole.UsesAwaitUsing);
+            }
+        }
+
+        foreach (var localDeclaration in root.DescendantNodes().OfType<LocalDeclarationStatementSyntax>())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (model.GetOperation(localDeclaration, cancellationToken) is IUsingDeclarationOperation
+                {
+                    IsAsynchronous: true,
+                })
+            {
+                AddAsyncRole(documentState.FindOwner(localDeclaration), AsyncRole.UsesAwaitUsing);
+            }
         }
     }
 
@@ -257,7 +320,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     invocationSyntax.SpanStart,
                     invocationSyntax.Span.Length,
                     documentState.Data.Key,
-                    invocation.Instance?.Type);
+                    invocation.Instance?.Type,
+                    AsyncOperationClassifier.ClassifyInvocation(invocation));
                 continue;
             }
 
@@ -631,6 +695,9 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 SourceStart = lambda.SpanStart,
                 SourceLength = lambda.Span.Length,
                 IsGenerated = documentState.Data.IsGenerated,
+                AsyncRole = operation is null
+                    ? AsyncRole.None
+                    : AsyncSymbolClassifier.Classify(operation.Symbol, semanticModel.Compilation),
                 Parameters = operation?.Symbol.Parameters.Select(parameter => new MethodParameterData
                 {
                     Ordinal = parameter.Ordinal,
@@ -692,7 +759,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         int sourceStart,
         int sourceLength,
         string documentKey,
-        ITypeSymbol? receiverType)
+        ITypeSymbol? receiverType,
+        AsyncUsageKind asyncUsageKind = AsyncUsageKind.None)
     {
         _snapshot.Calls.Add(new CallData
         {
@@ -703,6 +771,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             DispatchKind = GetDispatchKind(target),
             ResolutionStatus = ResolutionStatus.Resolved,
             ResolutionReason = ResolutionReason.None,
+            AsyncUsageKind = asyncUsageKind,
             DocumentKey = documentKey,
             SourceStart = sourceStart,
             SourceLength = sourceLength,
@@ -753,7 +822,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return sourceKey;
         }
 
-        var data = _canonicalizer.CreateMethod(normalized, actualTarget);
+        var data = _canonicalizer.CreateMethod(normalized, actualTarget) with
+        {
+            AsyncRole = AsyncSymbolClassifier.Classify(
+                normalized,
+                _currentCompilation ?? _projectStates[0].Compilation),
+        };
         EnsureType(normalized.ContainingType);
         UpsertSymbol(data);
         return data.StableKey;
@@ -779,11 +853,29 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private void UpsertSymbol(SymbolData symbol)
     {
-        if (!_snapshot.Symbols.TryGetValue(symbol.StableKey, out var existing) ||
-            (existing.SourceDocumentKey is null && symbol.SourceDocumentKey is not null))
+        if (!_snapshot.Symbols.TryGetValue(symbol.StableKey, out var existing))
         {
             _snapshot.Symbols[symbol.StableKey] = symbol;
+            return;
         }
+
+        var preferred = existing.SourceDocumentKey is null && symbol.SourceDocumentKey is not null
+            ? symbol
+            : existing;
+        _snapshot.Symbols[symbol.StableKey] = preferred with
+        {
+            AsyncRole = existing.AsyncRole | symbol.AsyncRole,
+        };
+    }
+
+    private void AddAsyncRole(string? ownerKey, AsyncRole role)
+    {
+        if (ownerKey is null || !_snapshot.Symbols.TryGetValue(ownerKey, out var symbol))
+        {
+            return;
+        }
+
+        UpsertSymbol(symbol with { AsyncRole = symbol.AsyncRole | role });
     }
 
     private void AddRelation(string sourceKey, string targetKey, SymbolRelationKind kind)
