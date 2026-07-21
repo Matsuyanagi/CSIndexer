@@ -34,7 +34,7 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
 ## Latest Result
 
 - Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 41
+- Passed: 49
 - Failed: 0
 - Skipped: 0
 - Date: 2026-07-22
