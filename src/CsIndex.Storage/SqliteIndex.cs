@@ -318,14 +318,14 @@ public sealed class SqliteIndex(string databasePath)
                 analysis_profile_id, project_id, stable_key, kind, name, namespace_name,
                 type_simple_name, type_metadata_name, fully_qualified_name, display_name,
                 containing_symbol_id, arity, parameter_count, method_kind, accessibility,
-                is_static, is_abstract, is_virtual, is_override, source_document_id,
-                source_start, source_length, is_generated)
+                is_static, is_abstract, is_virtual, is_override, async_role,
+                async_involvement_depth, source_document_id, source_start, source_length, is_generated)
             VALUES(
                 $profile_id, $project_id, $stable_key, $kind, $name, $namespace_name,
                 $type_simple_name, $type_metadata_name, $fully_qualified_name, $display_name,
                 NULL, $arity, $parameter_count, $method_kind, $accessibility,
-                $is_static, $is_abstract, $is_virtual, $is_override, $source_document_id,
-                $source_start, $source_length, $is_generated);
+                $is_static, $is_abstract, $is_virtual, $is_override, $async_role,
+                $async_involvement_depth, $source_document_id, $source_start, $source_length, $is_generated);
             SELECT last_insert_rowid();
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
@@ -348,6 +348,10 @@ public sealed class SqliteIndex(string databasePath)
         command.Parameters.AddWithValue("$is_abstract", symbol.IsAbstract);
         command.Parameters.AddWithValue("$is_virtual", symbol.IsVirtual);
         command.Parameters.AddWithValue("$is_override", symbol.IsOverride);
+        command.Parameters.AddWithValue("$async_role", (int)symbol.AsyncRole);
+        command.Parameters.AddWithValue(
+            "$async_involvement_depth",
+            (object?)symbol.AsyncInvolvementDepth ?? DBNull.Value);
         command.Parameters.AddWithValue("$source_document_id", symbol.SourceDocumentKey is not null &&
                                                                documentIds.TryGetValue(symbol.SourceDocumentKey, out var documentId)
             ? documentId
@@ -422,11 +426,11 @@ public sealed class SqliteIndex(string databasePath)
         await using var command = CreateCommand(connection, transaction, """
             INSERT INTO calls(
                 analysis_profile_id, caller_symbol_id, callee_symbol_id, callee_definition_id,
-                reference_kind, dispatch_kind, resolution_status, resolution_reason,
+                reference_kind, dispatch_kind, resolution_status, resolution_reason, async_usage_kind,
                 document_id, source_start, source_length, unresolved_name, receiver_type_key)
             VALUES(
                 $profile_id, $caller_id, $callee_id, $definition_id,
-                $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason,
+                $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason, $async_usage_kind,
                 $document_id, $source_start, $source_length, $unresolved_name, $receiver_type_key);
             SELECT last_insert_rowid();
             """);
@@ -451,6 +455,7 @@ public sealed class SqliteIndex(string databasePath)
             command.Parameters.AddWithValue("$dispatch_kind", (int)call.DispatchKind);
             command.Parameters.AddWithValue("$resolution_status", (int)call.ResolutionStatus);
             command.Parameters.AddWithValue("$resolution_reason", (int)call.ResolutionReason);
+            command.Parameters.AddWithValue("$async_usage_kind", (int)call.AsyncUsageKind);
             command.Parameters.AddWithValue("$document_id", documentIds[call.DocumentKey]);
             command.Parameters.AddWithValue("$source_start", call.SourceStart);
             command.Parameters.AddWithValue("$source_length", call.SourceLength);

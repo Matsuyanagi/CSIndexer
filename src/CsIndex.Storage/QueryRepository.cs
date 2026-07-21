@@ -62,6 +62,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
                 s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
                 s.is_static, s.is_abstract, s.is_virtual, s.is_override,
+                s.async_role, s.async_involvement_depth,
                 d.normalized_path, s.source_start, s.source_length, s.is_generated,
                 p.assembly_name
             FROM symbols s
@@ -102,6 +103,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
                 s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
                 s.is_static, s.is_abstract, s.is_virtual, s.is_override,
+                s.async_role, s.async_involvement_depth,
                 d.normalized_path, s.source_start, s.source_length, s.is_generated,
                 p.assembly_name
             FROM symbols s
@@ -396,11 +398,13 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.GetBoolean(13),
                     reader.GetBoolean(14),
                     reader.GetBoolean(15),
-                    reader.IsDBNull(16) ? null : reader.GetString(16),
+                    (AsyncRole)reader.GetInt32(16),
                     reader.IsDBNull(17) ? null : reader.GetInt32(17),
-                    reader.IsDBNull(18) ? null : reader.GetInt32(18),
-                    reader.GetBoolean(19),
-                    reader.IsDBNull(20) ? null : reader.GetString(20),
+                    reader.IsDBNull(18) ? null : reader.GetString(18),
+                    reader.IsDBNull(19) ? null : reader.GetInt32(19),
+                    reader.IsDBNull(20) ? null : reader.GetInt32(20),
+                    reader.GetBoolean(21),
+                    reader.IsDBNull(22) ? null : reader.GetString(22),
                     []));
             }
         }
@@ -455,13 +459,14 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 (DispatchKind)reader.GetInt32(9),
                 (ResolutionStatus)reader.GetInt32(10),
                 (ResolutionReason)reader.GetInt32(11),
-                reader.GetInt64(12),
-                reader.GetString(13),
-                reader.GetInt32(14),
+                (AsyncUsageKind)reader.GetInt32(12),
+                reader.GetInt64(13),
+                reader.GetString(14),
                 reader.GetInt32(15),
-                reader.GetBoolean(16),
-                reader.IsDBNull(17) ? null : reader.GetString(17),
-                reader.IsDBNull(18) ? null : reader.GetString(18)));
+                reader.GetInt32(16),
+                reader.GetBoolean(17),
+                reader.IsDBNull(18) ? null : reader.GetString(18),
+                reader.IsDBNull(19) ? null : reader.GetString(19)));
         }
 
         return result;
@@ -493,6 +498,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             callee.id, callee.display_name,
             definition.id, definition.display_name,
             c.reference_kind, c.dispatch_kind, c.resolution_status, c.resolution_reason,
+            c.async_usage_kind,
             d.id, d.normalized_path, c.source_start, c.source_length, d.is_generated,
             c.unresolved_name, c.receiver_type_key
         FROM calls c

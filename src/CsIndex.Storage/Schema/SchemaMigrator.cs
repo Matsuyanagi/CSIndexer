@@ -20,7 +20,7 @@ public sealed class SchemaMigrator
             var exists = Convert.ToInt64(await existsCommand.ExecuteScalarAsync(cancellationToken)) > 0;
             if (!exists)
             {
-                await CreateVersionOneAsync(connection, cancellationToken);
+                await CreateVersionTwoAsync(connection, cancellationToken);
                 return;
             }
 
@@ -59,7 +59,7 @@ public sealed class SchemaMigrator
         }
     }
 
-    private static async Task CreateVersionOneAsync(
+    private static async Task CreateVersionTwoAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -71,7 +71,7 @@ public sealed class SchemaMigrator
                 version INTEGER NOT NULL
             );
 
-            INSERT INTO schema_info(version) VALUES (1);
+            INSERT INTO schema_info(version) VALUES (2);
 
             CREATE TABLE analysis_profiles (
                 id                    INTEGER PRIMARY KEY,
@@ -151,6 +151,8 @@ public sealed class SchemaMigrator
                 is_abstract           INTEGER NOT NULL DEFAULT 0,
                 is_virtual            INTEGER NOT NULL DEFAULT 0,
                 is_override           INTEGER NOT NULL DEFAULT 0,
+                async_role            INTEGER NOT NULL DEFAULT 0,
+                async_involvement_depth INTEGER,
                 source_document_id    INTEGER,
                 source_start          INTEGER,
                 source_length         INTEGER,
@@ -195,6 +197,7 @@ public sealed class SchemaMigrator
                 dispatch_kind           INTEGER NOT NULL,
                 resolution_status       INTEGER NOT NULL,
                 resolution_reason       INTEGER NOT NULL,
+                async_usage_kind        INTEGER NOT NULL DEFAULT 0,
                 document_id             INTEGER NOT NULL,
                 source_start            INTEGER NOT NULL,
                 source_length           INTEGER NOT NULL,

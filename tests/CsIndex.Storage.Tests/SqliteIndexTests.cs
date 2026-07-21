@@ -1,5 +1,7 @@
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Storage.Schema;
+using Microsoft.Data.Sqlite;
 
 namespace CsIndex.Storage.Tests;
 
@@ -23,6 +25,36 @@ public sealed class SqliteIndexTests
             cancellationToken));
         var profile = await index.CreateQueryRepository().GetProfileAsync(cancellationToken: cancellationToken);
         Assert.Equal("test", profile.Name);
+    }
+
+    [Fact]
+    public async Task Save_RestoresAsyncAnalysisFromDatabase()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var snapshot = CreateSnapshot(temporary.Path);
+        var index = new SqliteIndex(databasePath);
+
+        await index.SaveAsync(snapshot, cancellationToken);
+
+        var repository = new SqliteIndex(databasePath).CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var caller = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Caller",
+            cancellationToken: cancellationToken));
+        var call = Assert.Single(await repository.GetCallsByCallerAsync(
+            profile.Id,
+            [caller.Id],
+            GeneratedFilter.Include,
+            cancellationToken: cancellationToken));
+
+        Assert.Equal(2, SchemaMigrator.CurrentVersion);
+        Assert.Equal(2, RequestHasher.SchemaVersion);
+        Assert.Equal(AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable, caller.AsyncRole);
+        Assert.Equal(0, caller.AsyncInvolvementDepth);
+        Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
     }
 
     [Fact]
@@ -70,6 +102,47 @@ public sealed class SqliteIndexTests
             index.EnsureCreatedAsync(cancellationToken));
 
         Assert.Contains("corrupt", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task VersionOneDatabase_ProducesExplicitErrorWithoutModification()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "version-one.sqlite");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ToString();
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info(version) VALUES (1);
+                CREATE TABLE version_one_marker(id INTEGER PRIMARY KEY);
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() =>
+            new SqliteIndex(databasePath).EnsureCreatedAsync(cancellationToken));
+
+        Assert.Contains("Unsupported database schema version 1", exception.Message, StringComparison.Ordinal);
+        await using var verificationConnection = new SqliteConnection(connectionString);
+        await verificationConnection.OpenAsync(cancellationToken);
+        await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = """
+            SELECT version,
+                   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'version_one_marker')
+            FROM schema_info;
+            """;
+        await using var reader = await verificationCommand.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        Assert.Equal(1, reader.GetInt32(0));
+        Assert.Equal(1, reader.GetInt32(1));
     }
 
     private static IndexSnapshot CreateSnapshot(string root)
@@ -123,6 +196,52 @@ public sealed class SqliteIndexTests
             SourceStart = 0,
             SourceLength = 6,
         };
+        snapshot.Symbols["caller"] = new SymbolData
+        {
+            StableKey = "caller",
+            ProjectKey = "project",
+            Kind = IndexedSymbolKind.Method,
+            Name = "Caller",
+            NamespaceName = string.Empty,
+            FullyQualifiedName = "Sample.Caller()",
+            DisplayName = "Sample.Caller()",
+            ContainingSymbolKey = "sample",
+            ParameterCount = 0,
+            AsyncRole = AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable,
+            AsyncInvolvementDepth = 0,
+            SourceDocumentKey = "project|source",
+            SourceStart = 7,
+            SourceLength = 6,
+        };
+        snapshot.Symbols["callee"] = new SymbolData
+        {
+            StableKey = "callee",
+            ProjectKey = "project",
+            Kind = IndexedSymbolKind.Method,
+            Name = "Callee",
+            NamespaceName = string.Empty,
+            FullyQualifiedName = "Sample.Callee()",
+            DisplayName = "Sample.Callee()",
+            ContainingSymbolKey = "sample",
+            ParameterCount = 0,
+            SourceDocumentKey = "project|source",
+            SourceStart = 14,
+            SourceLength = 6,
+        };
+        snapshot.Calls.Add(new CallData
+        {
+            CallerSymbolKey = "caller",
+            CalleeSymbolKey = "callee",
+            CalleeDefinitionKey = "callee",
+            ReferenceKind = ReferenceKind.Invocation,
+            DispatchKind = DispatchKind.Static,
+            ResolutionStatus = ResolutionStatus.Resolved,
+            ResolutionReason = ResolutionReason.None,
+            AsyncUsageKind = AsyncUsageKind.Awaited,
+            DocumentKey = "project|source",
+            SourceStart = 21,
+            SourceLength = 6,
+        });
         return snapshot;
     }
 }
