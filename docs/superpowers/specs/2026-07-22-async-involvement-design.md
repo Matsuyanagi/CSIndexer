@@ -204,4 +204,3 @@ Storageの `StoredSymbol` と `StoredCall` に対応フィールドを追加し�
 - `docs/TEST_PLAN.md`: 非同期および循環グラフの検証内容
 - `docs/IMPLEMENTATION_STATUS.md`: 実装済み範囲
 - `docs/KNOWN_LIMITATIONS.md`: カスタムawaitable、dynamic、delegate flow、仮想dispatchの限界
-
