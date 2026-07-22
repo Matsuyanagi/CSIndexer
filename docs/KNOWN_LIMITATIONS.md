@@ -14,7 +14,7 @@
 
 ## 非同期解析
 
-- `ReturnsAwaitable`は既知の`Task` / `ValueTask` / `UniTask`型をRoslynシンボルで照合します。custom awaitableは実際に`await`された所有関数の`ContainsAwait`としては検出しますが、awaitされずに返却・中継されるだけのcustom awaitableを起点とは判定しません。
+- `ReturnsAwaitable`は既知の`Task` / `ValueTask` / `UniTask`型をRoslynシンボルで照合します。custom awaitableの呼び出しが構造上`await`されている場合は辺を`Awaited`、所有関数を`ContainsAwait`として検出しますが、awaitされずに返却・保存・引数渡し・未観測実行されるcustom awaitableの辺は`None`となり、起点や中継関数を網羅できません。
 - `ReturnsAsyncEnumerable`は`IAsyncEnumerable<T>`と`IUniTaskAsyncEnumerable<T>`を対象とします。`IAsyncEnumerator<T>`などenumeratorを直接返すAPIは現在このロールに分類しません。
 - `await task;`のtaskが以前の文の呼び出しで生成された場合、所有関数の`ContainsAwait`は記録しますが、データフローを遡って生成元の呼び出し辺を`Awaited`にはしません。
 - 非同期関与の伝播辺は解決済みの通常`Invocation`だけです。`dynamic`呼び出し、高度なdelegate flow、method group経由、reflection、runtime dispatch候補は追跡しません。

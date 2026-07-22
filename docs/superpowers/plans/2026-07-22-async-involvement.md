@@ -15,7 +15,9 @@
 - `Task`、`ValueTask`、`UniTask` と各ジェネリック型をawaitableとして扱い、`UniTaskVoid` と非同期ストリームは別ロールにする。
 - UniTaskパッケージへの製品・テスト依存は追加せず、テストソース内の最小互換型で判定を検証する。
 - ラムダとローカル関数のoperationを外側の所有関数へ混入させない。
+- `Awaited`以外の呼び出し利用方法は既知のTask/ValueTask/UniTask返却だけに付け、同期・未知型の呼び出しは`None`にする。
 - スキーマバージョンを2へ上げ、v1 DBを暗黙に削除・変換しない。
+- `schema_info`がない非空の未認識SQLite DBは、WAL設定・DDLより前に拒否して変更しない。
 - ユーザーが `230eaad` でコミットした `docs/SPEC.md` の字下げを保持し、実装用の追記以外は変更しない。
 - シェルコマンドはAGENTS.mdに従い、すべて `rtk` を先頭に付ける。
 
@@ -276,7 +278,7 @@ rtk git commit -m "feat: add async involvement graph model"
 **Interfaces:**
 - Consumes: Task 1の `AsyncRole`、`AsyncUsageKind`、`AsyncInvolvementPropagator.Apply`
 - Produces: `AsyncSymbolClassifier.Classify(IMethodSymbol method, Compilation compilation)`
-- Produces: `AsyncOperationClassifier.ClassifyInvocation(IInvocationOperation invocation)`
+- Produces: `AsyncOperationClassifier.ClassifyInvocation(IInvocationOperation invocation, Compilation compilation)`
 - Produces: 宣言・operation・呼び出し辺へ付与済みの非同期情報
 
 - [ ] **Step 1: 宣言、UniTask、operation、所有者分離の失敗テストを書く**
@@ -409,7 +411,7 @@ public static class AsyncSymbolClassifier
 
 - [ ] **Step 5: operation分類器を実装する**
 
-`AsyncOperationClassifier.ClassifyInvocation` は親operationを上へ走査し、全祖先の中で次の優先順位を適用する。
+`AsyncOperationClassifier.ClassifyInvocation` は現在の`Compilation`を受け取り、親operationを上へ走査する。`IAnonymousFunctionOperation`または`ILocalFunctionOperation`で走査を停止し、同じ所有者内の祖先だけに次の優先順位を適用する。
 
 ```csharp
 IAwaitOperation                                  => AsyncUsageKind.Awaited
@@ -421,13 +423,14 @@ IExpressionStatementOperation                    => AsyncUsageKind.Unobserved
 _                                                => AsyncUsageKind.None
 ```
 
-分類済み値を上書きするヘルパーは `Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved`、`None` の優先順を固定する。これにより `await FooAsync().ConfigureAwait(false)` の内側呼び出しも `Awaited` になる。
+分類済み値を上書きするヘルパーは `Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved`、`None` の優先順を固定する。これにより `await FooAsync().ConfigureAwait(false)` の内側呼び出しも `Awaited` になる。`Awaited`はcustom awaitableにも適用するが、それ以外の値は`AsyncSymbolClassifier`と共有するmetadata symbol equalityで既知Task/ValueTask/UniTask返却を確認できた場合だけ返し、非awaitableは`None`にする。
 
 - [ ] **Step 6: SemanticExtractorへ宣言・operation・辺分類を接続する**
 
 - 宣言メソッド、ローカル関数、ラムダ、`EnsureMethod` で作るメタデータメソッドの `SymbolData` を `with { AsyncRole = AsyncSymbolClassifier.Classify(...) }` で補強する。
 - `AwaitExpressionSyntax`、`CommonForEachStatementSyntax`、`UsingStatementSyntax`、using宣言の各operationを取得し、`FindOwner` で得たシンボルへ該当ロールをORする。
-- `AddResolvedCall` へ `AsyncUsageKind` を渡し、`IInvocationOperation` では `AsyncOperationClassifier.ClassifyInvocation(invocation)` を設定する。
+- `AddResolvedCall` へ `AsyncUsageKind` を渡し、`IInvocationOperation` では `AsyncOperationClassifier.ClassifyInvocation(invocation, projectState.Compilation)` を設定する。
+- synthetic initializer所有者はfield/event-field/propertyの実際のinitializer clauseだけに作り、local/parameter/default initializerを登録しない。
 - 全プロジェクトのfact抽出後に `AsyncInvolvementPropagator.Apply(snapshot)` を1回呼ぶ。
 - `UpsertSymbol` はsource情報を優先する既存規則を維持しつつ、同じstable keyの `AsyncRole` をORして失わないようにする。
 
@@ -494,7 +497,7 @@ async_involvement_depth  INTEGER,
 async_usage_kind         INTEGER NOT NULL DEFAULT 0,
 ```
 
-既存の `EnsureMigratedAsync` の不一致時エラーを維持し、v1を削除またはALTERしない。
+既存の `EnsureMigratedAsync` の不一致時エラーを維持し、v1を削除またはALTERしない。`schema_info`がない場合はSQLite内部object以外のuser table / index / view / triggerを検査し、1つでも存在する未認識DBはWAL設定・DDLより前にエラーとして変更しない。
 
 - [ ] **Step 4: INSERT、SELECT、readerを同じ列順で更新する**
 

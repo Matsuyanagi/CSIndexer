@@ -59,7 +59,7 @@ Roslynの意味解析結果と呼び出しグラフを使用し、各関数に�
 
 ## 所有関数の分離
 
-メソッド全体の構文を単純に走査すると、ネストしたラムダやローカル関数の `await` が外側の関数へ混入する。各非同期操作は既存の `DocumentAnalysisState.FindOwner` で所有シンボルを決定し、その所有者だけへロールを付与する。
+メソッド全体の構文を単純に走査すると、ネストしたラムダやローカル関数の `await` が外側の関数へ混入する。各非同期操作は既存の `DocumentAnalysisState.FindOwner` で所有シンボルを決定し、その所有者だけへロールを付与する。フィールド、event field、プロパティの実際の初期化句だけをsynthetic initializer所有者として登録し、ラムダ本体内のローカル変数初期化句、引数の既定値などは登録しない。
 
 ラムダは `IAnonymousFunctionOperation.Symbol`、ローカル関数は宣言シンボルから `IsAsync` と戻り値を取得する。トップレベルステートメントと初期化子は宣言シンボルを持たないため、本文操作から得られるロールだけを付与する。
 
@@ -77,9 +77,9 @@ Roslynの意味解析結果と呼び出しグラフを使用し、各関数に�
 | `Discarded` | `_ = LoadAsync()` |
 | `Unobserved` | `LoadAsync();` |
 
-分類は構文名ではなく `IInvocationOperation` の親操作をたどって決定する。変換、括弧、条件アクセスなど結果の意味を変えない中間操作は読み飛ばす。複数条件に一致する場合は `Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved` の順で優先する。
+分類は構文名ではなく `IInvocationOperation` の親操作をたどって決定する。変換、括弧、条件アクセス、`ConfigureAwait`など同じ所有関数内で結果の意味を変えない中間操作や呼び出し連鎖は越えて走査する。`IAnonymousFunctionOperation`または`ILocalFunctionOperation`へ達したら走査を停止し、外側所有者の代入、引数、return文脈を内側の呼び出しへ適用しない。複数条件に一致する場合は、同じ所有者内で `Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved` の順で優先する。
 
-呼び出し先が既知awaitableを返さない場合でも、呼び出し式が `IAwaitOperation` の被演算子に含まれるなら `Awaited` とする。`await task;` のように生成元の呼び出しとawaitが別文の場合、本文の非同期関与は検出するが、データフロー解析なしに特定の呼び出し辺へ `Awaited` を遡及させない。
+呼び出し先が既知awaitableを返さない場合でも、呼び出し式が `IAwaitOperation` の被演算子に含まれるなら `Awaited` とする。`Awaited`以外の分類は、戻り値が既知の`Task` / `ValueTask` / `UniTask`型とシンボル同値な呼び出しだけに適用し、通常の同期呼び出しや未知型は`None`とする。`await task;` のように生成元の呼び出しとawaitが別文の場合、本文の非同期関与は検出するが、データフロー解析なしに特定の呼び出し辺へ `Awaited` を遡及させない。
 
 ## 非同期関与と伝播方向
 
@@ -153,6 +153,8 @@ SQLiteの `calls` へ次を追加する。
 - `async_usage_kind INTEGER NOT NULL DEFAULT 0`
 
 スキーマバージョンとリクエストハッシュのスキーマ番号を2へ上げる。現行方針どおり、別バージョンの既存DBを自動削除・暗黙変換せず、明示的な再構築を要求する。
+
+`schema_info`がないDBは、SQLite内部object以外のuser table / index / view / triggerが存在しない場合だけ新規DBとして初期化する。未認識の非空DBはWAL設定とDDLより前に拒否し、既存schema、行、journal modeを変更しない。
 
 Storageの `StoredSymbol` と `StoredCall` に対応フィールドを追加し、全SELECT、INSERT、reader ordinalを同期させる。
 

@@ -19,6 +19,22 @@ public sealed class SchemaMigrator
             var exists = Convert.ToInt64(await existsCommand.ExecuteScalarAsync(cancellationToken)) > 0;
             if (!exists)
             {
+                await using var userSchemaCommand = connection.CreateCommand();
+                userSchemaCommand.CommandText = """
+                    SELECT COUNT(*)
+                    FROM sqlite_master
+                    WHERE type IN ('table', 'index', 'view', 'trigger')
+                      AND name NOT LIKE 'sqlite_%';
+                    """;
+                var hasUserSchema = Convert.ToInt64(
+                    await userSchemaCommand.ExecuteScalarAsync(cancellationToken)) > 0;
+                if (hasUserSchema)
+                {
+                    throw new IndexDatabaseException(
+                        "The database is not an empty CSIndexer database: schema_info is missing and user schema objects already exist. " +
+                        "The database was not modified.");
+                }
+
                 await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
                 await CreateVersionTwoAsync(connection, cancellationToken);
                 return;

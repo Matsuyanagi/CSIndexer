@@ -321,7 +321,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     invocationSyntax.Span.Length,
                     documentState.Data.Key,
                     invocation.Instance?.Type,
-                    AsyncOperationClassifier.ClassifyInvocation(invocation));
+                    AsyncOperationClassifier.ClassifyInvocation(invocation, projectState.Compilation));
                 continue;
             }
 
@@ -553,9 +553,17 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         foreach (var initializer in root.DescendantNodes().OfType<EqualsValueClauseSyntax>())
         {
             var declaration = initializer.Parent;
+            if (declaration is not PropertyDeclarationSyntax &&
+                declaration is not VariableDeclaratorSyntax
+                {
+                    Parent.Parent: FieldDeclarationSyntax or EventFieldDeclarationSyntax,
+                })
+            {
+                continue;
+            }
+
             var typeDeclaration = initializer.Ancestors().OfType<BaseTypeDeclarationSyntax>().FirstOrDefault();
-            if (typeDeclaration is null ||
-                initializer.Ancestors().Any(ancestor => ancestor is BaseMethodDeclarationSyntax or LocalFunctionStatementSyntax))
+            if (typeDeclaration is null)
             {
                 continue;
             }

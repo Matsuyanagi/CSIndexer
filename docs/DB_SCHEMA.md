@@ -6,6 +6,7 @@
 - Request hash schema version: 2
 - `schema_info`は必ず1行とし、未知のversionや破損を検出した場合はDBを削除・変更せずエラーにします。
 - version 1からのALTER migrationは提供しません。非対応versionはfail-fastし、検査前のDBのjournal modeも変更しません。
+- `schema_info`がない場合、SQLite内部object以外のuser table / index / view / triggerが存在しない空DBだけを新規DBとして初期化します。未認識の非空DBはWAL設定・DDLより前にfail-fastし、既存object、行、journal modeを変更しません。
 
 ## Tables
 
@@ -34,4 +35,4 @@ Foreign keyは有効、journal modeはWALです。テストと短命CLIでファ
 
 `async_role`と`async_usage_kind`はCore enumの整数値を保存し、`async_involvement_depth`は非同期起点で0、呼び出し元へ1ずつ増加、非関与時はNULLです。`QueryRepository`のすべてのsymbol/call readerがこれらの列を復元するため、RoslynワークスペースなしのDB-only queryでも同じ値を取得できます。
 
-新規DBと対応済みversion 2 DBにだけWALを設定します。version不一致時は例外を返し、テーブル、行、journal modeを変更しません。
+空の新規DBと対応済みversion 2 DBにだけWALを設定します。version不一致時と`schema_info`のない非空DBでは例外を返し、テーブル、行、journal modeを変更しません。connection-localな`PRAGMA foreign_keys=ON`だけはschema検査前に設定します。

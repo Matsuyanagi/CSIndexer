@@ -152,6 +152,62 @@ public sealed class SqliteIndexTests
         Assert.Equal(1, reader.GetInt32(1));
     }
 
+    [Fact]
+    public async Task UnrecognizedNonEmptyDatabase_ProducesExplicitErrorWithoutModification()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "unrecognized.sqlite");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ToString();
+        string journalModeBefore;
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            journalModeBefore = Assert.IsType<string>(await command.ExecuteScalarAsync(cancellationToken));
+            command.CommandText = """
+                CREATE TABLE marker(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO marker(value) VALUES ('preserve-me');
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var exception = await Record.ExceptionAsync(() =>
+            new SqliteIndex(databasePath).EnsureCreatedAsync(cancellationToken));
+
+        await using var verificationConnection = new SqliteConnection(connectionString);
+        await verificationConnection.OpenAsync(cancellationToken);
+        await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = "PRAGMA journal_mode;";
+        var journalModeAfter = Assert.IsType<string>(
+            await verificationCommand.ExecuteScalarAsync(cancellationToken));
+        verificationCommand.CommandText = """
+            SELECT (SELECT COUNT(*) FROM marker WHERE value = 'preserve-me'),
+                   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_info'),
+                   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'symbols');
+            """;
+        await using var reader = await verificationCommand.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        var markerRows = reader.GetInt32(0);
+        var schemaInfoTables = reader.GetInt32(1);
+        var symbolsTables = reader.GetInt32(2);
+
+        Assert.True(
+            exception is IndexDatabaseException &&
+            markerRows == 1 &&
+            schemaInfoTables == 0 &&
+            symbolsTables == 0 &&
+            string.Equals(journalModeBefore, journalModeAfter, StringComparison.OrdinalIgnoreCase),
+            $"exception={exception?.GetType().Name ?? "none"}; markerRows={markerRows}; " +
+            $"schemaInfoTables={schemaInfoTables}; symbolsTables={symbolsTables}; " +
+            $"journalModeBefore={journalModeBefore}; journalModeAfter={journalModeAfter}");
+    }
+
     private static IndexSnapshot CreateSnapshot(string root)
     {
         var inputFingerprint = HashUtilities.Sha256("input");

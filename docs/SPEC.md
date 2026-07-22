@@ -1003,7 +1003,7 @@ enum ReferenceKind
 
 `Task`、`ValueTask`、`UniTask`の非generic/generic型は`ReturnsAwaitable`として同じ扱いにする。`UniTaskVoid`と非同期ストリームは、それぞれ`UniTaskVoid`、`ReturnsAsyncEnumerable`という別ロールにする。既知型の照合にはmetadata nameから取得したシンボルとの`SymbolEqualityComparer.Default`を使用し、同名の利用者定義型を誤認しない。
 
-ラムダとローカル関数は外側メソッドとは別の所有者である。`FindOwner`が決めた所有者だけへoperation由来ロールをORし、ネストした`await`、`await foreach`、`await using`を外側へ漏らさない。async lambda/local functionはそれ自体が非同期起点になり、起点の`AsyncInvolvementDepth`は0である。
+ラムダとローカル関数は外側メソッドとは別の所有者である。`FindOwner`が決めた所有者だけへoperation由来ロールをORし、ネストした`await`、`await foreach`、`await using`を外側へ漏らさない。async lambda/local functionはそれ自体が非同期起点になり、起点の`AsyncInvolvementDepth`は0である。フィールド、event field、プロパティの初期化子だけをsynthetic initializer所有者として登録し、ラムダ本体内のローカル変数初期化子や引数の既定値をinitializer所有者として登録しない。
 
 解決済み呼び出し辺にはenum `AsyncUsageKind`を保存する。`IInvocationOperation`から親operationを上へたどり、複数条件に一致するときは次表の上から順に優先する。
 
@@ -1015,7 +1015,11 @@ enum ReferenceKind
 | 4 | `Stored` | `IVariableInitializerOperation`または`ISimpleAssignmentOperation`: `var task = LoadAsync()` |
 | 5 | `Passed` | `IArgumentOperation`: `WhenAll(LoadAsync())` |
 | 6 | `Unobserved` | `IExpressionStatementOperation`: `LoadAsync();` |
-| 7 | `None` | 上記に該当しない、または非呼び出し参照 |
+| 7 | `None` | 上記に該当しない、非呼び出し参照、または構造上awaitされていない非awaitable呼び出し |
+
+親operationの走査は同じ所有関数内の変換、括弧、条件アクセス、`ConfigureAwait`などの呼び出し連鎖を越えて継続するが、`IAnonymousFunctionOperation`または`ILocalFunctionOperation`に達した時点で停止する。これにより、ラムダやローカル関数内の呼び出しが外側の代入・引数・return文脈を継承しない。複数祖先に一致する場合の上記優先順位は同じ所有者内だけに適用する。
+
+呼び出し式が実際の`IAwaitOperation`配下にある場合は、戻り値が既知型でないcustom awaitableでも`Awaited`とする。`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved`は、呼び出し先の戻り値が`ReturnsAwaitable`と同じ既知の`Task` / `ValueTask` / `UniTask`型である場合だけ付ける。それ以外の同期・未知型の呼び出し辺は`None`とする。
 
 呼び出し式と`await`が別文のときはデータフローを遡らないため、生成元の呼び出し辺を`Awaited`へ変更しない。ただし実際の`await`は所有関数の`ContainsAwait`として記録する。
 
@@ -1437,6 +1441,8 @@ CREATE TABLE schema_info (
     version INTEGER NOT NULL
 );
 ```
+
+`schema_info`が存在しないDBを初期化できるのは、SQLiteの内部objectを除くuser table / index / view / triggerが1つもない場合だけとする。非空の未認識DBでは、`PRAGMA journal_mode=WAL`やDDLを実行する前に明示的なエラーを返し、既存object、行、journal modeを変更しない。空の新規DBは通常どおり現行schemaで初期化する。
 
 ### analysis_profiles
 

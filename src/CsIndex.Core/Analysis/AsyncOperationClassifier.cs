@@ -6,11 +6,18 @@ namespace CsIndex.Core.Analysis;
 
 public static class AsyncOperationClassifier
 {
-    public static AsyncUsageKind ClassifyInvocation(IInvocationOperation invocation)
+    public static AsyncUsageKind ClassifyInvocation(
+        IInvocationOperation invocation,
+        Compilation compilation)
     {
         var result = AsyncUsageKind.None;
         for (IOperation? current = invocation.Parent; current is not null; current = current.Parent)
         {
+            if (current is IAnonymousFunctionOperation or ILocalFunctionOperation)
+            {
+                break;
+            }
+
             var candidate = current switch
             {
                 IAwaitOperation => AsyncUsageKind.Awaited,
@@ -24,7 +31,10 @@ public static class AsyncOperationClassifier
             result = HigherPriority(result, candidate);
         }
 
-        return result;
+        return result == AsyncUsageKind.Awaited ||
+               AsyncSymbolClassifier.IsKnownAwaitable(invocation.TargetMethod.ReturnType, compilation)
+            ? result
+            : AsyncUsageKind.None;
     }
 
     private static AsyncUsageKind HigherPriority(AsyncUsageKind left, AsyncUsageKind right) =>

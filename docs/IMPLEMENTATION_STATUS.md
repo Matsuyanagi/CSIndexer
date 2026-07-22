@@ -28,13 +28,13 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 ## Build Status
 
 - Command: `dotnet build CsIndex.sln --configuration Release --no-restore`
-- Result: 成功（警告0、エラー0）
+- Result: 成功（9 projects、警告0、エラー0）
 - Date: 2026-07-22
 
 ## Test Status
 
 - Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 41
+- Passed: 54
 - Failed: 0
 - Skipped: 0
 - Date: 2026-07-22

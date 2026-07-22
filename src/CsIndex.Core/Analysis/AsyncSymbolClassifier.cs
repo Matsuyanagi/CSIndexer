@@ -39,7 +39,7 @@ public static class AsyncSymbolClassifier
             role |= AsyncRole.AsyncIterator;
         }
 
-        if (Matches(method.ReturnType, compilation, AwaitableTypes))
+        if (IsKnownAwaitable(method.ReturnType, compilation))
         {
             role |= AsyncRole.ReturnsAwaitable;
         }
@@ -56,6 +56,9 @@ public static class AsyncSymbolClassifier
 
         return role;
     }
+
+    internal static bool IsKnownAwaitable(ITypeSymbol type, Compilation compilation) =>
+        Matches(type, compilation, AwaitableTypes);
 
     private static bool Matches(
         ITypeSymbol type,

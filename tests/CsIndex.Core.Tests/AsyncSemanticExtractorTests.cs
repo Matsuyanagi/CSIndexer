@@ -190,6 +190,140 @@ public sealed class AsyncSemanticExtractorTests
         Assert.Equal(AsyncUsageKind.None, call.AsyncUsageKind);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_StopsUsageClassificationAtLambdaAndLocalFunctionOwners()
+    {
+        const string source = """
+            using System;
+            using System.Threading.Tasks;
+
+            public sealed class OwnerBoundaries
+            {
+                public static Task LeafAsync() => Task.CompletedTask;
+
+                public void StoreLambda()
+                {
+                    Action stored = () => LeafAsync();
+                }
+
+                public void PassLambda()
+                {
+                    Register(() => LeafAsync());
+                }
+
+                public void OuterWithLocal()
+                {
+                    void Local() { LeafAsync(); }
+                    Register(Local);
+                }
+
+                private static void Register(Action action) { }
+            }
+            """;
+        var snapshot = await AnalyzeAsync(source);
+        var leaf = GetMethod(snapshot, "LeafAsync");
+        var lambdaKeys = snapshot.Symbols.Values
+            .Where(symbol => symbol.Kind == IndexedSymbolKind.Lambda)
+            .Select(symbol => symbol.StableKey)
+            .ToHashSet(StringComparer.Ordinal);
+        var local = GetMethod(snapshot, "Local");
+
+        var lambdaCalls = snapshot.Calls
+            .Where(call => call.CalleeDefinitionKey == leaf.StableKey &&
+                           lambdaKeys.Contains(call.CallerSymbolKey))
+            .ToArray();
+        Assert.Equal(2, lambdaCalls.Length);
+        Assert.All(lambdaCalls, call => Assert.Equal(AsyncUsageKind.Unobserved, call.AsyncUsageKind));
+        var localCall = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == local.StableKey &&
+            call.CalleeDefinitionKey == leaf.StableKey);
+        Assert.Equal(AsyncUsageKind.Unobserved, localCall.AsyncUsageKind);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_PreservesAwaitedUsageThroughSameOwnerInvocationWrapper()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            public sealed class WrapperCase
+            {
+                public static Task LeafAsync() => Task.CompletedTask;
+                public async Task AwaitWrappedAsync()
+                {
+                    await LeafAsync().ConfigureAwait(false);
+                }
+            }
+            """;
+        var snapshot = await AnalyzeAsync(source);
+        var caller = GetMethod(snapshot, "AwaitWrappedAsync");
+        var leaf = GetMethod(snapshot, "LeafAsync");
+
+        var call = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == caller.StableKey &&
+            call.CalleeDefinitionKey == leaf.StableKey);
+        Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DoesNotClassifyNonAwaitableStorageAsAsyncUsage()
+    {
+        const string source = """
+            public sealed class SynchronousCase
+            {
+                public static int Parse() => 1;
+                public void StoreSync()
+                {
+                    var value = Parse();
+                }
+            }
+            """;
+        var snapshot = await AnalyzeAsync(source);
+        var caller = GetMethod(snapshot, "StoreSync");
+        var callee = GetMethod(snapshot, "Parse");
+
+        var call = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == caller.StableKey &&
+            call.CalleeDefinitionKey == callee.StableKey);
+        Assert.Equal(AsyncUsageKind.None, call.AsyncUsageKind);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AssignsFieldAndPropertyInitializerLambdaOperationsToLambda()
+    {
+        const string source = """
+            using System;
+            using System.Threading.Tasks;
+
+            public sealed class InitializerCases
+            {
+                public static Task<int> LeafAsync() => Task.FromResult(1);
+                public Func<Task> Field = async () => { var value = await LeafAsync(); };
+                public Func<Task> Property { get; } = async () => { var value = await LeafAsync(); };
+            }
+            """;
+        var snapshot = await AnalyzeAsync(source);
+        var leaf = GetMethod(snapshot, "LeafAsync");
+        var lambdas = snapshot.Symbols.Values
+            .Where(symbol => symbol.Kind == IndexedSymbolKind.Lambda)
+            .ToArray();
+
+        Assert.Equal(2, lambdas.Length);
+        Assert.All(lambdas, lambda =>
+        {
+            Assert.Equal(
+                AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable | AsyncRole.ContainsAwait,
+                lambda.AsyncRole);
+            Assert.Equal(0, lambda.AsyncInvolvementDepth);
+            Assert.Single(snapshot.Calls, call =>
+                call.CallerSymbolKey == lambda.StableKey &&
+                call.CalleeDefinitionKey == leaf.StableKey);
+        });
+        Assert.All(
+            snapshot.Symbols.Values.Where(symbol => symbol.Kind == IndexedSymbolKind.Initializer),
+            initializer => Assert.Equal(AsyncRole.None, initializer.AsyncRole));
+    }
+
     private static void AssertRole(
         IndexSnapshot snapshot,
         string name,
