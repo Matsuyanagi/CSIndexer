@@ -24,7 +24,7 @@ public sealed class SchemaMigrator
                     SELECT COUNT(*)
                     FROM sqlite_master
                     WHERE type IN ('table', 'index', 'view', 'trigger')
-                      AND name NOT LIKE 'sqlite_%';
+                      AND name NOT GLOB 'sqlite_*';
                     """;
                 var hasUserSchema = Convert.ToInt64(
                     await userSchemaCommand.ExecuteScalarAsync(cancellationToken)) > 0;

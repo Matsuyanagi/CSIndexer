@@ -34,7 +34,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 ## Test Status
 
 - Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 54
+- Passed: 55
 - Failed: 0
 - Skipped: 0
 - Date: 2026-07-22
