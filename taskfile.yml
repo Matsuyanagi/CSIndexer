@@ -1,0 +1,22 @@
+version: '3'
+
+vars:
+  CONFIGURATION: '{{.CONFIGURATION | default "Release"}}'
+  RID: '{{.RID | default "win-x64"}}'
+  PUBLISH_DIR: '{{.PUBLISH_DIR | default (printf "artifacts/publish/%s" .RID)}}'
+
+tasks:
+  build:
+    desc: Build the solution
+    cmds:
+      - dotnet build CsIndex.sln --configuration {{.CONFIGURATION}}
+
+  publish:
+    desc: Publish the CLI as a self-contained folder
+    cmds:
+      - >-
+        dotnet publish src/CsIndex.Cli/CsIndex.Cli.csproj
+        --configuration {{.CONFIGURATION}}
+        --runtime {{.RID}}
+        --self-contained true
+        --output "{{.PUBLISH_DIR}}"
