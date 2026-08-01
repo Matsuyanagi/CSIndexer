@@ -30,6 +30,21 @@ public sealed class SemanticQueryService(QueryRepository repository)
         return new QueryContext(profile, matches);
     }
 
+    public async Task<QueryContext> ListSymbolsAsync(
+        IndexedSymbolKind? kind,
+        bool asyncInvolved,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var symbols = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            kind,
+            asyncInvolved,
+            cancellationToken);
+        return new QueryContext(profile, symbols);
+    }
+
     public async Task<DefinitionResult> FindDefinitionsAsync(
         string queryText,
         string? profileName = null,
@@ -132,18 +147,33 @@ public sealed class SemanticQueryService(QueryRepository repository)
     public async Task<CallResult> FindCalleesAsync(
         string queryText,
         GeneratedFilter generatedFilter,
+        bool includeLambdaCalls = true,
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
         var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
-        var calls = await repository.GetCallsByCallerAsync(
-            context.Profile.Id,
-            context.MatchedSymbols.Select(symbol => symbol.Id),
-            generatedFilter,
-            CallKinds,
-            cancellationToken);
+        var calls = includeLambdaCalls
+            ? await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+                context.Profile.Id,
+                context.MatchedSymbols.Select(symbol => symbol.Id),
+                generatedFilter,
+                CallKinds,
+                cancellationToken)
+            : await repository.GetCallsByCallerAsync(
+                context.Profile.Id,
+                context.MatchedSymbols.Select(symbol => symbol.Id),
+                generatedFilter,
+                CallKinds,
+                cancellationToken);
         return new CallResult(context, calls, [], []);
     }
+
+    public Task<CallResult> FindCalleesAsync(
+        string queryText,
+        GeneratedFilter generatedFilter,
+        string? profileName,
+        CancellationToken cancellationToken = default) =>
+        FindCalleesAsync(queryText, generatedFilter, true, profileName, cancellationToken);
 
     public async Task<RelationResult> FindOverridesAsync(
         string queryText,

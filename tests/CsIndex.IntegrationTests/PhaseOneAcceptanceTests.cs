@@ -113,6 +113,82 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task ListSymbolsDefaultsToFunctionKindsAndCanLimitToLambdas()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var functions = await fixture.Query.ListSymbolsAsync(
+            kind: null,
+            asyncInvolved: false,
+            cancellationToken: cancellationToken);
+        var lambdas = await fixture.Query.ListSymbolsAsync(
+            IndexedSymbolKind.Lambda,
+            asyncInvolved: false,
+            cancellationToken: cancellationToken);
+
+        Assert.Contains(functions.MatchedSymbols, symbol =>
+            symbol.DisplayName == "Alpha.AClass::Play()" && symbol.Kind == IndexedSymbolKind.Method);
+        Assert.Contains(functions.MatchedSymbols, symbol =>
+            symbol.Kind == IndexedSymbolKind.Lambda && symbol.TypeSimpleName == "LambdaPlayer");
+        Assert.All(functions.MatchedSymbols, symbol =>
+            Assert.True(symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda));
+        Assert.NotEmpty(lambdas.MatchedSymbols);
+        Assert.All(lambdas.MatchedSymbols, symbol => Assert.Equal(IndexedSymbolKind.Lambda, symbol.Kind));
+    }
+
+    [Fact]
+    public async Task ListSymbolsAsyncInvolvedExcludesNonInvolvedSymbols()
+    {
+        await fixture.BuildTask;
+
+        var symbols = await fixture.Query.ListSymbolsAsync(
+            kind: null,
+            asyncInvolved: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Contains(symbols.MatchedSymbols, symbol => symbol.Name == "ExecuteAsync");
+        Assert.Contains(symbols.MatchedSymbols, symbol =>
+            symbol.Kind == IndexedSymbolKind.Lambda && symbol.TypeSimpleName == "AsyncPlayer");
+        Assert.DoesNotContain(symbols.MatchedSymbols, symbol =>
+            symbol.DisplayName == "Alpha.AsyncPlayer::Sync()");
+        Assert.All(symbols.MatchedSymbols, symbol => Assert.NotNull(symbol.AsyncInvolvementDepth));
+    }
+
+    [Fact]
+    public async Task CalleesIncludeNestedLambdaCallsByDefault()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.FindCalleesAsync(
+            "Alpha.DescendantCallees::Execute()",
+            GeneratedFilter.Include,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(5, result.Calls.Count);
+        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("DirectCall") == true);
+        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("OuterLambdaCall") == true);
+        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("InnerCreated::.ctor") == true);
+        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("FirstNestedLambdaCall") == true);
+        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("SecondNestedLambdaCall") == true);
+    }
+
+    [Fact]
+    public async Task CalleesCanBeLimitedToDirectCalls()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.FindCalleesAsync(
+            "Alpha.DescendantCallees::Execute()",
+            GeneratedFilter.Include,
+            includeLambdaCalls: false,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var call = Assert.Single(result.Calls);
+        Assert.Contains("DirectCall", call.CalleeDefinitionDisplayName);
+    }
+
+    [Fact]
     public async Task ExtensionAndConstructedGenericTargetsRetainOriginalDefinitions()
     {
         await fixture.BuildTask;

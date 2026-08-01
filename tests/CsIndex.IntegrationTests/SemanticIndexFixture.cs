@@ -10,6 +10,7 @@ public sealed class SemanticIndexFixture : IDisposable
 {
     private const string MainSource = """
         using System;
+        using System.Threading.Tasks;
 
         namespace Alpha
         {
@@ -65,6 +66,46 @@ public sealed class SemanticIndexFixture : IDisposable
                 {
                     void Local() { Play(); }
                     Local();
+                }
+            }
+
+            public class DescendantCallees
+            {
+                public void Execute()
+                {
+                    DirectCall();
+                    Action outer = () =>
+                    {
+                        OuterLambdaCall();
+                        _ = new InnerCreated();
+                        Action nested = () =>
+                        {
+                            FirstNestedLambdaCall();
+                            void Local()
+                            {
+                                Action deeplyNested = () => SecondNestedLambdaCall();
+                            }
+                        };
+                    };
+                }
+
+                private void DirectCall() { }
+                private void OuterLambdaCall() { }
+                private void FirstNestedLambdaCall() { }
+                private void SecondNestedLambdaCall() { }
+
+                private sealed class InnerCreated { }
+            }
+
+            public class AsyncPlayer
+            {
+                public async Task ExecuteAsync() => await Task.Yield();
+
+                public void Sync() { }
+
+                public void WithAsyncLambda()
+                {
+                    Func<Task> action = async () => await Task.Yield();
                 }
             }
 
