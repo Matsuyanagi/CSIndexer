@@ -106,6 +106,49 @@ public sealed class CliCommandTests : IDisposable
         Assert.DoesNotContain("Alpha.AClass::Play()", result.StandardOutput);
     }
 
+    [Fact]
+    public async Task SymbolListShortNamesFormatsPresentationNames()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync("symbol", "list", "--short-names", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("AClass::Play()", result.StandardOutput);
+        Assert.DoesNotContain("Alpha.AClass::Play()", result.StandardOutput);
+    }
+
+    [Theory]
+    [InlineData("definition", "Alpha.AClass::Play()", "AClass::Play()")]
+    [InlineData("references", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()")]
+    [InlineData("callers", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()")]
+    [InlineData("callees", "Alpha.DescendantCallees::Execute()", "DescendantCallees::Execute() -> DescendantCallees::DirectCall()")]
+    [InlineData("overrides", "Alpha.BaseClass::Run()", "XClass::Run() -> BaseClass::Run()")]
+    public async Task QueryCommandsShortNamesFormatHumanFacingNames(string command, string query, string expected)
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(command, query, "--short-names", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains(expected, result.StandardOutput);
+        Assert.DoesNotContain("Alpha.", result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task CalleesIncludeLambdaCallsByDefault()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync("callees", "Alpha.DescendantCallees::Execute()", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("5 callee call(s)", result.StandardOutput);
+        Assert.Contains("OuterLambdaCall", result.StandardOutput);
+        Assert.Contains("FirstNestedLambdaCall", result.StandardOutput);
+        Assert.Contains("SecondNestedLambdaCall", result.StandardOutput);
+    }
+
     [Theory]
     [InlineData("symbol", "list", "--kind", "type")]
     [InlineData("symbol", "list", "unexpected")]
