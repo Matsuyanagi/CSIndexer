@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 非同期関与解析（完了）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 非同期関与解析・関数一覧/ラムダ呼び出し出力（完了）
 
 ## Last Completed Work
 
@@ -15,6 +15,9 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 - Roslynで`AsyncRole`と`AsyncUsageKind`を抽出し、Task/ValueTask/UniTask、UniTaskVoid、非同期ストリーム、await/await foreach/await usingを分類
 - 解決済み呼び出しの逆辺を使う循環安全な複数始点BFSで、非同期起点へ到達する呼び出し元の最短`AsyncInvolvementDepth`を算出
 - 非同期情報をSQLiteへ保存・DB-only復元し、既存CLIのJSON/table出力へ追加
+- `symbol list`を追加し、既定でmethodとlambdaを一覧、`--kind method|lambda`と`--async-involved`で絞り込み可能にした
+- `--short-names`でtable表示およびJSONの`displayName`だけを短縮し、`fullyQualifiedName`を含むcanonical JSON fieldは不変にした
+- ラムダはownerごとに`<lambda#1>`から採番し、`callees`はネストしたラムダdescendantの呼び出しを再帰的に既定で含め、`--exclude-lambda-calls`で直接呼び出しへ限定可能にした
 
 ## Currently Implementing
 
@@ -27,17 +30,17 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 
 ## Build Status
 
-- Command: `dotnet build CsIndex.sln --configuration Release --no-restore`
-- Result: 成功（9 projects、警告0、エラー0）
-- Date: 2026-07-22
+- Command: `dotnet build CsIndex.sln --configuration Release`
+- Result: 成功（警告0、エラー0）
+- Date: 2026-08-02
 
 ## Test Status
 
 - Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 55
+- Passed: 89
 - Failed: 0
 - Skipped: 0
-- Date: 2026-07-22
+- Date: 2026-08-02
 
 ## Known Broken Areas
 
@@ -68,6 +71,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 
 - `index`
 - `symbol find`
+- `symbol list`
 - `definition` / `definition --at`
 - `references`
 - `callers`

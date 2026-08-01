@@ -167,3 +167,17 @@ Decision: Roslynから得る直接事実をflags enum `AsyncRole`、呼び出し
 Alternatives: 単一の`IsAsync` boolean、伝播先へ直接ロールをコピー、ロールと距離をquery時だけ合成。
 Consequences: 「なぜ直接非同期か」と「何辺先で非同期へ到達するか」を区別できる。新しい直接ロールを追加しても伝播器の起点集合へ明示的に組み込める一方、モデル・DB・出力の3値を同期して保守する必要がある。
 Date: 2026-07-22
+
+## DEC-0018: Function listing and lambda call presentation
+
+Status: Accepted
+
+Context: 関数一覧、ラムダの識別子、callee検索の既定範囲、namespaceを含む名前の表示規則を一貫して定める必要がある。
+
+Decision: `symbol list`の既定結果は`method`と`lambda`にする。`--kind method|lambda`と`--async-involved`で絞り込み、namespace短縮は`--short-names`によるpresentation-onlyの変換にする。JSONの`fullyQualifiedName`、stable key、namespace、parameter typeなどのcanonical fieldは短縮しない。ラムダ名は直接ownerごとに`<lambda#1>`から採番し、ネストしたラムダはその直近のラムダownerごとに再び採番する。`callees`は指定symbol配下のラムダdescendantによる呼び出しを再帰的に含め、`--exclude-lambda-calls`指定時だけmethod本体の直接呼び出しに限定する。
+
+Alternatives: `symbol list`をmethodだけにする、document全体でラムダを連番にする、短縮名をJSON canonical fieldにも保存する、calleeを常に直接呼び出しだけにする。
+
+Consequences: 一覧とcallee検索はラムダ本体の実行可能な呼び出しを既定で見落とさない。表示を短縮しても機械処理用の識別子は安定する。ラムダ番号はownerの構造を表すため、別owner間で番号を比較する意味はない。
+
+Date: 2026-08-02

@@ -37,11 +37,14 @@ csindex index C:\Source --mode directory --define FEATURE_AUDIO
 
 ```powershell
 csindex symbol find "Player::Play"
+csindex symbol list
+csindex symbol list --kind lambda --async-involved --output json
 csindex definition "Player::Play()"
 csindex definition --at "src\Player.cs:120:17"
 csindex references "Player::Play(string)"
 csindex callers "BaseClass::Run()" --dispatch virtual
 csindex callees "Game.Player::Execute()"
+csindex callees "Game.Player::Execute()" --exclude-lambda-calls
 csindex overrides "BaseClass::Run()"
 csindex conditions
 ```
@@ -56,6 +59,27 @@ csindex conditions
 - callers固有: `--dispatch static|virtual|all`、`--caller-scope direct|containing|both`
 
 検索構文は`[namespace.]type::method[(parameter-types)]`です。namespace省略は全候補へ展開し、parameter list省略は全overload、`()`は引数なしだけを選びます。C# keyword型は`System.*`へ正規化し、大文字小文字は区別します。
+
+`symbol find`、`symbol list`、`definition`、`references`、`callers`、`callees`、`overrides`では、`--short-names`によりtable出力とJSONの`displayName`からnamespaceを省略できます。既定は完全修飾表示です。
+
+### `symbol list`
+
+`symbol list`は、現在のprofile内の関数symbolを一覧します。既定では`method`と`lambda`の両方を返し、各table行には定義位置と、該当時は非同期解析の注釈を出力します。
+
+- `--kind method|lambda`は結果を指定したkindだけに限定します。
+- `--async-involved`は`asyncInvolvementDepth`を持つsymbolだけを返します。直接の非同期起点もdepth `0`として含まれます。
+- `--short-names`は表示名だけを短縮します。たとえば`Alpha.AClass::Play()`は`AClass::Play()`として表示されます。
+
+JSONは`{ "profile": "...", "symbols": [...] }`です。各symbolには`id`、`stableKey`、`kind`、`displayName`、`fullyQualifiedName`、`namespaceName`、`typeSimpleName`、`parameters`、`location`、`isGenerated`、`assemblyName`、`asyncRole`、`isAsyncInvolved`、`asyncInvolvementDepth`を出力します。`--short-names`を指定しても`fullyQualifiedName`、`stableKey`、`namespaceName`、`parameters`などのcanonical JSON fieldは変更されず、短縮されるのは`displayName`だけです。
+
+### `callees`とラムダ呼び出し
+
+`callees`は既定で、指定したmethod自身の呼び出しに加えて、その内部にあるラムダとさらにネストしたラムダの呼び出しも再帰的に返します。method本体だけの直接呼び出しに限定するには`--exclude-lambda-calls`を指定します。
+
+```powershell
+csindex callees "Alpha.DescendantCallees::Execute()"
+csindex callees "Alpha.DescendantCallees::Execute()" --exclude-lambda-calls
+```
 
 ### 非同期解析情報の出力
 
