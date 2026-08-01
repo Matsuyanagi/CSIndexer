@@ -237,6 +237,26 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         }
     }
 
+    public void WriteSymbolList(QueryContext context)
+    {
+        if (_format == "json")
+        {
+            WriteJson(new
+            {
+                profile = context.Profile.Name,
+                symbols = context.MatchedSymbols.Select(ToSymbolObject),
+            });
+            return;
+        }
+
+        Console.WriteLine($"{context.MatchedSymbols.Count} symbol(s):");
+        foreach (var symbol in context.MatchedSymbols)
+        {
+            Console.WriteLine(
+                $"  {FormatName(symbol.DisplayName)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
+        }
+    }
+
     private string? FormatName(string? name) => _shortNames && name is not null
         ? SymbolNameShortener.Shorten(name)
         : name;

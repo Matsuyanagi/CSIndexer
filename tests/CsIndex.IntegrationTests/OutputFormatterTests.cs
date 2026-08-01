@@ -105,6 +105,23 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void WriteSymbolListJsonUsesSymbolsAndShortDisplayNames()
+    {
+        var symbol = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            displayName: "Example.Features.Worker::Run(System.Threading.Tasks.Task)");
+        var context = new QueryContext(CreateProfile(), [symbol]);
+
+        using var document = CaptureJson(() => new OutputFormatter("json", shortNames: true).WriteSymbolList(context));
+
+        Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
+        var outputSymbol = Assert.Single(document.RootElement.GetProperty("symbols").EnumerateArray());
+        Assert.Equal("Worker::Run(Tasks.Task)", outputSymbol.GetProperty("displayName").GetString());
+        Assert.False(document.RootElement.TryGetProperty("matched", out _));
+    }
+
+    [Fact]
     public void WriteCallsJsonIncludesAsyncUsageKind()
     {
         var context = new QueryContext(CreateProfile(), []);

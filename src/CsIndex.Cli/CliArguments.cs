@@ -7,7 +7,7 @@ internal sealed class CliArguments
     private static readonly HashSet<string> Flags = new(StringComparer.Ordinal)
     {
         "help", "rebuild", "verbose", "diagnostics", "exclude-generated", "only-generated",
-        "require-single", "all-profiles",
+        "require-single", "all-profiles", "async-involved", "short-names", "exclude-lambda-calls",
     };
 
     private readonly Dictionary<string, List<string>> _options = new(StringComparer.Ordinal);

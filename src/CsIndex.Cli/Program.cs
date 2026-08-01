@@ -37,6 +37,8 @@ internal static class Program
             return args[0] switch
             {
                 "index" => await RunIndexAsync(args[1..], cancellation.Token),
+                "symbol" when args.Length > 1 && args[1] == "list" =>
+                    await RunSymbolListAsync(args[2..], cancellation.Token),
                 "symbol" when args.Length > 1 && args[1] == "find" =>
                     await RunSymbolAsync(args[2..], cancellation.Token),
                 "definition" => await RunDefinitionAsync(args[1..], cancellation.Token),
@@ -167,10 +169,10 @@ internal static class Program
 
     private static async Task<int> RunSymbolAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "help");
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex symbol find <query> [--db <path>] [--output table|json]");
+            Console.WriteLine("Usage: csindex symbol find <query> [--db <path>] [--output table|json] [--short-names]");
             return ExitCodes.Success;
         }
 
@@ -186,12 +188,44 @@ internal static class Program
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunDefinitionAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunSymbolListAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "at", "require-single", "help");
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "kind", "async-involved", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex definition <query> | --at <path:line:column>");
+            Console.WriteLine("Usage: csindex symbol list [--kind method|lambda] [--async-involved] [--db <path>] [--output table|json] [--short-names]");
+            return ExitCodes.Success;
+        }
+
+        if (parsed.Positionals.Count != 0)
+        {
+            throw new CliUsageException("symbol list does not accept positional arguments.");
+        }
+
+        var kind = parsed.GetSingle("kind") switch
+        {
+            null => (IndexedSymbolKind?)null,
+            "method" => IndexedSymbolKind.Method,
+            "lambda" => IndexedSymbolKind.Lambda,
+            var value => throw new CliUsageException($"Unknown symbol kind: {value}. Use method or lambda."),
+        };
+        var service = CreateQueryService(parsed);
+        var result = await service.ListSymbolsAsync(
+            kind,
+            parsed.HasFlag("async-involved"),
+            parsed.GetSingle("profile"),
+            cancellationToken);
+
+        CreateFormatter(parsed).WriteSymbolList(result);
+        return ExitCodes.Success;
+    }
+
+    private static async Task<int> RunDefinitionAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "at", "require-single", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("Usage: csindex definition <query> | --at <path:line:column> [--short-names]");
             return ExitCodes.Success;
         }
 
@@ -225,7 +259,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "help");
+            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names", "help");
         var service = CreateQueryService(parsed);
         var result = await service.FindReferencesAsync(
             RequireQuery(parsed),
@@ -246,7 +280,7 @@ internal static class Program
         var parsed = ParseQueryArguments(
             args,
             "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "dispatch",
-            "caller-scope", "help");
+            "caller-scope", "short-names", "help");
         var dispatch = (parsed.GetSingle("dispatch") ?? "static") switch
         {
             "static" => DispatchSearchMode.Static,
@@ -282,13 +316,15 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "help");
+            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names",
+            "exclude-lambda-calls", "help");
         var service = CreateQueryService(parsed);
         var result = await service.FindCalleesAsync(
             RequireQuery(parsed),
             ParseGeneratedFilter(parsed),
-            parsed.GetSingle("profile"),
-            cancellationToken);
+            includeLambdaCalls: !parsed.HasFlag("exclude-lambda-calls"),
+            profileName: parsed.GetSingle("profile"),
+            cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
@@ -300,7 +336,7 @@ internal static class Program
 
     private static async Task<int> RunOverridesAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "help");
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "short-names", "help");
         var service = CreateQueryService(parsed);
         var result = await service.FindOverridesAsync(
             RequireQuery(parsed),
@@ -343,7 +379,7 @@ internal static class Program
     }
 
     private static OutputFormatter CreateFormatter(CliArguments parsed) =>
-        new(parsed.GetSingle("output") ?? "table");
+        new(parsed.GetSingle("output") ?? "table", parsed.HasFlag("short-names"));
 
     private static string RequireQuery(CliArguments parsed)
     {
@@ -478,6 +514,7 @@ internal static class Program
             Usage:
               csindex index <input> [options]
               csindex symbol find <query> [options]
+              csindex symbol list [options]
               csindex definition <query> [options]
               csindex definition --at <path:line:column> [options]
               csindex references <query> [options]
@@ -493,6 +530,14 @@ internal static class Program
               --exclude-generated         Exclude generated documents
               --only-generated            Include only generated documents
               --require-single            Fail unless the query matches one symbol
+              --short-names               Shorten namespaces in displayed symbol names
+
+            Symbol list options:
+              --kind method|lambda         Limit listed function symbols by kind
+              --async-involved             Include only symbols with async involvement
+
+            Callees options:
+              --exclude-lambda-calls       Exclude calls made by nested lambdas
 
             Run 'csindex index --help' for indexing options.
             """);
