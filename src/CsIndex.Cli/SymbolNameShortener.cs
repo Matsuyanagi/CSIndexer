@@ -9,5 +9,10 @@ internal static class SymbolNameShortener
         RegexOptions.CultureInvariant);
 
     public static string Shorten(string name) => QualifiedTypeToken.Replace(name, static match =>
-        match.Value[(match.Value.LastIndexOf('.') + 1)..]);
+    {
+        var shortName = match.Value[(match.Value.LastIndexOf('.') + 1)..];
+        return match.Value.StartsWith("System.Threading.Tasks.", StringComparison.Ordinal)
+            ? $"Tasks.{shortName}"
+            : shortName;
+    });
 }

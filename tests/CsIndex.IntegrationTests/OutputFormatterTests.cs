@@ -17,14 +17,14 @@ public sealed class OutputFormatterTests
 {
     [Theory]
     [InlineData(
-        "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.Func<System.Threading.CancellationToken,System.Threading.Tasks.Task>)",
-        "DistributedCacheLocker::RunWithHeartbeatAsync(String,TimeSpan,Func<CancellationToken,Task>)")]
+        "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)",
+        "DistributedCacheLocker::RunWithHeartbeatAsync(String,TimeSpan,TimeSpan,Func<CancellationToken, Tasks.Task>,CancellationTokenSource)")]
     [InlineData(
         "Example.Handlers.Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])",
         "Worker::Execute(Dictionary<String,List<Widget?[]>>,Nullable<Int32>[])")]
     [InlineData(
         "Example.Handlers.Worker::Run(System.Threading.Tasks.Task)::<lambda#1>",
-        "Worker::Run(Task)::<lambda#1>")]
+        "Worker::Run(Tasks.Task)::<lambda#1>")]
     [InlineData(
         "会社.モデル.サービス::実行(会社.モデル.入力)",
         "サービス::実行(入力)")]
@@ -41,7 +41,8 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             displayName: displayName,
-            parameters: [new StoredParameter(0, "name", "System.String", 0, false)]);
+            parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
+            namespaceName: "Nop.Core.Caching");
         var context = new QueryContext(CreateProfile(), [symbol]);
 
         using var document = CaptureJson(() => new OutputFormatter("json", shortNames: true).WriteSymbols(context));
@@ -50,6 +51,8 @@ public sealed class OutputFormatterTests
         Assert.Equal(
             "DistributedCacheLocker::RunWithHeartbeatAsync(String)",
             outputSymbol.GetProperty("displayName").GetString());
+        Assert.Equal("symbol-1", outputSymbol.GetProperty("stableKey").GetString());
+        Assert.Equal("Nop.Core.Caching", outputSymbol.GetProperty("namespaceName").GetString());
         Assert.Equal(displayName, outputSymbol.GetProperty("fullyQualifiedName").GetString());
         Assert.Equal("System.String", Assert.Single(outputSymbol.GetProperty("parameters").EnumerateArray()).GetString());
     }
@@ -68,7 +71,7 @@ public sealed class OutputFormatterTests
 
         var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteCalls(result, "call(s)"));
 
-        Assert.Contains("Caller::Run(String) -> Callee::Execute(Task)", output);
+        Assert.Contains("Caller::Run(String) -> Callee::Execute(Tasks.Task)", output);
     }
 
     [Fact]
@@ -180,12 +183,13 @@ public sealed class OutputFormatterTests
         int? asyncInvolvementDepth,
         long id = 1,
         string displayName = "Example.Method()",
-        IReadOnlyList<StoredParameter>? parameters = null) => new(
+        IReadOnlyList<StoredParameter>? parameters = null,
+        string namespaceName = "Example") => new(
         Id: id,
         StableKey: $"symbol-{id}",
         Kind: IndexedSymbolKind.Method,
         Name: "Method",
-        NamespaceName: "Example",
+        NamespaceName: namespaceName,
         TypeSimpleName: "Example",
         TypeMetadataName: "Example",
         FullyQualifiedName: displayName,
