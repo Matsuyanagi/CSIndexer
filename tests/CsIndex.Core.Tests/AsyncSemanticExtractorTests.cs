@@ -324,6 +324,83 @@ public sealed class AsyncSemanticExtractorTests
             initializer => Assert.Equal(AsyncRole.None, initializer.AsyncRole));
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_NumbersLambdasIndependentlyPerMethodAndNestedOwner()
+    {
+        var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
+
+        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
+        var updateSecond = GetLambda(snapshot, "Player::Update()::<lambda#2>");
+        var doFirst = GetLambda(snapshot, "Player::Do()::<lambda#1>");
+        var doSecond = GetLambda(snapshot, "Player::Do()::<lambda#2>");
+        var nested = GetLambda(snapshot, "Player::Update()::<lambda#1>::<lambda#1>");
+
+        Assert.Equal("Player::Update()::<lambda#1>", updateFirst.DisplayName);
+        Assert.Equal("Player::Update()::<lambda#2>", updateSecond.DisplayName);
+        Assert.Equal("Player::Do()::<lambda#1>", doFirst.DisplayName);
+        Assert.Equal("Player::Do()::<lambda#2>", doSecond.DisplayName);
+        Assert.Equal("Player::Update()::<lambda#1>::<lambda#1>", nested.DisplayName);
+        Assert.Equal(updateFirst.StableKey, nested.ContainingSymbolKey);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AssignsNestedLambdaCallsToTheirNearestLambdaOwner()
+    {
+        var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
+        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
+        var updateSecond = GetLambda(snapshot, "Player::Update()::<lambda#2>");
+        var nested = GetLambda(snapshot, "Player::Update()::<lambda#1>::<lambda#1>");
+        var update = GetMethod(snapshot, "Update", "Player");
+
+        AssertCallOwner(snapshot, "Play", updateFirst);
+        AssertCallOwner(snapshot, "CreateCallbackInnerObj", updateSecond);
+        var calcCall = AssertCallOwner(snapshot, "Calc", nested);
+
+        Assert.NotEqual(update.StableKey, calcCall.CallerSymbolKey);
+        Assert.NotEqual(updateFirst.StableKey, calcCall.CallerSymbolKey);
+    }
+
+    private const string LambdaOwnershipSource = """
+        using System;
+
+        public sealed class Player
+        {
+            public void Play() { }
+            public void CreateCallbackInnerObj() { }
+            public void Calc() { }
+
+            public void Update()
+            {
+                Action first = () =>
+                {
+                    Play();
+                    Action nested = () => Calc();
+                };
+                Action second = () => CreateCallbackInnerObj();
+            }
+
+            public void Do()
+            {
+                Action first = () => Play();
+                Action second = () => Calc();
+            }
+        }
+        """;
+
+    private static SymbolData GetLambda(IndexSnapshot snapshot, string displayName) =>
+        Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Lambda &&
+            symbol.DisplayName == displayName);
+
+    private static CallData AssertCallOwner(IndexSnapshot snapshot, string calleeName, SymbolData expectedCaller)
+    {
+        Assert.Equal(IndexedSymbolKind.Lambda, expectedCaller.Kind);
+        var callee = GetMethod(snapshot, calleeName, "Player");
+        return Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == expectedCaller.StableKey &&
+            call.CalleeDefinitionKey == callee.StableKey);
+    }
+
     private static void AssertRole(
         IndexSnapshot snapshot,
         string name,
