@@ -5,7 +5,7 @@ namespace CsIndex.Cli;
 internal static class SymbolNameShortener
 {
     private static readonly Regex QualifiedTypeToken = new(
-        @"(?<![A-Za-z0-9_@])(?:@?[A-Za-z_][A-Za-z0-9_]*\.)+@?[A-Za-z_][A-Za-z0-9_]*",
+        @"(?<![\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}\p{Cf}@])(?:@?[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}\p{Cf}_]*\.)+@?[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}\p{Cf}_]*",
         RegexOptions.CultureInvariant);
 
     public static string Shorten(string name) => QualifiedTypeToken.Replace(name, static match =>

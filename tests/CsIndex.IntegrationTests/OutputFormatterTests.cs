@@ -25,6 +25,9 @@ public sealed class OutputFormatterTests
     [InlineData(
         "Example.Handlers.Worker::Run(System.Threading.Tasks.Task)::<lambda#1>",
         "Worker::Run(Task)::<lambda#1>")]
+    [InlineData(
+        "会社.モデル.サービス::実行(会社.モデル.入力)",
+        "サービス::実行(入力)")]
     public void SymbolNameShortenerRemovesNamespacesAndKeepsTypeSyntax(string name, string expected)
     {
         Assert.Equal(expected, SymbolNameShortener.Shorten(name));
