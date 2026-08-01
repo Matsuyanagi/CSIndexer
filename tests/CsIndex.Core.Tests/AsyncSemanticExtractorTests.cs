@@ -360,6 +360,23 @@ public sealed class AsyncSemanticExtractorTests
         Assert.NotEqual(updateFirst.StableKey, calcCall.CallerSymbolKey);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_AssignsDelegateInvocationsToTheirSyntacticOwners()
+    {
+        var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
+        var update = GetMethod(snapshot, "Update", "Player");
+        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
+        var nested = GetLambda(snapshot, "Player::Update()::<lambda#1>::<lambda#1>");
+
+        AssertInvokeOwner(snapshot, update);
+        AssertInvokeOwner(snapshot, updateFirst);
+        AssertInvokeOwner(snapshot, nested);
+
+        AssertCallOwner(snapshot, "Play", updateFirst);
+        AssertCallOwner(snapshot, "CreateCallbackInnerObj", GetLambda(snapshot, "Player::Update()::<lambda#2>"));
+        AssertCallOwner(snapshot, "Calc", nested);
+    }
+
     private const string LambdaOwnershipSource = """
         using System;
 
@@ -368,15 +385,23 @@ public sealed class AsyncSemanticExtractorTests
             public void Play() { }
             public void CreateCallbackInnerObj() { }
             public void Calc() { }
+            private static void NoOp() { }
 
             public void Update()
             {
+                Action callbackToInvoke = NoOp;
                 Action first = () =>
                 {
                     Play();
-                    Action nested = () => Calc();
+                    Action nested = () =>
+                    {
+                        Calc();
+                        callbackToInvoke.Invoke();
+                    };
+                    nested.Invoke();
                 };
                 Action second = () => CreateCallbackInnerObj();
+                callbackToInvoke.Invoke();
             }
 
             public void Do()
@@ -399,6 +424,18 @@ public sealed class AsyncSemanticExtractorTests
         return Assert.Single(snapshot.Calls, call =>
             call.CallerSymbolKey == expectedCaller.StableKey &&
             call.CalleeDefinitionKey == callee.StableKey);
+    }
+
+    private static CallData AssertInvokeOwner(IndexSnapshot snapshot, SymbolData expectedCaller)
+    {
+        var call = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == expectedCaller.StableKey &&
+            call.ReferenceKind == ReferenceKind.Invocation &&
+            call.CalleeSymbolKey is not null &&
+            snapshot.Symbols.TryGetValue(call.CalleeSymbolKey, out var callee) &&
+            callee.Name == "Invoke");
+        Assert.Equal(expectedCaller.StableKey, call.CallerSymbolKey);
+        return call;
     }
 
     private static void AssertRole(
