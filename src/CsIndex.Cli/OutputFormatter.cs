@@ -5,8 +5,10 @@ using CsIndex.Storage;
 
 namespace CsIndex.Cli;
 
-internal sealed class OutputFormatter(string format)
+internal sealed class OutputFormatter(string format, bool shortNames = false)
 {
+    private readonly bool _shortNames = shortNames;
+
     private readonly string _format = format switch
     {
         "table" or "json" => format,
@@ -30,7 +32,7 @@ internal sealed class OutputFormatter(string format)
         foreach (var symbol in context.MatchedSymbols)
         {
             Console.WriteLine(
-                $"  {symbol.DisplayName}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
+                $"  {FormatName(symbol.DisplayName)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
         }
     }
 
@@ -50,7 +52,7 @@ internal sealed class OutputFormatter(string format)
         Console.WriteLine($"{result.Definitions.Count} definition(s):");
         foreach (var definition in result.Definitions)
         {
-            Console.WriteLine($"  {definition.DisplayName}{FormatDefinitionLocation(definition)}");
+            Console.WriteLine($"  {FormatName(definition.DisplayName)}{FormatDefinitionLocation(definition)}");
             if (definition.DocumentPath is null)
             {
                 Console.WriteLine($"    assembly: {definition.AssemblyName ?? "unknown"}; no source definition");
@@ -69,8 +71,8 @@ internal sealed class OutputFormatter(string format)
                 calls = result.Calls.Select(call => new
                 {
                     call.Id,
-                    caller = call.CallerDisplayName,
-                    callee = call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName,
+                    caller = FormatName(call.CallerDisplayName),
+                    callee = FormatName(call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName),
                     referenceKind = call.ReferenceKind.ToString(),
                     dispatchKind = call.DispatchKind.ToString(),
                     resolutionStatus = call.ResolutionStatus.ToString(),
@@ -84,8 +86,8 @@ internal sealed class OutputFormatter(string format)
                 callers = result.EffectiveCallers.Select(ToSymbolObject),
                 possibleRuntimeTargets = result.PossibleRuntimeTargets.Select(relation => new
                 {
-                    source = relation.SourceDisplayName,
-                    target = relation.TargetDisplayName,
+                    source = FormatName(relation.SourceDisplayName),
+                    target = FormatName(relation.TargetDisplayName),
                     kind = relation.Kind.ToString(),
                 }),
             });
@@ -96,9 +98,9 @@ internal sealed class OutputFormatter(string format)
         foreach (var call in result.Calls)
         {
             var point = SafeResolve(call.DocumentPath, call.SourceStart);
-            var target = call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName ?? call.UnresolvedName ?? "<unresolved>";
+            var target = FormatName(call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName ?? call.UnresolvedName ?? "<unresolved>");
             Console.WriteLine(
-                $"  {point.Path}:{point.Line}:{point.Column}  {call.CallerDisplayName} -> {target} " +
+                $"  {point.Path}:{point.Line}:{point.Column}  {FormatName(call.CallerDisplayName)} -> {target} " +
                 $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]");
         }
 
@@ -107,7 +109,7 @@ internal sealed class OutputFormatter(string format)
             Console.WriteLine("Callers:");
             foreach (var caller in result.EffectiveCallers)
             {
-                Console.WriteLine($"  {caller.DisplayName}");
+                Console.WriteLine($"  {FormatName(caller.DisplayName)}");
             }
         }
 
@@ -116,7 +118,7 @@ internal sealed class OutputFormatter(string format)
             Console.WriteLine("Possible runtime targets:");
             foreach (var relation in result.PossibleRuntimeTargets)
             {
-                Console.WriteLine($"  {relation.SourceDisplayName} [{relation.Kind}]");
+                Console.WriteLine($"  {FormatName(relation.SourceDisplayName)} [{relation.Kind}]");
             }
         }
     }
@@ -131,8 +133,8 @@ internal sealed class OutputFormatter(string format)
                 matched = result.Context.MatchedSymbols.Select(ToSymbolObject),
                 relations = result.Relations.Select(relation => new
                 {
-                    source = relation.SourceDisplayName,
-                    target = relation.TargetDisplayName,
+                    source = FormatName(relation.SourceDisplayName),
+                    target = FormatName(relation.TargetDisplayName),
                     kind = relation.Kind.ToString(),
                 }),
             });
@@ -142,7 +144,7 @@ internal sealed class OutputFormatter(string format)
         Console.WriteLine($"{result.Relations.Count} override(s):");
         foreach (var relation in result.Relations)
         {
-            Console.WriteLine($"  {relation.SourceDisplayName} -> {relation.TargetDisplayName}");
+            Console.WriteLine($"  {FormatName(relation.SourceDisplayName)} -> {FormatName(relation.TargetDisplayName)}");
         }
     }
 
@@ -176,12 +178,12 @@ internal sealed class OutputFormatter(string format)
         }
     }
 
-    private static object ToSymbolObject(StoredSymbol symbol) => new
+    private object ToSymbolObject(StoredSymbol symbol) => new
     {
         symbol.Id,
         symbol.StableKey,
         kind = symbol.Kind.ToString(),
-        symbol.DisplayName,
+        displayName = FormatName(symbol.DisplayName),
         symbol.FullyQualifiedName,
         symbol.NamespaceName,
         symbol.TypeSimpleName,
@@ -234,6 +236,10 @@ internal sealed class OutputFormatter(string format)
             return new SourcePoint(path, 0, 0, offset);
         }
     }
+
+    private string? FormatName(string? name) => _shortNames && name is not null
+        ? SymbolNameShortener.Shorten(name)
+        : name;
 
     private static void WriteJson(object value) => Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions
     {

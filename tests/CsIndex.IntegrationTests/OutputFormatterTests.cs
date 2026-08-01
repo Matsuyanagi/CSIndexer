@@ -15,6 +15,73 @@ public sealed class ConsoleOutputCollection
 [Collection(ConsoleOutputCollection.Name)]
 public sealed class OutputFormatterTests
 {
+    [Theory]
+    [InlineData(
+        "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.Func<System.Threading.CancellationToken,System.Threading.Tasks.Task>)",
+        "DistributedCacheLocker::RunWithHeartbeatAsync(String,TimeSpan,Func<CancellationToken,Task>)")]
+    [InlineData(
+        "Example.Handlers.Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])",
+        "Worker::Execute(Dictionary<String,List<Widget?[]>>,Nullable<Int32>[])")]
+    [InlineData(
+        "Example.Handlers.Worker::Run(System.Threading.Tasks.Task)::<lambda#1>",
+        "Worker::Run(Task)::<lambda#1>")]
+    public void SymbolNameShortenerRemovesNamespacesAndKeepsTypeSyntax(string name, string expected)
+    {
+        Assert.Equal(expected, SymbolNameShortener.Shorten(name));
+    }
+
+    [Fact]
+    public void WriteSymbolsJsonShortensDisplayNameButPreservesCanonicalFields()
+    {
+        const string displayName = "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String)";
+        var symbol = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            displayName: displayName,
+            parameters: [new StoredParameter(0, "name", "System.String", 0, false)]);
+        var context = new QueryContext(CreateProfile(), [symbol]);
+
+        using var document = CaptureJson(() => new OutputFormatter("json", shortNames: true).WriteSymbols(context));
+
+        var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(
+            "DistributedCacheLocker::RunWithHeartbeatAsync(String)",
+            outputSymbol.GetProperty("displayName").GetString());
+        Assert.Equal(displayName, outputSymbol.GetProperty("fullyQualifiedName").GetString());
+        Assert.Equal("System.String", Assert.Single(outputSymbol.GetProperty("parameters").EnumerateArray()).GetString());
+    }
+
+    [Fact]
+    public void WriteCallsTableShortensCallerAndCalleeNames()
+    {
+        var context = new QueryContext(CreateProfile(), []);
+        var call = CreateCall(AsyncUsageKind.None) with
+        {
+            CallerDisplayName = "Example.Features.Caller::Run(System.String)",
+            CalleeDisplayName = "Example.Services.Callee::Execute(System.Threading.Tasks.Task)",
+            CalleeDefinitionDisplayName = "Example.Services.Callee::Execute(System.Threading.Tasks.Task)",
+        };
+        var result = new CallResult(context, [call], [], []);
+
+        var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteCalls(result, "call(s)"));
+
+        Assert.Contains("Caller::Run(String) -> Callee::Execute(Task)", output);
+    }
+
+    [Fact]
+    public void WriteSymbolsTableKeepsCanonicalNamesByDefault()
+    {
+        const string displayName = "Example.Features.Worker::Run(System.Threading.Tasks.Task)";
+        var symbol = CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null, displayName: displayName);
+        var context = new QueryContext(CreateProfile(), [symbol]);
+
+        var output = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
+
+        Assert.Equal(
+            $"Query matched 1 symbol(s):{Environment.NewLine}  {displayName}{Environment.NewLine}",
+            output);
+    }
+
     [Fact]
     public void WriteSymbolsJsonIncludesAsyncAnalysis()
     {
@@ -109,7 +176,8 @@ public sealed class OutputFormatterTests
         AsyncRole asyncRole,
         int? asyncInvolvementDepth,
         long id = 1,
-        string displayName = "Example.Method()") => new(
+        string displayName = "Example.Method()",
+        IReadOnlyList<StoredParameter>? parameters = null) => new(
         Id: id,
         StableKey: $"symbol-{id}",
         Kind: IndexedSymbolKind.Method,
@@ -133,7 +201,7 @@ public sealed class OutputFormatterTests
         SourceLength: null,
         IsGenerated: false,
         AssemblyName: null,
-        Parameters: []);
+        Parameters: parameters ?? []);
 
     private static StoredCall CreateCall(AsyncUsageKind asyncUsageKind) => new(
         Id: 1,
