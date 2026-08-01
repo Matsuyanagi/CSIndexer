@@ -116,6 +116,42 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         return await ReadSymbolsAsync(connection, command, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<StoredSymbol>> FindFunctionSymbolsAsync(
+        long profileId,
+        IndexedSymbolKind? kind,
+        bool asyncInvolved,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                s.id, s.stable_key, s.kind, s.name, s.namespace_name,
+                s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
+                s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
+                s.is_static, s.is_abstract, s.is_virtual, s.is_override,
+                s.async_role, s.async_involvement_depth,
+                d.normalized_path, s.source_start, s.source_length, s.is_generated,
+                p.assembly_name
+            FROM symbols s
+            LEFT JOIN documents d ON d.id = s.source_document_id
+            LEFT JOIN projects p ON p.id = s.project_id
+            WHERE s.analysis_profile_id = $profile_id
+              AND (
+                  ($kind IS NOT NULL AND s.kind = $kind)
+                  OR ($kind IS NULL AND s.kind IN ($method_kind, $lambda_kind))
+              )
+              AND ($async_involved = 0 OR s.async_involvement_depth IS NOT NULL)
+            ORDER BY s.display_name, d.normalized_path, s.source_start;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
+        command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
+        command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+        command.Parameters.AddWithValue("$async_involved", asyncInvolved);
+        return await ReadSymbolsAsync(connection, command, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<StoredCall>> GetCallsByCalleeAsync(
         long profileId,
         IEnumerable<long> definitionIds,
@@ -178,6 +214,58 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                  OR ($generated_filter = 2 AND d.is_generated = 1))
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$generated_filter", (int)generatedFilter);
+        return await ReadCallsAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<StoredCall>> GetCallsByCallerIncludingLambdaDescendantsAsync(
+        long profileId,
+        IEnumerable<long> rootIds,
+        GeneratedFilter generatedFilter,
+        IReadOnlySet<ReferenceKind>? referenceKinds = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = rootIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var placeholders = AddIdParameters(command, ids);
+        var referenceClause = AddReferenceKindClause(command, referenceKinds);
+        command.CommandText = $"""
+            WITH RECURSIVE descendants(id) AS (
+                SELECT s.id
+                FROM symbols s
+                WHERE s.analysis_profile_id = $profile_id AND s.id IN ({placeholders})
+                UNION
+                SELECT child.id
+                FROM symbols child
+                JOIN descendants parent ON parent.id = child.containing_symbol_id
+                WHERE child.analysis_profile_id = $profile_id
+            )
+            {BuildCallSelect($"""
+                c.analysis_profile_id = $profile_id
+                AND (
+                    c.caller_symbol_id IN ({placeholders})
+                    OR EXISTS (
+                        SELECT 1
+                        FROM descendants descendant
+                        JOIN symbols caller ON caller.id = descendant.id
+                        WHERE descendant.id = c.caller_symbol_id
+                          AND caller.kind = $lambda_kind
+                    )
+                )
+                {referenceClause}
+                AND ($generated_filter = 0
+                     OR ($generated_filter = 1 AND d.is_generated = 0)
+                     OR ($generated_filter = 2 AND d.is_generated = 1))
+                """)}
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
         command.Parameters.AddWithValue("$generated_filter", (int)generatedFilter);
         return await ReadCallsAsync(command, cancellationToken);
     }

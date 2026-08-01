@@ -58,6 +58,101 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task FindFunctionSymbolsAsync_ReturnsFunctionKindsAndAsyncInvolvedSubset()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+        await index.SaveAsync(CreateLambdaCallSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+
+        var functions = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            kind: null,
+            asyncInvolved: false,
+            cancellationToken);
+        var lambdas = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            IndexedSymbolKind.Lambda,
+            asyncInvolved: false,
+            cancellationToken);
+        var asyncInvolved = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            kind: null,
+            asyncInvolved: true,
+            cancellationToken);
+
+        Assert.Equal(
+            ["Local", "Nested lambda", "Outer lambda", "Root", "Same", "Same", "Same", "Unrelated"],
+            functions.Select(symbol => symbol.Name).Order());
+        Assert.Equal(
+            ["same-generated", "same-source-earlier", "same-source-later"],
+            functions.Where(symbol => symbol.DisplayName == "Same").Select(symbol => symbol.StableKey));
+        Assert.Equal(
+            ["Nested lambda", "Outer lambda"],
+            lambdas.Select(symbol => symbol.Name).Order());
+        Assert.Equal(
+            ["Nested lambda", "Outer lambda", "Root"],
+            asyncInvolved.Select(symbol => symbol.Name).Order());
+    }
+
+    [Fact]
+    public async Task GetCallsByCallerIncludingLambdaDescendantsAsync_ReturnsRootsAndNestedLambdaCallers()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+        await index.SaveAsync(CreateLambdaCallSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var root = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Root",
+            cancellationToken: cancellationToken));
+
+        var allCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+            profile.Id,
+            [root.Id],
+            GeneratedFilter.Include,
+            referenceKinds: null,
+            cancellationToken);
+        var invocationCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+            profile.Id,
+            [root.Id],
+            GeneratedFilter.Include,
+            new HashSet<ReferenceKind> { ReferenceKind.Invocation },
+            cancellationToken);
+        var nonGeneratedCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+            profile.Id,
+            [root.Id],
+            GeneratedFilter.Exclude,
+            referenceKinds: null,
+            cancellationToken);
+        var generatedCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+            profile.Id,
+            [root.Id],
+            GeneratedFilter.Only,
+            referenceKinds: null,
+            cancellationToken);
+
+        Assert.Equal(
+            ["Nested lambda", "Outer lambda", "Root"],
+            allCalls.Select(call => call.CallerDisplayName).Order());
+        Assert.Equal(
+            ["Nested lambda", "Root"],
+            invocationCalls.Select(call => call.CallerDisplayName).Order());
+        Assert.Equal(
+            ["Outer lambda", "Root"],
+            nonGeneratedCalls.Select(call => call.CallerDisplayName).Order());
+        Assert.Equal(["Nested lambda"], generatedCalls.Select(call => call.CallerDisplayName));
+    }
+
+    [Fact]
     public async Task Save_FailureRollsBackPriorIndex()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -359,5 +454,78 @@ public sealed class SqliteIndexTests
             SourceLength = 6,
         });
         return snapshot;
+    }
+
+    private static IndexSnapshot CreateLambdaCallSnapshot(string root)
+    {
+        var snapshot = CreateSnapshot(root);
+        snapshot.Symbols.Clear();
+        snapshot.Calls.Clear();
+        snapshot.Documents.Add(new DocumentData
+        {
+            Key = "project|generated",
+            ProjectKey = "project",
+            NormalizedPath = Path.Combine(root, "Generated.cs"),
+            ContentHash = HashUtilities.Sha256("generated"),
+            IsGenerated = true,
+            GenerationKind = GenerationKind.FileName,
+        });
+        AddSymbol("root", IndexedSymbolKind.Method, "Root", null, 0, "project|source", 0);
+        AddSymbol("local", IndexedSymbolKind.Method, "Local", "root", null, "project|source", 10);
+        AddSymbol("outer", IndexedSymbolKind.Lambda, "Outer lambda", "local", 1, "project|source", 20);
+        AddSymbol("nested", IndexedSymbolKind.Lambda, "Nested lambda", "outer", 2, "project|generated", 30);
+        AddSymbol("unrelated", IndexedSymbolKind.Method, "Unrelated", null, null, "project|source", 40);
+        AddSymbol("same-generated", IndexedSymbolKind.Method, "Same", null, null, "project|generated", 100);
+        AddSymbol("same-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|source", 110);
+        AddSymbol("same-source-earlier", IndexedSymbolKind.Method, "Same", null, null, "project|source", 105);
+
+        AddCall("root", ReferenceKind.Invocation, "project|source", 50);
+        AddCall("local", ReferenceKind.Invocation, "project|source", 60);
+        AddCall("outer", ReferenceKind.MethodGroup, "project|source", 70);
+        AddCall("nested", ReferenceKind.Invocation, "project|generated", 80);
+        AddCall("unrelated", ReferenceKind.Invocation, "project|source", 90);
+        return snapshot;
+
+        void AddSymbol(
+            string stableKey,
+            IndexedSymbolKind kind,
+            string name,
+            string? containingSymbolKey,
+            int? asyncInvolvementDepth,
+            string documentKey,
+            int sourceStart)
+        {
+            snapshot.Symbols[stableKey] = new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = "project",
+                Kind = kind,
+                Name = name,
+                NamespaceName = string.Empty,
+                FullyQualifiedName = name,
+                DisplayName = name,
+                ContainingSymbolKey = containingSymbolKey,
+                AsyncInvolvementDepth = asyncInvolvementDepth,
+                SourceDocumentKey = documentKey,
+                SourceStart = sourceStart,
+                SourceLength = 5,
+            };
+        }
+
+        void AddCall(string callerSymbolKey, ReferenceKind referenceKind, string documentKey, int sourceStart)
+        {
+            snapshot.Calls.Add(new CallData
+            {
+                CallerSymbolKey = callerSymbolKey,
+                ReferenceKind = referenceKind,
+                DispatchKind = DispatchKind.Static,
+                ResolutionStatus = ResolutionStatus.Unresolved,
+                ResolutionReason = ResolutionReason.Unknown,
+                DocumentKey = documentKey,
+                SourceStart = sourceStart,
+                SourceLength = 1,
+                UnresolvedName = "Target",
+            });
+        }
     }
 }
