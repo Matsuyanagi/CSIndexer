@@ -187,6 +187,296 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         return result;
     }
 
+    public async Task<IReadOnlyList<StoredInheritedMethodCandidate>> FindInheritedMethodCandidatesAsync(
+        long profileId,
+        IEnumerable<long> receiverTypeIds,
+        string methodName,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = receiverTypeIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var placeholders = AddIdParameters(command, ids);
+        command.CommandText = $"""
+            WITH RECURSIVE ancestors(
+                receiver_type_id,
+                current_type_id,
+                receiver_type_kind,
+                depth,
+                path) AS (
+                SELECT
+                    receiver.id,
+                    receiver.id,
+                    receiver.type_kind,
+                    0,
+                    ',' || CAST(receiver.id AS TEXT) || ','
+                FROM symbols receiver
+                WHERE receiver.analysis_profile_id = $profile_id
+                  AND receiver.kind = $type_symbol_kind
+                  AND receiver.id IN ({placeholders})
+
+                UNION ALL
+
+                SELECT
+                    parent.receiver_type_id,
+                    relation.target_symbol_id,
+                    parent.receiver_type_kind,
+                    parent.depth + 1,
+                    parent.path || CAST(relation.target_symbol_id AS TEXT) || ','
+                FROM ancestors parent
+                JOIN symbol_relations relation
+                  ON relation.source_symbol_id = parent.current_type_id
+                JOIN symbols ancestor
+                  ON ancestor.id = relation.target_symbol_id
+                 AND ancestor.analysis_profile_id = $profile_id
+                 AND ancestor.kind = $type_symbol_kind
+                WHERE relation.analysis_profile_id = $profile_id
+                  AND (
+                      (parent.receiver_type_kind IN ($class_type_kind, $struct_type_kind)
+                       AND relation.relation_kind = $inherits_relation_kind)
+                      OR
+                      (parent.receiver_type_kind = $interface_type_kind
+                       AND relation.relation_kind = $implements_relation_kind)
+                  )
+                  AND instr(
+                      parent.path,
+                      ',' || CAST(relation.target_symbol_id AS TEXT) || ',') = 0
+            )
+            SELECT
+                ancestor.receiver_type_id,
+                method.id,
+                MIN(ancestor.depth)
+            FROM ancestors ancestor
+            JOIN symbols receiver
+              ON receiver.id = ancestor.receiver_type_id
+             AND receiver.analysis_profile_id = $profile_id
+            JOIN symbols method
+              ON method.containing_symbol_id = ancestor.current_type_id
+             AND method.analysis_profile_id = $profile_id
+             AND method.kind = $method_symbol_kind
+            LEFT JOIN projects receiver_project ON receiver_project.id = receiver.project_id
+            LEFT JOIN projects method_project ON method_project.id = method.project_id
+            WHERE ancestor.depth > 0
+              AND method.name = $method_name
+              AND (
+                  method.accessibility IN (
+                      $public_accessibility,
+                      $protected_accessibility,
+                      $protected_internal_accessibility)
+                  OR (
+                      method.accessibility IN (
+                          $internal_accessibility,
+                          $private_protected_accessibility)
+                      AND method_project.assembly_name = receiver_project.assembly_name
+                  )
+              )
+            GROUP BY ancestor.receiver_type_id, method.id
+            ORDER BY ancestor.receiver_type_id, MIN(ancestor.depth), method.id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$method_name", methodName);
+        command.Parameters.AddWithValue("$type_symbol_kind", (int)IndexedSymbolKind.Type);
+        command.Parameters.AddWithValue("$method_symbol_kind", (int)IndexedSymbolKind.Method);
+        command.Parameters.AddWithValue("$class_type_kind", (int)IndexedTypeKind.Class);
+        command.Parameters.AddWithValue("$struct_type_kind", (int)IndexedTypeKind.Struct);
+        command.Parameters.AddWithValue("$interface_type_kind", (int)IndexedTypeKind.Interface);
+        command.Parameters.AddWithValue("$inherits_relation_kind", (int)SymbolRelationKind.Inherits);
+        command.Parameters.AddWithValue("$implements_relation_kind", (int)SymbolRelationKind.Implements);
+        command.Parameters.AddWithValue("$public_accessibility", (int)IndexedAccessibility.Public);
+        command.Parameters.AddWithValue("$protected_accessibility", (int)IndexedAccessibility.Protected);
+        command.Parameters.AddWithValue(
+            "$protected_internal_accessibility",
+            (int)IndexedAccessibility.ProtectedOrInternal);
+        command.Parameters.AddWithValue("$internal_accessibility", (int)IndexedAccessibility.Internal);
+        command.Parameters.AddWithValue(
+            "$private_protected_accessibility",
+            (int)IndexedAccessibility.ProtectedAndInternal);
+
+        var result = new List<StoredInheritedMethodCandidate>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new StoredInheritedMethodCandidate(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetInt32(2)));
+        }
+
+        return result;
+    }
+
+    public async Task<IReadOnlyList<long>> ExpandOverrideMethodIdsAsync(
+        long profileId,
+        IEnumerable<MethodSearchSeed> seeds,
+        CancellationToken cancellationToken = default)
+    {
+        var values = seeds.Distinct().ToArray();
+        if (values.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var seedRows = AddMethodSearchSeedParameters(command, values);
+        command.CommandText = $"""
+            WITH RECURSIVE
+            input_seeds(root_method_id, receiver_type_id) AS (
+                VALUES {seedRows}
+            ),
+            seeds(root_method_id, receiver_type_id) AS (
+                SELECT input.root_method_id, input.receiver_type_id
+                FROM input_seeds input
+                JOIN symbols root_method
+                  ON root_method.id = input.root_method_id
+                 AND root_method.analysis_profile_id = $profile_id
+                 AND root_method.kind = $method_symbol_kind
+                JOIN symbols receiver
+                  ON receiver.id = input.receiver_type_id
+                 AND receiver.analysis_profile_id = $profile_id
+                 AND receiver.kind = $type_symbol_kind
+            ),
+            receiver_branch(root_method_id, receiver_type_id, type_id) AS (
+                SELECT seed.root_method_id, seed.receiver_type_id, seed.receiver_type_id
+                FROM seeds seed
+
+                UNION
+
+                SELECT branch.root_method_id, branch.receiver_type_id, relation.source_symbol_id
+                FROM receiver_branch branch
+                JOIN symbol_relations relation
+                  ON relation.target_symbol_id = branch.type_id
+                JOIN symbols descendant
+                  ON descendant.id = relation.source_symbol_id
+                 AND descendant.analysis_profile_id = $profile_id
+                 AND descendant.kind = $type_symbol_kind
+                WHERE relation.analysis_profile_id = $profile_id
+                  AND relation.relation_kind = $inherits_relation_kind
+            ),
+            override_methods(root_method_id, receiver_type_id, method_id) AS (
+                SELECT seed.root_method_id, seed.receiver_type_id, seed.root_method_id
+                FROM seeds seed
+
+                UNION
+
+                SELECT methods.root_method_id, methods.receiver_type_id, relation.source_symbol_id
+                FROM override_methods methods
+                JOIN symbol_relations relation
+                  ON relation.target_symbol_id = methods.method_id
+                JOIN symbols overriding_method
+                  ON overriding_method.id = relation.source_symbol_id
+                 AND overriding_method.analysis_profile_id = $profile_id
+                 AND overriding_method.kind = $method_symbol_kind
+                WHERE relation.analysis_profile_id = $profile_id
+                  AND relation.relation_kind = $overrides_relation_kind
+            )
+            SELECT DISTINCT methods.method_id
+            FROM override_methods methods
+            JOIN symbols method
+              ON method.id = methods.method_id
+             AND method.analysis_profile_id = $profile_id
+             AND method.kind = $method_symbol_kind
+            WHERE methods.method_id = methods.root_method_id
+               OR EXISTS (
+                   SELECT 1
+                   FROM receiver_branch branch
+                   WHERE branch.root_method_id = methods.root_method_id
+                     AND branch.receiver_type_id = methods.receiver_type_id
+                     AND branch.type_id = method.containing_symbol_id
+               )
+            ORDER BY methods.method_id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$method_symbol_kind", (int)IndexedSymbolKind.Method);
+        command.Parameters.AddWithValue("$type_symbol_kind", (int)IndexedSymbolKind.Type);
+        command.Parameters.AddWithValue("$inherits_relation_kind", (int)SymbolRelationKind.Inherits);
+        command.Parameters.AddWithValue("$overrides_relation_kind", (int)SymbolRelationKind.Overrides);
+        return await ReadIdsAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<long>> FindInterfaceImplementationMethodIdsAsync(
+        long profileId,
+        IEnumerable<InterfaceSearchSeed> seeds,
+        CancellationToken cancellationToken = default)
+    {
+        var values = seeds.Distinct().ToArray();
+        if (values.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var seedRows = AddInterfaceSearchSeedParameters(command, values);
+        command.CommandText = $"""
+            WITH RECURSIVE
+            input_seeds(interface_method_id, interface_scope_type_id) AS (
+                VALUES {seedRows}
+            ),
+            seeds(interface_method_id, interface_scope_type_id) AS (
+                SELECT input.interface_method_id, input.interface_scope_type_id
+                FROM input_seeds input
+                JOIN symbols interface_method
+                  ON interface_method.id = input.interface_method_id
+                 AND interface_method.analysis_profile_id = $profile_id
+                 AND interface_method.kind = $method_symbol_kind
+                JOIN symbols interface_scope
+                  ON interface_scope.id = input.interface_scope_type_id
+                 AND interface_scope.analysis_profile_id = $profile_id
+                 AND interface_scope.kind = $type_symbol_kind
+                 AND interface_scope.type_kind = $interface_type_kind
+            ),
+            assignable_types(interface_method_id, interface_scope_type_id, type_id) AS (
+                SELECT
+                    seed.interface_method_id,
+                    seed.interface_scope_type_id,
+                    seed.interface_scope_type_id
+                FROM seeds seed
+
+                UNION
+
+                SELECT
+                    assignable.interface_method_id,
+                    assignable.interface_scope_type_id,
+                    relation.source_symbol_id
+                FROM assignable_types assignable
+                JOIN symbol_relations relation
+                  ON relation.target_symbol_id = assignable.type_id
+                JOIN symbols implementing_type
+                  ON implementing_type.id = relation.source_symbol_id
+                 AND implementing_type.analysis_profile_id = $profile_id
+                 AND implementing_type.kind = $type_symbol_kind
+                WHERE relation.analysis_profile_id = $profile_id
+                  AND relation.relation_kind IN (
+                      $implements_relation_kind,
+                      $inherits_relation_kind)
+            )
+            SELECT DISTINCT binding.implementation_method_id
+            FROM assignable_types assignable
+            JOIN interface_method_bindings binding
+              ON binding.analysis_profile_id = $profile_id
+             AND binding.interface_method_id = assignable.interface_method_id
+             AND binding.implementing_type_id = assignable.type_id
+            JOIN symbols implementation_method
+              ON implementation_method.id = binding.implementation_method_id
+             AND implementation_method.analysis_profile_id = $profile_id
+             AND implementation_method.kind = $method_symbol_kind
+            ORDER BY binding.implementation_method_id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$method_symbol_kind", (int)IndexedSymbolKind.Method);
+        command.Parameters.AddWithValue("$type_symbol_kind", (int)IndexedSymbolKind.Type);
+        command.Parameters.AddWithValue("$interface_type_kind", (int)IndexedTypeKind.Interface);
+        command.Parameters.AddWithValue("$implements_relation_kind", (int)SymbolRelationKind.Implements);
+        command.Parameters.AddWithValue("$inherits_relation_kind", (int)SymbolRelationKind.Inherits);
+        return await ReadIdsAsync(command, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<StoredCall>> GetCallsByCalleeAsync(
         long profileId,
         IEnumerable<long> definitionIds,
@@ -616,6 +906,20 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         return result;
     }
 
+    private static async Task<IReadOnlyList<long>> ReadIdsAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<long>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(reader.GetInt64(0));
+        }
+
+        return result;
+    }
+
     private static string BuildCallSelect(string whereClause) => $"""
         SELECT
             c.id,
@@ -644,6 +948,40 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         }
 
         return string.Join(',', names);
+    }
+
+    private static string AddMethodSearchSeedParameters(
+        SqliteCommand command,
+        IReadOnlyList<MethodSearchSeed> seeds)
+    {
+        var rows = new string[seeds.Count];
+        for (var index = 0; index < seeds.Count; index++)
+        {
+            var methodName = $"$seed_method_id{index}";
+            var receiverName = $"$seed_receiver_type_id{index}";
+            command.Parameters.AddWithValue(methodName, seeds[index].MethodId);
+            command.Parameters.AddWithValue(receiverName, seeds[index].ReceiverTypeId);
+            rows[index] = $"({methodName}, {receiverName})";
+        }
+
+        return string.Join(',', rows);
+    }
+
+    private static string AddInterfaceSearchSeedParameters(
+        SqliteCommand command,
+        IReadOnlyList<InterfaceSearchSeed> seeds)
+    {
+        var rows = new string[seeds.Count];
+        for (var index = 0; index < seeds.Count; index++)
+        {
+            var methodName = $"$seed_interface_method_id{index}";
+            var scopeName = $"$seed_interface_scope_type_id{index}";
+            command.Parameters.AddWithValue(methodName, seeds[index].InterfaceMethodId);
+            command.Parameters.AddWithValue(scopeName, seeds[index].InterfaceScopeTypeId);
+            rows[index] = $"({methodName}, {scopeName})";
+        }
+
+        return string.Join(',', rows);
     }
 
     private static string AddReferenceKindClause(

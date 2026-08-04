@@ -88,7 +88,7 @@ public sealed class SqliteIndexTests
         Assert.Equal(3, RequestHasher.SchemaVersion);
         Assert.Equal((int)IndexedTypeKind.Interface, interfaceType.TypeKind);
         Assert.Equal((int)IndexedAccessibility.Public, interfaceType.Accessibility);
-        Assert.Equal(2, bindings.Count);
+        Assert.Equal(5, bindings.Count);
         Assert.All(bindings, binding => Assert.Equal(contract.Id, binding.InterfaceMethodId));
     }
 
@@ -182,6 +182,335 @@ public sealed class SqliteIndexTests
         Assert.NotEmpty(await repository.GetInterfaceMethodBindingsAsync(
             secondProfile.Id,
             [secondContract.Id],
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task FindInheritedMethodCandidatesAsync_ReturnsAccessibleAncestorsAndHonorsAssemblies()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var d1 = await GetSymbolAsync(repository, profile.Id, "D1", IndexedSymbolKind.Type, cancellationToken);
+        var otherBranch = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "OtherBranch",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+
+        var inherited = await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "Play",
+            cancellationToken);
+
+        Assert.Contains(inherited, row => row.ReceiverTypeId == d1.Id &&
+                                          row.MethodId == basePlay.Id &&
+                                          row.Depth == 1);
+        Assert.Empty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "PrivatePlay",
+            cancellationToken));
+        Assert.Empty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "InternalPlay",
+            cancellationToken));
+        Assert.Empty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "PrivateProtectedPlay",
+            cancellationToken));
+        Assert.NotEmpty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "ProtectedPlay",
+            cancellationToken));
+        Assert.NotEmpty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [d1.Id],
+            "ProtectedInternalPlay",
+            cancellationToken));
+        Assert.NotEmpty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [otherBranch.Id],
+            "InternalPlay",
+            cancellationToken));
+        Assert.NotEmpty(await repository.FindInheritedMethodCandidatesAsync(
+            profile.Id,
+            [otherBranch.Id],
+            "PrivateProtectedPlay",
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task ExpandOverrideMethodIdsAsync_RestrictsExpansionToReceiverBranchAndOrdersIds()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var d1 = await GetSymbolAsync(repository, profile.Id, "D1", IndexedSymbolKind.Type, cancellationToken);
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+        var d2Play = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "D2");
+        var otherPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "OtherBranch");
+
+        var branchMethods = await repository.ExpandOverrideMethodIdsAsync(
+            profile.Id,
+            [new MethodSearchSeed(basePlay.Id, d1.Id)],
+            cancellationToken);
+
+        Assert.Contains(basePlay.Id, branchMethods);
+        Assert.Contains(d2Play.Id, branchMethods);
+        Assert.DoesNotContain(otherPlay.Id, branchMethods);
+        Assert.Equal(branchMethods.Order(), branchMethods);
+        Assert.Equal(branchMethods.Count, branchMethods.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task FindInterfaceImplementationMethodIdsAsync_UsesExactInterfaceScope()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var iPlayable = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "IPlayable",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var iAdvancedPlayable = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "IAdvancedPlayable",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var interfacePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "IPlayable");
+        var pianistPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Pianist");
+        var proPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "ProPianist");
+        var gamePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Game");
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+        var d2Play = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "D2");
+        var otherPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "OtherBranch");
+
+        var interfaceMethods = await repository.FindInterfaceImplementationMethodIdsAsync(
+            profile.Id,
+            [new InterfaceSearchSeed(interfacePlay.Id, iPlayable.Id)],
+            cancellationToken);
+
+        Assert.Contains(pianistPlay.Id, interfaceMethods);
+        Assert.Contains(proPlay.Id, interfaceMethods);
+        Assert.Contains(gamePlay.Id, interfaceMethods);
+        Assert.Contains(basePlay.Id, interfaceMethods);
+        Assert.Contains(d2Play.Id, interfaceMethods);
+        Assert.DoesNotContain(otherPlay.Id, interfaceMethods);
+        Assert.Equal(interfaceMethods.Order(), interfaceMethods);
+        Assert.Equal(interfaceMethods.Count, interfaceMethods.Distinct().Count());
+
+        var derivedInterfaceMethods = await repository.FindInterfaceImplementationMethodIdsAsync(
+            profile.Id,
+            [new InterfaceSearchSeed(interfacePlay.Id, iAdvancedPlayable.Id)],
+            cancellationToken);
+
+        Assert.Contains(basePlay.Id, derivedInterfaceMethods);
+        Assert.Contains(d2Play.Id, derivedInterfaceMethods);
+        Assert.DoesNotContain(pianistPlay.Id, derivedInterfaceMethods);
+        Assert.DoesNotContain(proPlay.Id, derivedInterfaceMethods);
+        Assert.DoesNotContain(gamePlay.Id, derivedInterfaceMethods);
+        Assert.DoesNotContain(otherPlay.Id, derivedInterfaceMethods);
+    }
+
+    [Fact]
+    public async Task RecursiveGraphQueries_TerminateOnSelfAndMultiNodeCycles()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateCyclicOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var loop = await GetSymbolAsync(repository, profile.Id, "ILoop", IndexedSymbolKind.Type, cancellationToken);
+        var cycleA = await GetSymbolAsync(repository, profile.Id, "CycleA", IndexedSymbolKind.Type, cancellationToken);
+        var interfacePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "ILoop");
+        var cycleAPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "CycleA");
+        var cycleBPlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "CycleB");
+        var timeout = TimeSpan.FromSeconds(5);
+
+        var inherited = await repository.FindInheritedMethodCandidatesAsync(
+                profile.Id,
+                [cycleA.Id],
+                "Play",
+                cancellationToken)
+            .WaitAsync(timeout, cancellationToken);
+        var overrides = await repository.ExpandOverrideMethodIdsAsync(
+                profile.Id,
+                [new MethodSearchSeed(cycleAPlay.Id, cycleA.Id)],
+                cancellationToken)
+            .WaitAsync(timeout, cancellationToken);
+        var implementations = await repository.FindInterfaceImplementationMethodIdsAsync(
+                profile.Id,
+                [new InterfaceSearchSeed(interfacePlay.Id, loop.Id)],
+                cancellationToken)
+            .WaitAsync(timeout, cancellationToken);
+
+        Assert.Contains(inherited, row => row.MethodId == cycleBPlay.Id);
+        Assert.Equal(inherited.Count, inherited.Select(row => row.MethodId).Distinct().Count());
+        Assert.Equal(new[] { cycleAPlay.Id, cycleBPlay.Id }.Order(), overrides);
+        Assert.Equal(overrides.Count, overrides.Distinct().Count());
+        Assert.Equal(new[] { cycleAPlay.Id, cycleBPlay.Id }.Order(), implementations);
+        Assert.Equal(implementations.Count, implementations.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task CycleSafeGraphQueries_RespectAnalysisProfileIsolation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path, "graph"), cancellationToken);
+        await index.SaveAsync(CreateSnapshot(temporary.Path, "other"), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var graphProfile = await repository.GetProfileAsync("graph", cancellationToken);
+        var otherProfile = await repository.GetProfileAsync("other", cancellationToken);
+        var d1 = await GetSymbolAsync(
+            repository,
+            graphProfile.Id,
+            "D1",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var iPlayable = await GetSymbolAsync(
+            repository,
+            graphProfile.Id,
+            "IPlayable",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var basePlay = await GetSymbolAsync(
+            repository,
+            graphProfile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+        var interfacePlay = await GetSymbolAsync(
+            repository,
+            graphProfile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "IPlayable");
+
+        Assert.Empty(await repository.FindInheritedMethodCandidatesAsync(
+            otherProfile.Id,
+            [d1.Id],
+            "Play",
+            cancellationToken));
+        Assert.Empty(await repository.ExpandOverrideMethodIdsAsync(
+            otherProfile.Id,
+            [new MethodSearchSeed(basePlay.Id, d1.Id)],
+            cancellationToken));
+        Assert.Empty(await repository.FindInterfaceImplementationMethodIdsAsync(
+            otherProfile.Id,
+            [new InterfaceSearchSeed(interfacePlay.Id, iPlayable.Id)],
             cancellationToken));
     }
 
@@ -532,6 +861,22 @@ public sealed class SqliteIndexTests
             $"journalModeAfter={journalModeAfter}");
     }
 
+    private static async Task<StoredSymbol> GetSymbolAsync(
+        QueryRepository repository,
+        long profileId,
+        string name,
+        IndexedSymbolKind kind,
+        CancellationToken cancellationToken,
+        string? typeSimpleName = null)
+    {
+        return Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profileId,
+            name,
+            typeSimpleName,
+            kind,
+            cancellationToken: cancellationToken));
+    }
+
     private static IndexSnapshot CreateSnapshot(string root, string profileName = "test")
     {
         var inputFingerprint = HashUtilities.Sha256("input");
@@ -640,89 +985,241 @@ public sealed class SqliteIndexTests
         var snapshot = CreateSnapshot(root, profileName);
         snapshot.Symbols.Clear();
         snapshot.Calls.Clear();
+        snapshot.Projects.Add(new ProjectData
+        {
+            Key = "external-project",
+            Name = "ExternalProject",
+            AssemblyName = "ExternalProject",
+            Fingerprint = HashUtilities.Sha256("external-project"),
+        });
+        snapshot.Documents.Add(new DocumentData
+        {
+            Key = "external-project|source",
+            ProjectKey = "external-project",
+            NormalizedPath = Path.Combine(root, "ExternalSource.cs"),
+            ContentHash = HashUtilities.Sha256("external-source"),
+            IsGenerated = false,
+            GenerationKind = GenerationKind.None,
+        });
 
-        AddType("i-playable", "IPlayable", IndexedTypeKind.Interface, 0);
-        AddMethod("i-playable-play", "IPlayable", "i-playable", 10);
-        AddType("pianist", "Pianist", IndexedTypeKind.Class, 20);
-        AddMethod("pianist-play", "Pianist", "pianist", 30);
-        AddType("game", "Game", IndexedTypeKind.Class, 40);
-        AddMethod("game-play", "Game", "game", 50);
-        snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
-        {
-            ImplementingTypeKey = "pianist",
-            InterfaceMethodKey = "i-playable-play",
-            ImplementationMethodKey = "pianist-play",
-        });
-        snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
-        {
-            ImplementingTypeKey = "game",
-            InterfaceMethodKey = "i-playable-play",
-            ImplementationMethodKey = "game-play",
-        });
+        AddGraphType(snapshot, "i-playable", "IPlayable", IndexedTypeKind.Interface, 0);
+        AddGraphMethod(snapshot, "i-playable-play", "IPlayable", "i-playable", "Play", 10);
+        AddGraphType(snapshot, "i-advanced-playable", "IAdvancedPlayable", IndexedTypeKind.Interface, 20);
+        AddGraphType(snapshot, "pianist", "Pianist", IndexedTypeKind.Class, 30);
+        AddGraphMethod(snapshot, "pianist-play", "Pianist", "pianist", "Play", 40, isVirtual: true);
+        AddGraphType(snapshot, "pro-pianist", "ProPianist", IndexedTypeKind.Class, 50);
+        AddGraphMethod(snapshot, "pro-pianist-play", "ProPianist", "pro-pianist", "Play", 60, isOverride: true);
+        AddGraphType(snapshot, "game", "Game", IndexedTypeKind.Class, 70);
+        AddGraphMethod(snapshot, "game-play", "Game", "game", "Play", 80);
+        AddGraphType(snapshot, "base", "Base", IndexedTypeKind.Class, 90);
+        AddGraphMethod(snapshot, "base-play", "Base", "base", "Play", 100, isVirtual: true);
+        AddGraphMethod(
+            snapshot,
+            "base-private-play",
+            "Base",
+            "base",
+            "PrivatePlay",
+            110,
+            IndexedAccessibility.Private);
+        AddGraphMethod(
+            snapshot,
+            "base-internal-play",
+            "Base",
+            "base",
+            "InternalPlay",
+            120,
+            IndexedAccessibility.Internal);
+        AddGraphMethod(
+            snapshot,
+            "base-private-protected-play",
+            "Base",
+            "base",
+            "PrivateProtectedPlay",
+            130,
+            IndexedAccessibility.ProtectedAndInternal);
+        AddGraphMethod(
+            snapshot,
+            "base-protected-play",
+            "Base",
+            "base",
+            "ProtectedPlay",
+            140,
+            IndexedAccessibility.Protected);
+        AddGraphMethod(
+            snapshot,
+            "base-protected-internal-play",
+            "Base",
+            "base",
+            "ProtectedInternalPlay",
+            150,
+            IndexedAccessibility.ProtectedOrInternal);
+        AddGraphType(snapshot, "d1", "D1", IndexedTypeKind.Class, 160, "external-project");
+        AddGraphType(snapshot, "d2", "D2", IndexedTypeKind.Class, 170, "external-project");
+        AddGraphMethod(
+            snapshot,
+            "d2-play",
+            "D2",
+            "d2",
+            "Play",
+            180,
+            projectKey: "external-project",
+            isOverride: true);
+        AddGraphType(snapshot, "other-branch", "OtherBranch", IndexedTypeKind.Class, 190);
+        AddGraphMethod(
+            snapshot,
+            "other-branch-play",
+            "OtherBranch",
+            "other-branch",
+            "Play",
+            200,
+            isOverride: true);
+
+        AddGraphRelation(snapshot, "i-advanced-playable", "i-playable", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "pianist", "i-playable", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "pro-pianist", "pianist", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "game", "i-playable", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "d1", "base", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "d1", "i-playable", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "d1", "i-advanced-playable", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "d2", "d1", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "other-branch", "base", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "pro-pianist-play", "pianist-play", SymbolRelationKind.Overrides);
+        AddGraphRelation(snapshot, "d2-play", "base-play", SymbolRelationKind.Overrides);
+        AddGraphRelation(snapshot, "other-branch-play", "base-play", SymbolRelationKind.Overrides);
+
+        AddGraphBinding(snapshot, "pianist", "i-playable-play", "pianist-play");
+        AddGraphBinding(snapshot, "pro-pianist", "i-playable-play", "pro-pianist-play");
+        AddGraphBinding(snapshot, "game", "i-playable-play", "game-play");
+        AddGraphBinding(snapshot, "d1", "i-playable-play", "base-play");
+        AddGraphBinding(snapshot, "d2", "i-playable-play", "d2-play");
         if (includeBindingOrderFixture)
         {
-            AddType("i-left", "ILeft", IndexedTypeKind.Interface, 60);
-            AddMethod("i-left-play", "ILeft", "i-left", 70);
-            AddType("i-right", "IRight", IndexedTypeKind.Interface, 80);
-            AddMethod("i-right-play", "IRight", "i-right", 90);
-            AddType("dual-player", "DualPlayer", IndexedTypeKind.Class, 100);
-            AddMethod("dual-player-play", "DualPlayer", "dual-player", 110);
-            snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
-            {
-                ImplementingTypeKey = "dual-player",
-                InterfaceMethodKey = "i-right-play",
-                ImplementationMethodKey = "dual-player-play",
-            });
-            snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
-            {
-                ImplementingTypeKey = "dual-player",
-                InterfaceMethodKey = "i-left-play",
-                ImplementationMethodKey = "dual-player-play",
-            });
+            AddGraphType(snapshot, "i-left", "ILeft", IndexedTypeKind.Interface, 210);
+            AddGraphMethod(snapshot, "i-left-play", "ILeft", "i-left", "Play", 220);
+            AddGraphType(snapshot, "i-right", "IRight", IndexedTypeKind.Interface, 230);
+            AddGraphMethod(snapshot, "i-right-play", "IRight", "i-right", "Play", 240);
+            AddGraphType(snapshot, "dual-player", "DualPlayer", IndexedTypeKind.Class, 250);
+            AddGraphMethod(snapshot, "dual-player-play", "DualPlayer", "dual-player", "Play", 260);
+            AddGraphBinding(snapshot, "dual-player", "i-right-play", "dual-player-play");
+            AddGraphBinding(snapshot, "dual-player", "i-left-play", "dual-player-play");
         }
+
         return snapshot;
+    }
 
-        void AddType(string stableKey, string name, IndexedTypeKind typeKind, int sourceStart)
-        {
-            snapshot.Symbols[stableKey] = new SymbolData
-            {
-                StableKey = stableKey,
-                ProjectKey = "project",
-                Kind = IndexedSymbolKind.Type,
-                Name = name,
-                NamespaceName = string.Empty,
-                TypeSimpleName = name,
-                TypeMetadataName = name,
-                FullyQualifiedName = name,
-                DisplayName = name,
-                TypeKind = (int)typeKind,
-                Accessibility = (int)IndexedAccessibility.Public,
-                SourceDocumentKey = "project|source",
-                SourceStart = sourceStart,
-                SourceLength = name.Length,
-            };
-        }
+    private static IndexSnapshot CreateCyclicOverrideSearchSnapshot(string root)
+    {
+        var snapshot = CreateSnapshot(root, "cycle");
+        snapshot.Symbols.Clear();
+        snapshot.Calls.Clear();
 
-        void AddMethod(string stableKey, string typeName, string containingTypeKey, int sourceStart)
+        AddGraphType(snapshot, "i-loop", "ILoop", IndexedTypeKind.Interface, 0);
+        AddGraphMethod(snapshot, "i-loop-play", "ILoop", "i-loop", "Play", 10);
+        AddGraphType(snapshot, "cycle-a", "CycleA", IndexedTypeKind.Class, 20);
+        AddGraphMethod(snapshot, "cycle-a-play", "CycleA", "cycle-a", "Play", 30, isVirtual: true);
+        AddGraphType(snapshot, "cycle-b", "CycleB", IndexedTypeKind.Class, 40);
+        AddGraphMethod(snapshot, "cycle-b-play", "CycleB", "cycle-b", "Play", 50, isOverride: true);
+
+        AddGraphRelation(snapshot, "i-loop", "i-loop", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "cycle-a", "i-loop", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "cycle-a", "cycle-a", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "cycle-a", "cycle-b", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "cycle-b", "cycle-a", SymbolRelationKind.Inherits);
+        AddGraphRelation(snapshot, "cycle-a-play", "cycle-a-play", SymbolRelationKind.Overrides);
+        AddGraphRelation(snapshot, "cycle-b-play", "cycle-a-play", SymbolRelationKind.Overrides);
+        AddGraphRelation(snapshot, "cycle-a-play", "cycle-b-play", SymbolRelationKind.Overrides);
+
+        AddGraphBinding(snapshot, "cycle-a", "i-loop-play", "cycle-a-play");
+        AddGraphBinding(snapshot, "cycle-b", "i-loop-play", "cycle-b-play");
+        return snapshot;
+    }
+
+    private static void AddGraphType(
+        IndexSnapshot snapshot,
+        string stableKey,
+        string name,
+        IndexedTypeKind typeKind,
+        int sourceStart,
+        string projectKey = "project")
+    {
+        snapshot.Symbols[stableKey] = new SymbolData
         {
-            snapshot.Symbols[stableKey] = new SymbolData
-            {
-                StableKey = stableKey,
-                ProjectKey = "project",
-                Kind = IndexedSymbolKind.Method,
-                Name = "Play",
-                NamespaceName = string.Empty,
-                TypeSimpleName = typeName,
-                FullyQualifiedName = $"{typeName}.Play()",
-                DisplayName = $"{typeName}.Play()",
-                ContainingSymbolKey = containingTypeKey,
-                ParameterCount = 0,
-                Accessibility = (int)IndexedAccessibility.Public,
-                SourceDocumentKey = "project|source",
-                SourceStart = sourceStart,
-                SourceLength = 4,
-            };
-        }
+            StableKey = stableKey,
+            ProjectKey = projectKey,
+            Kind = IndexedSymbolKind.Type,
+            Name = name,
+            NamespaceName = string.Empty,
+            TypeSimpleName = name,
+            TypeMetadataName = name,
+            FullyQualifiedName = name,
+            DisplayName = name,
+            TypeKind = (int)typeKind,
+            Accessibility = (int)IndexedAccessibility.Public,
+            SourceDocumentKey = $"{projectKey}|source",
+            SourceStart = sourceStart,
+            SourceLength = name.Length,
+        };
+    }
+
+    private static void AddGraphMethod(
+        IndexSnapshot snapshot,
+        string stableKey,
+        string typeName,
+        string containingTypeKey,
+        string methodName,
+        int sourceStart,
+        IndexedAccessibility accessibility = IndexedAccessibility.Public,
+        string projectKey = "project",
+        bool isVirtual = false,
+        bool isOverride = false)
+    {
+        snapshot.Symbols[stableKey] = new SymbolData
+        {
+            StableKey = stableKey,
+            ProjectKey = projectKey,
+            Kind = IndexedSymbolKind.Method,
+            Name = methodName,
+            NamespaceName = string.Empty,
+            TypeSimpleName = typeName,
+            FullyQualifiedName = $"{typeName}.{methodName}()",
+            DisplayName = $"{typeName}.{methodName}()",
+            ContainingSymbolKey = containingTypeKey,
+            ParameterCount = 0,
+            Accessibility = (int)accessibility,
+            IsVirtual = isVirtual,
+            IsOverride = isOverride,
+            SourceDocumentKey = $"{projectKey}|source",
+            SourceStart = sourceStart,
+            SourceLength = methodName.Length,
+        };
+    }
+
+    private static void AddGraphRelation(
+        IndexSnapshot snapshot,
+        string sourceSymbolKey,
+        string targetSymbolKey,
+        SymbolRelationKind relationKind)
+    {
+        snapshot.Relations.Add(new SymbolRelationData
+        {
+            SourceSymbolKey = sourceSymbolKey,
+            TargetSymbolKey = targetSymbolKey,
+            RelationKind = relationKind,
+        });
+    }
+
+    private static void AddGraphBinding(
+        IndexSnapshot snapshot,
+        string implementingTypeKey,
+        string interfaceMethodKey,
+        string implementationMethodKey)
+    {
+        snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+        {
+            ImplementingTypeKey = implementingTypeKey,
+            InterfaceMethodKey = interfaceMethodKey,
+            ImplementationMethodKey = implementationMethodKey,
+        });
     }
 
     private static IndexSnapshot CreateLambdaCallSnapshot(string root)

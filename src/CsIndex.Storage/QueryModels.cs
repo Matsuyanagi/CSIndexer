@@ -54,6 +54,12 @@ public sealed record StoredInterfaceMethodBinding(
     long InterfaceMethodId,
     long ImplementationMethodId);
 
+public sealed record StoredInheritedMethodCandidate(long ReceiverTypeId, long MethodId, int Depth);
+
+public sealed record MethodSearchSeed(long MethodId, long ReceiverTypeId);
+
+public sealed record InterfaceSearchSeed(long InterfaceMethodId, long InterfaceScopeTypeId);
+
 public sealed record StoredCall(
     long Id,
     long CallerSymbolId,
