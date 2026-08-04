@@ -57,6 +57,7 @@ public sealed record SymbolData
     public string? ContainingSymbolKey { get; init; }
     public int Arity { get; init; }
     public int? ParameterCount { get; init; }
+    public int? TypeKind { get; init; }
     public int? MethodKind { get; init; }
     public int? Accessibility { get; init; }
     public bool IsStatic { get; init; }
@@ -97,6 +98,13 @@ public sealed record SymbolRelationData
     public required SymbolRelationKind RelationKind { get; init; }
 }
 
+public sealed record InterfaceMethodBindingData
+{
+    public required string ImplementingTypeKey { get; init; }
+    public required string InterfaceMethodKey { get; init; }
+    public required string ImplementationMethodKey { get; init; }
+}
+
 public sealed record ConditionalSymbolData
 {
     public required string DocumentKey { get; init; }
@@ -122,6 +130,7 @@ public sealed class IndexSnapshot
     public Dictionary<string, SymbolData> Symbols { get; } = new(StringComparer.Ordinal);
     public List<CallData> Calls { get; } = [];
     public List<SymbolRelationData> Relations { get; } = [];
+    public List<InterfaceMethodBindingData> InterfaceMethodBindings { get; } = [];
     public List<ConditionalSymbolData> ConditionalSymbols { get; } = [];
     public List<CompilationSummary> CompilationSummaries { get; } = [];
     public List<string> MetadataReferences { get; } = [];

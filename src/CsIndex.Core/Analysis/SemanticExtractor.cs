@@ -12,6 +12,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 {
     private readonly Dictionary<ISymbol, string> _sourceSymbolKeys = new(SymbolEqualityComparer.Default);
     private readonly HashSet<(string Source, string Target, SymbolRelationKind Kind)> _relationKeys = [];
+    private readonly HashSet<(string ImplementingType, string InterfaceMethod, string ImplementationMethod)>
+        _interfaceMethodBindingKeys = [];
     private readonly List<ProjectAnalysisState> _projectStates = [];
     private IndexSnapshot _snapshot = null!;
     private SymbolCanonicalizer _canonicalizer = null!;
@@ -28,6 +30,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         _projectStates.Clear();
         _sourceSymbolKeys.Clear();
         _relationKeys.Clear();
+        _interfaceMethodBindingKeys.Clear();
 
         foreach (var project in projects)
         {
@@ -466,6 +469,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             }
 
             var sourceKey = EnsureType(type);
+            if (type.TypeKind is TypeKind.Class or TypeKind.Struct)
+            {
+                ExtractInterfaceMethodBindings(type);
+            }
+
             if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
             {
                 AddRelation(sourceKey, EnsureType(baseType.OriginalDefinition), SymbolRelationKind.Inherits);
@@ -543,6 +551,68 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     SymbolRelationKind.PartialImplementation);
             }
         }
+    }
+
+    private void ExtractInterfaceMethodBindings(INamedTypeSymbol type)
+    {
+        var implementingTypeKey = EnsureType(type);
+        foreach (var interfaceType in type.AllInterfaces)
+        {
+            foreach (var interfaceMethod in interfaceType.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (type.FindImplementationForInterfaceMember(interfaceMethod) is not IMethodSymbol implementation)
+                {
+                    _snapshot.Diagnostics.Add(
+                        $"Interface method implementation was not resolved for '{type.ToDisplayString()}' " +
+                        $"and '{interfaceMethod.ToDisplayString()}'.");
+                    continue;
+                }
+
+                implementation = ResolveContextualImplementation(type, implementation);
+
+                var interfaceMethodKey = EnsureMethod(
+                    _canonicalizer.NormalizeMethod(interfaceMethod),
+                    actualTarget: false);
+                var implementationMethodKey = EnsureMethod(
+                    _canonicalizer.NormalizeMethod(implementation),
+                    actualTarget: false);
+                var key = (implementingTypeKey, interfaceMethodKey, implementationMethodKey);
+                if (_interfaceMethodBindingKeys.Add(key))
+                {
+                    _snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+                    {
+                        ImplementingTypeKey = implementingTypeKey,
+                        InterfaceMethodKey = interfaceMethodKey,
+                        ImplementationMethodKey = implementationMethodKey,
+                    });
+                }
+            }
+        }
+    }
+
+    private static IMethodSymbol ResolveContextualImplementation(
+        INamedTypeSymbol implementingType,
+        IMethodSymbol implementation)
+    {
+        for (var currentType = implementingType; currentType is not null; currentType = currentType.BaseType)
+        {
+            foreach (var candidate in currentType.GetMembers(implementation.Name).OfType<IMethodSymbol>())
+            {
+                for (var overridden = candidate.OverriddenMethod;
+                     overridden is not null;
+                     overridden = overridden.OverriddenMethod)
+                {
+                    if (SymbolEqualityComparer.Default.Equals(
+                            overridden.OriginalDefinition,
+                            implementation.OriginalDefinition))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        return implementation;
     }
 
     private void CreateInitializerOwners(

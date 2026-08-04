@@ -68,6 +68,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             DisplayName = display,
             ContainingSymbolKey = type.ContainingType is null ? null : GetDefinitionStableKey(type.ContainingType),
             Arity = type.Arity,
+            TypeKind = (int)type.TypeKind,
             Accessibility = (int)type.DeclaredAccessibility,
             IsStatic = type.IsStatic,
             IsAbstract = type.IsAbstract,
