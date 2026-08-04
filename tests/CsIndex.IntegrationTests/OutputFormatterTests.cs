@@ -225,7 +225,9 @@ public sealed class OutputFormatterTests
         SourceLength: null,
         IsGenerated: false,
         AssemblyName: null,
-        Parameters: parameters ?? []);
+        Parameters: parameters ?? [],
+        TypeKind: null,
+        Accessibility: null);
 
     private static StoredCall CreateCall(AsyncUsageKind asyncUsageKind) => new(
         Id: 1,

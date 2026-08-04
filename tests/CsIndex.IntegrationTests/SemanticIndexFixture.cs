@@ -30,6 +30,71 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void Play() { }
             }
 
+            public interface IPlayable { void Play(); }
+            public interface IAdvancedPlayable : IPlayable { }
+
+            public class Pianist : IPlayable
+            {
+                public virtual void Play() => PianistBody();
+                private void PianistBody() { }
+            }
+
+            public class ProPianist : Pianist
+            {
+                public override void Play() => ProPianistBody();
+                private void ProPianistBody() { }
+            }
+
+            public class Game : IPlayable
+            {
+                public void Play() => GameBody();
+                private void GameBody() { }
+            }
+
+            public class Baseball
+            {
+                public void Play() => BaseballBody();
+                private void BaseballBody() { }
+            }
+
+            public class InheritedBase
+            {
+                public virtual void Play() => BaseBody();
+                private void BaseBody() { }
+            }
+
+            public class D1 : InheritedBase, IAdvancedPlayable { }
+
+            public class D2 : D1
+            {
+                public override void Play() => D2Body();
+                private void D2Body() { }
+            }
+
+            public class OtherBranch : InheritedBase
+            {
+                public override void Play() => OtherBody();
+                private void OtherBody() { }
+            }
+
+            public class HidingPlayer : D1
+            {
+                public new void Play() => HiddenBody();
+                private void HiddenBody() { }
+            }
+
+            public class HidingBase
+            {
+                public void Select(int value) { }
+            }
+
+            public class HidingMiddle : HidingBase
+            {
+                public void Select(string value) { }
+            }
+
+            public class HidingLeaf : HidingMiddle { }
+
             public class DistinctCaller
             {
                 public void Execute(AClass a, BClass b)

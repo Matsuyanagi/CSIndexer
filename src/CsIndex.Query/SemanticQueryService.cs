@@ -10,15 +10,33 @@ public sealed class SemanticQueryService(QueryRepository repository)
         new HashSet<ReferenceKind> { ReferenceKind.Invocation, ReferenceKind.ObjectCreation };
 
     private readonly SymbolQueryParser _parser = new();
+    private readonly MethodTargetResolver _methodTargetResolver = new(repository);
 
     public async Task<QueryContext> FindSymbolsAsync(
         string queryText,
         string? profileName = null,
         bool sourceOnly = false,
+        bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
         var profile = await repository.GetProfileAsync(profileName, cancellationToken);
         var query = _parser.Parse(queryText);
+        if (includeOverrides && !query.IsMethodQuery)
+        {
+            throw new SymbolQueryParseException("--include-overrides requires a method query.");
+        }
+
+        if (query.IsMethodQuery)
+        {
+            var methodTargets = await _methodTargetResolver.ResolveAsync(
+                profile.Id,
+                query,
+                includeOverrides,
+                sourceOnly,
+                cancellationToken);
+            return new QueryContext(profile, methodTargets);
+        }
+
         var candidates = await repository.FindSymbolCandidatesAsync(
             profile.Id,
             query.MethodName,
@@ -48,11 +66,22 @@ public sealed class SemanticQueryService(QueryRepository repository)
     public async Task<DefinitionResult> FindDefinitionsAsync(
         string queryText,
         string? profileName = null,
+        bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
+        var context = await FindTargetSymbolsAsync(
+            queryText,
+            profileName,
+            includeOverrides,
+            cancellationToken);
         return new DefinitionResult(context, context.MatchedSymbols);
     }
+
+    public Task<DefinitionResult> FindDefinitionsAsync(
+        string queryText,
+        string? profileName,
+        CancellationToken cancellationToken) =>
+        FindDefinitionsAsync(queryText, profileName, includeOverrides: false, cancellationToken);
 
     public async Task<DefinitionResult> FindDefinitionAtAsync(
         string location,
@@ -94,7 +123,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
+        var context = await FindTargetSymbolsAsync(
+            queryText,
+            profileName,
+            includeOverrides: false,
+            cancellationToken);
         var calls = await repository.GetCallsByCalleeAsync(
             context.Profile.Id,
             context.MatchedSymbols.Select(symbol => symbol.Id),
@@ -111,7 +144,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
+        var context = await FindTargetSymbolsAsync(
+            queryText,
+            profileName,
+            includeOverrides: false,
+            cancellationToken);
         var calls = await repository.GetCallsByCalleeAsync(
             context.Profile.Id,
             context.MatchedSymbols.Select(symbol => symbol.Id),
@@ -151,7 +188,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
+        var context = await FindTargetSymbolsAsync(
+            queryText,
+            profileName,
+            includeOverrides: false,
+            cancellationToken);
         var calls = includeLambdaCalls
             ? await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
                 context.Profile.Id,
@@ -180,7 +221,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(queryText, profileName, cancellationToken);
+        var context = await FindTargetSymbolsAsync(
+            queryText,
+            profileName,
+            includeOverrides: false,
+            cancellationToken);
         var relations = await repository.GetRelationsByTargetAsync(
             context.Profile.Id,
             context.MatchedSymbols.Select(symbol => symbol.Id),
@@ -225,12 +270,14 @@ public sealed class SemanticQueryService(QueryRepository repository)
     private async Task<QueryContext> FindTargetSymbolsAsync(
         string queryText,
         string? profileName,
+        bool includeOverrides,
         CancellationToken cancellationToken)
     {
         var sourceContext = await FindSymbolsAsync(
             queryText,
             profileName,
             sourceOnly: true,
+            includeOverrides,
             cancellationToken);
         if (sourceContext.MatchedSymbols.Count > 0)
         {
@@ -241,6 +288,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
             queryText,
             profileName,
             sourceOnly: false,
+            includeOverrides,
             cancellationToken);
         return metadataContext with
         {

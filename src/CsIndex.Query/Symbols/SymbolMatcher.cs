@@ -9,9 +9,7 @@ public static class SymbolMatcher
     {
         if (query.IsMethodQuery)
         {
-            if (symbol.Kind != IndexedSymbolKind.Method ||
-                symbol.Name != query.MethodName ||
-                symbol.TypeSimpleName != query.TypeSimpleName)
+            if (symbol.TypeSimpleName != query.TypeSimpleName)
             {
                 return false;
             }
@@ -26,24 +24,24 @@ public static class SymbolMatcher
             return false;
         }
 
+        return !query.IsMethodQuery || IsMethodSignatureMatch(query, symbol);
+    }
+
+    public static bool IsMethodSignatureMatch(SymbolQuery query, StoredSymbol symbol)
+    {
+        if (!query.IsMethodQuery || symbol.Kind != IndexedSymbolKind.Method ||
+            symbol.Name != query.MethodName)
+        {
+            return false;
+        }
+
         if (query.ParameterTypes is null)
         {
             return true;
         }
 
-        if (symbol.Parameters.Count != query.ParameterTypes.Count)
-        {
-            return false;
-        }
-
-        for (var index = 0; index < symbol.Parameters.Count; index++)
-        {
-            if (TypeNameNormalizer.Normalize(symbol.Parameters[index].TypeKey) != query.ParameterTypes[index])
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return symbol.Parameters.Count == query.ParameterTypes.Count &&
+               symbol.Parameters.Select(parameter => TypeNameNormalizer.Normalize(parameter.TypeKey))
+                   .SequenceEqual(query.ParameterTypes);
     }
 }

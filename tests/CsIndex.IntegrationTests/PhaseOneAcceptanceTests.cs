@@ -60,6 +60,108 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task IncludeOverridesExpandsInterfaceAndConcreteTargetsDownward()
+    {
+        await fixture.BuildTask;
+        var interfaceResult = await fixture.Query.FindSymbolsAsync(
+            "Alpha.IPlayable::Play()", includeOverrides: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(
+            ["Alpha.D2::Play()", "Alpha.Game::Play()", "Alpha.IPlayable::Play()",
+             "Alpha.InheritedBase::Play()", "Alpha.Pianist::Play()", "Alpha.ProPianist::Play()"],
+            interfaceResult.MatchedSymbols.Select(symbol => symbol.DisplayName).Order(StringComparer.Ordinal));
+
+        var concreteResult = await fixture.Query.FindSymbolsAsync(
+            "Alpha.Pianist::Play()", includeOverrides: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(
+            ["Alpha.Pianist::Play()", "Alpha.ProPianist::Play()"],
+            concreteResult.MatchedSymbols.Select(symbol => symbol.DisplayName).Order());
+    }
+
+    [Fact]
+    public async Task IncludeOverridesResolvesInheritedAliasWithinReceiverBranch()
+    {
+        await fixture.BuildTask;
+        var result = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.D1::Play()", includeOverrides: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(
+            ["Alpha.D2::Play()", "Alpha.InheritedBase::Play()"],
+            result.Definitions.Select(symbol => symbol.DisplayName).Order());
+        Assert.DoesNotContain(result.Definitions, symbol => symbol.TypeSimpleName == "D1");
+        Assert.DoesNotContain(result.Definitions, symbol => symbol.TypeSimpleName == "OtherBranch");
+    }
+
+    [Fact]
+    public async Task DerivedInterfaceAliasDoesNotIncludeBaseInterfaceSiblingImplementations()
+    {
+        await fixture.BuildTask;
+        var result = await fixture.Query.FindSymbolsAsync(
+            "Alpha.IAdvancedPlayable::Play()", includeOverrides: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "InheritedBase");
+        Assert.Contains(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "D2");
+        Assert.DoesNotContain(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "Game");
+    }
+
+    [Fact]
+    public async Task InheritedAliasRequiresOverrideExpansion()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.FindSymbolsAsync(
+            "Alpha.D1::Play()",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Empty(result.MatchedSymbols);
+    }
+
+    [Fact]
+    public async Task HidingMethodResolvesToItsRealDeclarationOnly()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.HidingPlayer::Play()", includeOverrides: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var definition = Assert.Single(result.Definitions);
+        Assert.Equal("Alpha.HidingPlayer::Play()", definition.DisplayName);
+    }
+
+    [Fact]
+    public async Task SameNameDeclarationSuppressesDeeperBaseOverloads()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var visible = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.HidingLeaf::Select(string)", includeOverrides: true,
+            cancellationToken: cancellationToken);
+        var hidden = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.HidingLeaf::Select(int)", includeOverrides: true,
+            cancellationToken: cancellationToken);
+
+        var definition = Assert.Single(visible.Definitions);
+        Assert.Equal("Alpha.HidingMiddle::Select(System.String)", definition.DisplayName);
+        Assert.Empty(hidden.Definitions);
+    }
+
+    [Fact]
+    public async Task IncludeOverridesRejectsTypeQueries()
+    {
+        await fixture.BuildTask;
+
+        var exception = await Assert.ThrowsAsync<CsIndex.Query.Symbols.SymbolQueryParseException>(
+            () => fixture.Query.FindSymbolsAsync(
+                "Alpha.D1", includeOverrides: true,
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal("--include-overrides requires a method query.", exception.Message);
+    }
+
+    [Fact]
     public async Task CommentsDoNotCreateCalls()
     {
         await fixture.BuildTask;
