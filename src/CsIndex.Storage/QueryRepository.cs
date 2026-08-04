@@ -110,7 +110,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             LEFT JOIN documents d ON d.id = s.source_document_id
             LEFT JOIN projects p ON p.id = s.project_id
             WHERE s.analysis_profile_id = $profile_id AND s.id IN ({placeholders})
-            ORDER BY s.display_name;
+            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         return await ReadSymbolsAsync(connection, command, cancellationToken);

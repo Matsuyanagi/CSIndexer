@@ -27,6 +27,11 @@ public sealed class InterfaceMethodBindingExtractorTests
             public override void Play() { }
         }
 
+        public class NewPlayer : InheritedPlayer
+        {
+            public new void Play() { }
+        }
+
         public class ExplicitPlayer : IPlayable
         {
             void IPlayable.Play() { }
@@ -69,6 +74,21 @@ public sealed class InterfaceMethodBindingExtractorTests
             (int)Microsoft.CodeAnalysis.TypeKind.Class,
             snapshot.Symbols.Values.Single(symbol => symbol.TypeSimpleName == "InheritedPlayer" &&
                                                      symbol.Kind == IndexedSymbolKind.Type).TypeKind);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DoesNotSelectDerivedNewMethodForInheritedInterfaceBinding()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+
+        var binding = Assert.Single(snapshot.InterfaceMethodBindings, candidate =>
+            snapshot.Symbols[candidate.ImplementingTypeKey].TypeSimpleName == "NewPlayer" &&
+            snapshot.Symbols[candidate.InterfaceMethodKey].TypeSimpleName == "IPlayable");
+
+        Assert.Equal("BasePlayer", snapshot.Symbols[binding.ImplementationMethodKey].TypeSimpleName);
+        Assert.DoesNotContain(snapshot.InterfaceMethodBindings, candidate =>
+            snapshot.Symbols[candidate.ImplementingTypeKey].TypeSimpleName == "NewPlayer" &&
+            snapshot.Symbols[candidate.ImplementationMethodKey].TypeSimpleName == "NewPlayer");
     }
 
     [Fact]

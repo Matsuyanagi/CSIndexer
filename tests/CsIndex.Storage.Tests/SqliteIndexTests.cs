@@ -257,6 +257,44 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task FindInheritedMethodCandidatesAsync_InterfaceReceiverUsesImplementsAndTerminatesCycle()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateCyclicOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var loop = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "ILoop",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "BasePlay",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "ILoopBase");
+
+        var inherited = await repository.FindInheritedMethodCandidatesAsync(
+                profile.Id,
+                [loop.Id],
+                "BasePlay",
+                cancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+        var candidate = Assert.Single(inherited);
+        Assert.Equal(loop.Id, candidate.ReceiverTypeId);
+        Assert.Equal(basePlay.Id, candidate.MethodId);
+        Assert.Equal(1, candidate.Depth);
+        Assert.Equal(inherited.Count, inherited.Distinct().Count());
+    }
+
+    [Fact]
     public async Task ExpandOverrideMethodIdsAsync_RestrictsExpansionToReceiverBranchAndOrdersIds()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -546,7 +584,7 @@ public sealed class SqliteIndexTests
             ["Local", "Nested lambda", "Outer lambda", "Root", "Same", "Same", "Same", "Unrelated"],
             functions.Select(symbol => symbol.Name).Order());
         Assert.Equal(
-            ["same-generated", "same-source-earlier", "same-source-later"],
+            ["same-z-generated", "same-m-source-earlier", "same-a-source-later"],
             functions.Where(symbol => symbol.DisplayName == "Same").Select(symbol => symbol.StableKey));
         Assert.Equal(
             ["Nested lambda", "Outer lambda"],
@@ -554,6 +592,37 @@ public sealed class SqliteIndexTests
         Assert.Equal(
             ["Nested lambda", "Outer lambda", "Root"],
             asyncInvolved.Select(symbol => symbol.Name).Order());
+    }
+
+    [Fact]
+    public async Task GetSymbolsByIdsAsync_OrdersDuplicateDisplayNamesDeterministically()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateLambdaCallSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var candidates = (await repository.FindSymbolCandidatesAsync(
+                profile.Id,
+                name: "Same",
+                cancellationToken: cancellationToken))
+            .ToDictionary(symbol => symbol.StableKey);
+
+        var symbols = await repository.GetSymbolsByIdsAsync(
+            profile.Id,
+            [
+                candidates["same-a-source-later"].Id,
+                candidates["same-z-generated"].Id,
+                candidates["same-m-source-earlier"].Id,
+                candidates["same-a-source-later"].Id,
+            ],
+            cancellationToken);
+
+        Assert.Equal(
+            ["same-z-generated", "same-m-source-earlier", "same-a-source-later"],
+            symbols.Select(symbol => symbol.StableKey));
     }
 
     [Fact]
@@ -1115,12 +1184,16 @@ public sealed class SqliteIndexTests
 
         AddGraphType(snapshot, "i-loop", "ILoop", IndexedTypeKind.Interface, 0);
         AddGraphMethod(snapshot, "i-loop-play", "ILoop", "i-loop", "Play", 10);
-        AddGraphType(snapshot, "cycle-a", "CycleA", IndexedTypeKind.Class, 20);
-        AddGraphMethod(snapshot, "cycle-a-play", "CycleA", "cycle-a", "Play", 30, isVirtual: true);
-        AddGraphType(snapshot, "cycle-b", "CycleB", IndexedTypeKind.Class, 40);
-        AddGraphMethod(snapshot, "cycle-b-play", "CycleB", "cycle-b", "Play", 50, isOverride: true);
+        AddGraphType(snapshot, "i-loop-base", "ILoopBase", IndexedTypeKind.Interface, 20);
+        AddGraphMethod(snapshot, "i-loop-base-play", "ILoopBase", "i-loop-base", "BasePlay", 30);
+        AddGraphType(snapshot, "cycle-a", "CycleA", IndexedTypeKind.Class, 40);
+        AddGraphMethod(snapshot, "cycle-a-play", "CycleA", "cycle-a", "Play", 50, isVirtual: true);
+        AddGraphType(snapshot, "cycle-b", "CycleB", IndexedTypeKind.Class, 60);
+        AddGraphMethod(snapshot, "cycle-b-play", "CycleB", "cycle-b", "Play", 70, isOverride: true);
 
         AddGraphRelation(snapshot, "i-loop", "i-loop", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "i-loop", "i-loop-base", SymbolRelationKind.Implements);
+        AddGraphRelation(snapshot, "i-loop-base", "i-loop", SymbolRelationKind.Implements);
         AddGraphRelation(snapshot, "cycle-a", "i-loop", SymbolRelationKind.Implements);
         AddGraphRelation(snapshot, "cycle-a", "cycle-a", SymbolRelationKind.Inherits);
         AddGraphRelation(snapshot, "cycle-a", "cycle-b", SymbolRelationKind.Inherits);
@@ -1241,9 +1314,9 @@ public sealed class SqliteIndexTests
         AddSymbol("outer", IndexedSymbolKind.Lambda, "Outer lambda", "local", 1, "project|source", 20);
         AddSymbol("nested", IndexedSymbolKind.Lambda, "Nested lambda", "outer", 2, "project|generated", 30);
         AddSymbol("unrelated", IndexedSymbolKind.Method, "Unrelated", null, null, "project|source", 40);
-        AddSymbol("same-generated", IndexedSymbolKind.Method, "Same", null, null, "project|generated", 100);
-        AddSymbol("same-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|source", 110);
-        AddSymbol("same-source-earlier", IndexedSymbolKind.Method, "Same", null, null, "project|source", 105);
+        AddSymbol("same-z-generated", IndexedSymbolKind.Method, "Same", null, null, "project|generated", 100);
+        AddSymbol("same-a-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|source", 110);
+        AddSymbol("same-m-source-earlier", IndexedSymbolKind.Method, "Same", null, null, "project|source", 105);
 
         AddCall("root", ReferenceKind.Invocation, "project|source", 50);
         AddCall("local", ReferenceKind.Invocation, "project|source", 60);

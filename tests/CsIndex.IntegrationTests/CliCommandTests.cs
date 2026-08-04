@@ -256,7 +256,42 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Theory]
-    [InlineData("--help")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LocalFunctionCommandsPreferExactTargetOverInheritedSameNameMethod(bool includeOverrides)
+    {
+        await _fixture.BuildTask;
+        var commands = new (string Command, string? Subcommand)[]
+        {
+            ("symbol", "find"),
+            ("definition", null),
+            ("references", null),
+            ("callers", null),
+            ("callees", null),
+        };
+
+        foreach (var (command, subcommand) in commands)
+        {
+            var args = subcommand is null
+                ? new List<string> { command }
+                : [command, subcommand];
+            args.Add("Alpha.LocalPlayer::Local()");
+            if (includeOverrides)
+            {
+                args.Add("--include-overrides");
+            }
+
+            args.AddRange(["--db", _fixture.DatabasePath]);
+            var result = await RunAsync(args.ToArray());
+
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            Assert.Contains("Alpha.LocalPlayer::Local()", result.StandardOutput);
+            Assert.DoesNotContain("Alpha.LocalBase::Local()", result.StandardOutput);
+            Assert.DoesNotContain("InheritedLocalBody", result.StandardOutput);
+        }
+    }
+
+    [Theory]
     [InlineData("symbol", "find", "--help")]
     [InlineData("definition", "--help")]
     [InlineData("references", "--help")]
@@ -269,6 +304,17 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         Assert.Contains(
             "--include-overrides         Include descendant overrides and interface implementations",
+            result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task GlobalHelpMarksIncludeOverridesAsMethodQueryOnly()
+    {
+        var result = await RunAsync("--help");
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains(
+            "--include-overrides         Include descendant overrides and interface implementations (method queries only)",
             result.StandardOutput);
     }
 

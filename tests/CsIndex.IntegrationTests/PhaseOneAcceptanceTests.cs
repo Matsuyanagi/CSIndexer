@@ -1,3 +1,4 @@
+using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
 using CsIndex.Query;
 using CsIndex.Storage;
@@ -262,6 +263,97 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Contains("Local", local.Calls[0].CallerDisplayName);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LocalFunctionExactTargetWinsOverInheritedSameNameMethod(bool includeOverrides)
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var symbols = await fixture.Query.FindSymbolsAsync(
+            "Alpha.LocalPlayer::Local()",
+            includeOverrides: includeOverrides,
+            cancellationToken: cancellationToken);
+        var definitions = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.LocalPlayer::Local()",
+            includeOverrides: includeOverrides,
+            cancellationToken: cancellationToken);
+        var references = await fixture.Query.FindReferencesAsync(
+            "Alpha.LocalPlayer::Local()",
+            GeneratedFilter.Include,
+            includeOverrides: includeOverrides,
+            cancellationToken: cancellationToken);
+        var callers = await fixture.Query.FindCallersAsync(
+            "Alpha.LocalPlayer::Local()",
+            GeneratedFilter.Include,
+            DispatchSearchMode.Static,
+            CallerScope.Direct,
+            includeOverrides: includeOverrides,
+            cancellationToken: cancellationToken);
+        var callees = await fixture.Query.FindCalleesAsync(
+            "Alpha.LocalPlayer::Local()",
+            GeneratedFilter.Include,
+            includeOverrides: includeOverrides,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(symbols.MatchedSymbols).DisplayName);
+        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(definitions.Definitions).DisplayName);
+        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(references.Context.MatchedSymbols).DisplayName);
+        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(callers.Context.MatchedSymbols).DisplayName);
+        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(callees.Context.MatchedSymbols).DisplayName);
+        Assert.Single(references.Calls);
+        Assert.Single(callers.Calls);
+        var callee = Assert.Single(callees.Calls);
+        Assert.Contains("LocalPlayer::Play", callee.CalleeDefinitionDisplayName);
+        Assert.DoesNotContain("InheritedLocalBody", callee.CalleeDefinitionDisplayName);
+    }
+
+    [Fact]
+    public async Task OverrideAwareExactTargetsSuppressInheritedFallbackPerReceiverTypeId()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "csindex-duplicate-receiver-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var databasePath = Path.Combine(root, "index.sqlite");
+            var index = new SqliteIndex(databasePath);
+            await index.SaveAsync(CreateDuplicateReceiverSnapshot(root), cancellationToken);
+            var query = new SemanticQueryService(index.CreateQueryRepository());
+
+            var result = await query.FindSymbolsAsync(
+                "Duplicate.Receiver::Local()",
+                includeOverrides: true,
+                cancellationToken: cancellationToken);
+            var cyclicResult = await query.FindSymbolsAsync(
+                    "Duplicate.Receiver::CycleLocal()",
+                    includeOverrides: true,
+                    cancellationToken: cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+            Assert.Equal(
+                ["Duplicate.LocalBaseB::Local()", "Duplicate.Receiver::Local()"],
+                result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            Assert.DoesNotContain(
+                result.MatchedSymbols,
+                symbol => symbol.DisplayName == "Duplicate.LocalBaseA::Local()");
+            Assert.Equal(
+                "Duplicate.Receiver::CycleLocal()",
+                Assert.Single(cyclicResult.MatchedSymbols).DisplayName);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public async Task ListSymbolsDefaultsToFunctionKindsAndCanLimitToLambdas()
     {
@@ -446,5 +538,123 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             "Alpha.AClass::Play()",
             cancellationToken: cancellationToken);
         Assert.Single(result.Definitions);
+    }
+
+    private static IndexSnapshot CreateDuplicateReceiverSnapshot(string root)
+    {
+        var snapshot = new IndexSnapshot
+        {
+            InputRoot = root,
+            InputFingerprint = HashUtilities.Sha256("duplicate-receiver-input"),
+            RequestHash = HashUtilities.Sha256("duplicate-receiver-request"),
+            Profile = new AnalysisProfileData
+            {
+                Name = "duplicate-receiver",
+                InputMode = InputMode.Solution,
+                OperatingSystem = "Windows",
+                Architecture = "x64",
+                PreprocessorSymbols = [],
+                ProfileHash = HashUtilities.Sha256("duplicate-receiver-profile"),
+            },
+        };
+
+        AddProject("project-a", "AssemblyA", "A.cs");
+        AddProject("project-b", "AssemblyB", "B.cs");
+
+        AddType("a-base", "LocalBaseA", "project-a", 0);
+        AddMethod("a-base-local", "LocalBaseA", "a-base", "Local", "project-a", 20);
+        AddType("a-receiver", "Receiver", "project-a", 40);
+        AddMethod("a-owner", "Receiver", "a-receiver", "Execute", "project-a", 60);
+        AddMethod("a-local", "Receiver", "a-owner", "Local", "project-a", 80);
+        AddMethod("cycle-owner-a", "Receiver", "cycle-owner-b", "CycleOwnerA", "project-a", 100);
+        AddMethod("cycle-owner-b", "Receiver", "cycle-owner-a", "CycleOwnerB", "project-a", 120);
+        AddMethod("cycle-local", "Receiver", "cycle-owner-a", "CycleLocal", "project-a", 140);
+        AddRelation("a-receiver", "a-base");
+
+        AddType("b-base", "LocalBaseB", "project-b", 0);
+        AddMethod("b-base-local", "LocalBaseB", "b-base", "Local", "project-b", 20);
+        AddType("b-receiver", "Receiver", "project-b", 40);
+        AddRelation("b-receiver", "b-base");
+
+        return snapshot;
+
+        void AddProject(string key, string assemblyName, string fileName)
+        {
+            snapshot.Projects.Add(new ProjectData
+            {
+                Key = key,
+                Name = key,
+                AssemblyName = assemblyName,
+                Fingerprint = HashUtilities.Sha256(key),
+            });
+            snapshot.Documents.Add(new DocumentData
+            {
+                Key = $"{key}|source",
+                ProjectKey = key,
+                NormalizedPath = Path.Combine(root, fileName),
+                ContentHash = HashUtilities.Sha256(fileName),
+                IsGenerated = false,
+                GenerationKind = GenerationKind.None,
+            });
+        }
+
+        void AddType(string stableKey, string typeName, string projectKey, int sourceStart)
+        {
+            snapshot.Symbols[stableKey] = new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = projectKey,
+                Kind = IndexedSymbolKind.Type,
+                Name = typeName,
+                NamespaceName = "Duplicate",
+                TypeSimpleName = typeName,
+                TypeMetadataName = typeName,
+                FullyQualifiedName = $"Duplicate.{typeName}",
+                DisplayName = $"Duplicate.{typeName}",
+                TypeKind = (int)IndexedTypeKind.Class,
+                Accessibility = (int)IndexedAccessibility.Public,
+                SourceDocumentKey = $"{projectKey}|source",
+                SourceStart = sourceStart,
+                SourceLength = typeName.Length,
+            };
+        }
+
+        void AddMethod(
+            string stableKey,
+            string typeName,
+            string containingSymbolKey,
+            string methodName,
+            string projectKey,
+            int sourceStart)
+        {
+            snapshot.Symbols[stableKey] = new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = projectKey,
+                Kind = IndexedSymbolKind.Method,
+                Name = methodName,
+                NamespaceName = "Duplicate",
+                TypeSimpleName = typeName,
+                TypeMetadataName = typeName,
+                FullyQualifiedName = $"Duplicate.{typeName}.{methodName}()",
+                DisplayName = $"Duplicate.{typeName}::{methodName}()",
+                ContainingSymbolKey = containingSymbolKey,
+                ParameterCount = 0,
+                Accessibility = (int)IndexedAccessibility.Public,
+                SourceDocumentKey = $"{projectKey}|source",
+                SourceStart = sourceStart,
+                SourceLength = methodName.Length,
+            };
+        }
+
+        void AddRelation(string sourceSymbolKey, string targetSymbolKey)
+        {
+            snapshot.Relations.Add(new SymbolRelationData
+            {
+                SourceSymbolKey = sourceSymbolKey,
+                TargetSymbolKey = targetSymbolKey,
+                RelationKind = SymbolRelationKind.Inherits,
+            });
+        }
     }
 }

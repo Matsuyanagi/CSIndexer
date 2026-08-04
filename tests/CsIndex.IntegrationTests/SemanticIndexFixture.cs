@@ -147,7 +147,13 @@ public sealed class SemanticIndexFixture : IDisposable
                 }
             }
 
-            public class LocalPlayer
+            public class LocalBase
+            {
+                public virtual void Local() => InheritedLocalBody();
+                private void InheritedLocalBody() { }
+            }
+
+            public class LocalPlayer : LocalBase
             {
                 public void Play() { }
                 public void Execute()

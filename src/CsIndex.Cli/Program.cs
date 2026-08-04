@@ -588,7 +588,7 @@ internal static class Program
               --only-generated            Include only generated documents
               --require-single            Fail unless the query matches one symbol
               --short-names               Shorten namespaces in displayed symbol names
-              --include-overrides         Include descendant overrides and interface implementations
+              --include-overrides         Include descendant overrides and interface implementations (method queries only)
 
             Symbol list options:
               --kind method|lambda         Limit listed function symbols by kind

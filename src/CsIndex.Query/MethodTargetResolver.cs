@@ -36,12 +36,22 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
         var declaredCandidates = await repository.FindSymbolCandidatesAsync(
             profileId,
             name: query.MethodName,
+            typeSimpleName: query.TypeSimpleName,
             kind: IndexedSymbolKind.Method,
             sourceOnly: sourceOnly,
             cancellationToken: cancellationToken);
         var declaredByReceiver = declaredCandidates
             .Where(method => method.ContainingSymbolId is long receiverId && receiverIds.Contains(receiverId))
             .ToLookup(method => method.ContainingSymbolId!.Value);
+        var exactOnlyTargets = declaredCandidates
+            .Where(method => method.ContainingSymbolId is not long receiverId || !receiverIds.Contains(receiverId))
+            .Where(method => SymbolMatcher.IsMatch(query, method))
+            .ToArray();
+        var exactOnlyReceiverIds = await FindContainingReceiverTypeIdsAsync(
+            profileId,
+            exactOnlyTargets,
+            receiverIds,
+            cancellationToken);
 
         var roots = new List<ResolvedRoot>();
         var receiversWithoutDeclarations = new List<StoredSymbol>();
@@ -54,7 +64,7 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
                     .Where(method => SymbolMatcher.IsMethodSignatureMatch(query, method))
                     .Select(method => new ResolvedRoot(method, receiver)));
             }
-            else if (includeOverrides)
+            else if (includeOverrides && !exactOnlyReceiverIds.Contains(receiver.Id))
             {
                 receiversWithoutDeclarations.Add(receiver);
             }
@@ -70,12 +80,13 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
                 cancellationToken));
         }
 
-        if (roots.Count == 0)
+        if (roots.Count == 0 && exactOnlyTargets.Length == 0)
         {
             return [];
         }
 
-        var targetIds = roots.Select(root => root.Method.Id).ToHashSet();
+        var targetIds = exactOnlyTargets.Select(target => target.Id).ToHashSet();
+        targetIds.UnionWith(roots.Select(root => root.Method.Id));
         if (includeOverrides)
         {
             var interfaceSeeds = roots
@@ -136,6 +147,54 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
             .Where(root => (!sourceOnly || root.Method.DocumentPath is not null) &&
                            SymbolMatcher.IsMethodSignatureMatch(query, root.Method))
             .ToArray();
+    }
+
+    private async Task<HashSet<long>> FindContainingReceiverTypeIdsAsync(
+        long profileId,
+        IReadOnlyList<StoredSymbol> exactOnlyTargets,
+        IReadOnlySet<long> receiverIds,
+        CancellationToken cancellationToken)
+    {
+        var result = new HashSet<long>();
+        var visited = new HashSet<long>();
+        var pending = exactOnlyTargets
+            .Where(target => target.ContainingSymbolId is not null)
+            .Select(target => target.ContainingSymbolId!.Value)
+            .ToHashSet();
+
+        while (pending.Count > 0)
+        {
+            var batch = pending.Where(visited.Add).ToArray();
+            pending.Clear();
+            if (batch.Length == 0)
+            {
+                break;
+            }
+
+            var containers = await repository.GetSymbolsByIdsAsync(
+                profileId,
+                batch,
+                cancellationToken);
+            foreach (var container in containers)
+            {
+                if (container.Kind == IndexedSymbolKind.Type)
+                {
+                    if (receiverIds.Contains(container.Id))
+                    {
+                        result.Add(container.Id);
+                    }
+
+                    continue;
+                }
+
+                if (container.ContainingSymbolId is long containingId && !visited.Contains(containingId))
+                {
+                    pending.Add(containingId);
+                }
+            }
+        }
+
+        return result;
     }
 
     private sealed record ResolvedRoot(StoredSymbol Method, StoredSymbol ReceiverType);

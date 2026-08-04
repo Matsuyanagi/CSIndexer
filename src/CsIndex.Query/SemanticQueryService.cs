@@ -26,7 +26,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
             throw new SymbolQueryParseException("--include-overrides requires a method query.");
         }
 
-        if (query.IsMethodQuery)
+        if (query.IsMethodQuery && includeOverrides)
         {
             var methodTargets = await _methodTargetResolver.ResolveAsync(
                 profile.Id,
