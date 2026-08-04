@@ -8,6 +8,7 @@ internal sealed class CliArguments
     {
         "help", "rebuild", "verbose", "diagnostics", "exclude-generated", "only-generated",
         "require-single", "all-profiles", "async-involved", "short-names", "exclude-lambda-calls",
+        "include-overrides",
     };
 
     private readonly Dictionary<string, List<string>> _options = new(StringComparer.Ordinal);

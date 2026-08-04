@@ -162,6 +162,54 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task OverrideAwareCallQueriesUseExpandedAndExactTargets()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var interfaceCallers = await fixture.Query.FindCallersAsync(
+            "Alpha.IPlayable::Play()", GeneratedFilter.Include,
+            DispatchSearchMode.Static, CallerScope.Direct,
+            includeOverrides: true,
+            cancellationToken: cancellationToken);
+        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("IPlayable"));
+        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Pianist"));
+        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Game"));
+        Assert.DoesNotContain(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Baseball"));
+
+        var concreteCallers = await fixture.Query.FindCallersAsync(
+            "Alpha.Pianist::Play()", GeneratedFilter.Include,
+            DispatchSearchMode.Static, CallerScope.Direct,
+            includeOverrides: true,
+            cancellationToken: cancellationToken);
+        Assert.DoesNotContain(concreteCallers.Calls, call =>
+            call.CalleeDefinitionDisplayName!.Contains("IPlayable"));
+        Assert.DoesNotContain(concreteCallers.Calls, call =>
+            call.CalleeDefinitionDisplayName!.Contains("Game"));
+
+        var exactCallers = await fixture.Query.FindCallersAsync(
+            "Alpha.Pianist::Play()", GeneratedFilter.Include,
+            DispatchSearchMode.Static, CallerScope.Direct,
+            cancellationToken: cancellationToken);
+        Assert.DoesNotContain(exactCallers.Calls, call =>
+            call.CalleeDefinitionDisplayName!.Contains("ProPianist"));
+
+        var references = await fixture.Query.FindReferencesAsync(
+            "Alpha.Pianist::Play()", GeneratedFilter.Include,
+            includeOverrides: true,
+            cancellationToken: cancellationToken);
+        Assert.Contains(references.Calls, call => call.CalleeDefinitionDisplayName!.Contains("ProPianist"));
+
+        var callees = await fixture.Query.FindCalleesAsync(
+            "Alpha.D1::Play()", GeneratedFilter.Include,
+            includeOverrides: true,
+            cancellationToken: cancellationToken);
+        Assert.Contains(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("BaseBody"));
+        Assert.Contains(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("D2Body"));
+        Assert.DoesNotContain(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("OtherBody"));
+    }
+
+    [Fact]
     public async Task CommentsDoNotCreateCalls()
     {
         await fixture.BuildTask;

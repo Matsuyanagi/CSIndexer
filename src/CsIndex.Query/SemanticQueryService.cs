@@ -121,12 +121,13 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string queryText,
         GeneratedFilter generatedFilter,
         string? profileName = null,
+        bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
         var context = await FindTargetSymbolsAsync(
             queryText,
             profileName,
-            includeOverrides: false,
+            includeOverrides,
             cancellationToken);
         var calls = await repository.GetCallsByCalleeAsync(
             context.Profile.Id,
@@ -142,12 +143,13 @@ public sealed class SemanticQueryService(QueryRepository repository)
         DispatchSearchMode dispatchMode,
         CallerScope callerScope,
         string? profileName = null,
+        bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
         var context = await FindTargetSymbolsAsync(
             queryText,
             profileName,
-            includeOverrides: false,
+            includeOverrides,
             cancellationToken);
         var calls = await repository.GetCallsByCalleeAsync(
             context.Profile.Id,
@@ -186,12 +188,13 @@ public sealed class SemanticQueryService(QueryRepository repository)
         GeneratedFilter generatedFilter,
         bool includeLambdaCalls = true,
         string? profileName = null,
+        bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
         var context = await FindTargetSymbolsAsync(
             queryText,
             profileName,
-            includeOverrides: false,
+            includeOverrides,
             cancellationToken);
         var calls = includeLambdaCalls
             ? await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
@@ -214,7 +217,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
         GeneratedFilter generatedFilter,
         string? profileName,
         CancellationToken cancellationToken = default) =>
-        FindCalleesAsync(queryText, generatedFilter, true, profileName, cancellationToken);
+        FindCalleesAsync(queryText, generatedFilter, true, profileName, includeOverrides: false, cancellationToken);
 
     public async Task<RelationResult> FindOverridesAsync(
         string queryText,

@@ -169,16 +169,25 @@ internal static class Program
 
     private static async Task<int> RunSymbolAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output", "require-single", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex symbol find <query> [--db <path>] [--output table|json] [--short-names]");
+            Console.WriteLine("""
+                Usage: csindex symbol find <query> [--db <path>] [--output table|json] [--short-names]
+
+                  --include-overrides         Include descendant overrides and interface implementations
+                """);
             return ExitCodes.Success;
         }
 
         var query = RequireQuery(parsed);
         var service = CreateQueryService(parsed);
-        var result = await service.FindSymbolsAsync(query, parsed.GetSingle("profile"), cancellationToken: cancellationToken);
+        var result = await service.FindSymbolsAsync(
+            query,
+            parsed.GetSingle("profile"),
+            includeOverrides: parsed.HasFlag("include-overrides"),
+            cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
@@ -222,10 +231,15 @@ internal static class Program
 
     private static async Task<int> RunDefinitionAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "at", "require-single", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output", "at", "require-single", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex definition <query> | --at <path:line:column> [--short-names]");
+            Console.WriteLine("""
+                Usage: csindex definition <query> | --at <path:line:column> [--short-names]
+
+                  --include-overrides         Include descendant overrides and interface implementations
+                """);
             return ExitCodes.Success;
         }
 
@@ -234,6 +248,11 @@ internal static class Program
         var at = parsed.GetSingle("at");
         if (at is not null)
         {
+            if (parsed.HasFlag("include-overrides"))
+            {
+                throw new CliUsageException("--include-overrides requires a method query.");
+            }
+
             if (parsed.Positionals.Count > 0)
             {
                 throw new CliUsageException("definition accepts either a query or --at, not both.");
@@ -243,7 +262,11 @@ internal static class Program
         }
         else
         {
-            result = await service.FindDefinitionsAsync(RequireQuery(parsed), parsed.GetSingle("profile"), cancellationToken);
+            result = await service.FindDefinitionsAsync(
+                RequireQuery(parsed),
+                parsed.GetSingle("profile"),
+                includeOverrides: parsed.HasFlag("include-overrides"),
+                cancellationToken);
         }
 
         if (RequiresSingleFailure(parsed, result.Definitions.Count))
@@ -259,13 +282,25 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names", "help");
+            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names",
+            "include-overrides", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("""
+                Usage: csindex references <query> [options]
+
+                  --include-overrides         Include descendant overrides and interface implementations
+                """);
+            return ExitCodes.Success;
+        }
+
         var service = CreateQueryService(parsed);
         var result = await service.FindReferencesAsync(
             RequireQuery(parsed),
             ParseGeneratedFilter(parsed),
             parsed.GetSingle("profile"),
-            cancellationToken);
+            includeOverrides: parsed.HasFlag("include-overrides"),
+            cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
@@ -280,7 +315,17 @@ internal static class Program
         var parsed = ParseQueryArguments(
             args,
             "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "dispatch",
-            "caller-scope", "short-names", "help");
+            "caller-scope", "short-names", "include-overrides", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("""
+                Usage: csindex callers <query> [options]
+
+                  --include-overrides         Include descendant overrides and interface implementations
+                """);
+            return ExitCodes.Success;
+        }
+
         var dispatch = (parsed.GetSingle("dispatch") ?? "static") switch
         {
             "static" => DispatchSearchMode.Static,
@@ -302,7 +347,8 @@ internal static class Program
             dispatch,
             callerScope,
             parsed.GetSingle("profile"),
-            cancellationToken);
+            includeOverrides: parsed.HasFlag("include-overrides"),
+            cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
@@ -317,13 +363,24 @@ internal static class Program
         var parsed = ParseQueryArguments(
             args,
             "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names",
-            "exclude-lambda-calls", "help");
+            "exclude-lambda-calls", "include-overrides", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("""
+                Usage: csindex callees <query> [options]
+
+                  --include-overrides         Include descendant overrides and interface implementations
+                """);
+            return ExitCodes.Success;
+        }
+
         var service = CreateQueryService(parsed);
         var result = await service.FindCalleesAsync(
             RequireQuery(parsed),
             ParseGeneratedFilter(parsed),
             includeLambdaCalls: !parsed.HasFlag("exclude-lambda-calls"),
             profileName: parsed.GetSingle("profile"),
+            includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
         {
@@ -531,6 +588,7 @@ internal static class Program
               --only-generated            Include only generated documents
               --require-single            Fail unless the query matches one symbol
               --short-names               Shorten namespaces in displayed symbol names
+              --include-overrides         Include descendant overrides and interface implementations
 
             Symbol list options:
               --kind method|lambda         Limit listed function symbols by kind

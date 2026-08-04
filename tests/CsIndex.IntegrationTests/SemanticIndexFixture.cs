@@ -77,6 +77,29 @@ public sealed class SemanticIndexFixture : IDisposable
                 private void OtherBody() { }
             }
 
+            public class OverrideSearchCaller
+            {
+                public void Execute(
+                    IPlayable contract,
+                    Pianist pianist,
+                    ProPianist professional,
+                    Game game,
+                    Baseball baseball,
+                    D1 d1,
+                    D2 d2,
+                    OtherBranch other)
+                {
+                    contract.Play();
+                    pianist.Play();
+                    professional.Play();
+                    game.Play();
+                    baseball.Play();
+                    d1.Play();
+                    d2.Play();
+                    other.Play();
+                }
+            }
+
             public class HidingPlayer : D1
             {
                 public new void Play() => HiddenBody();

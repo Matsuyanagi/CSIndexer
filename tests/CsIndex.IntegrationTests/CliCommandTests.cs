@@ -150,6 +150,129 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Theory]
+    [InlineData("symbol", "find", "matched")]
+    [InlineData("definition", null, "definitions")]
+    [InlineData("references", null, "calls")]
+    [InlineData("callers", null, "calls")]
+    [InlineData("callees", null, "calls")]
+    public async Task IncludeOverridesExpandsPianistAcrossSupportedCommands(
+        string command,
+        string? subcommand,
+        string expandedCollection)
+    {
+        await _fixture.BuildTask;
+        string[] commandPrefix = subcommand is null ? [command] : [command, subcommand];
+
+        var table = await RunAsync(commandPrefix.Concat(
+        [
+            "Alpha.Pianist::Play()", "--include-overrides", "--output", "table", "--db", _fixture.DatabasePath,
+        ]).ToArray());
+        Assert.Equal(ExitCodes.Success, table.ExitCode);
+        Assert.Contains("Alpha.ProPianist::Play()", table.StandardOutput);
+
+        var json = await RunAsync(commandPrefix.Concat(
+        [
+            "Alpha.Pianist::Play()", "--include-overrides", "--output", "json", "--db", _fixture.DatabasePath,
+        ]).ToArray());
+        Assert.Equal(ExitCodes.Success, json.ExitCode);
+        using var document = JsonDocument.Parse(json.StandardOutput);
+        var root = document.RootElement;
+        Assert.Contains(root.GetProperty("matched").EnumerateArray(), symbol =>
+            symbol.GetProperty("displayName").GetString() == "Alpha.ProPianist::Play()");
+
+        if (expandedCollection == "definitions")
+        {
+            Assert.Contains(root.GetProperty(expandedCollection).EnumerateArray(), symbol =>
+                symbol.GetProperty("displayName").GetString() == "Alpha.ProPianist::Play()");
+        }
+        else if (expandedCollection == "calls")
+        {
+            Assert.Contains(root.GetProperty(expandedCollection).EnumerateArray(), call =>
+                (command == "callees" ? call.GetProperty("caller") : call.GetProperty("callee"))
+                .GetString()!.Contains("Alpha.ProPianist::Play()"));
+        }
+    }
+
+    [Theory]
+    [InlineData("symbol", "find", "Alpha.IPlayable")]
+    [InlineData("definition", "--at", "Source.cs:1:1")]
+    public async Task IncludeOverridesRejectsNonMethodQueries(params string[] args)
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(args.Concat(["--include-overrides", "--db", _fixture.DatabasePath]).ToArray());
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains("--include-overrides requires a method query", result.StandardError);
+    }
+
+    [Fact]
+    public async Task IncludeOverridesIsRejectedByUnsupportedCommands()
+    {
+        await _fixture.BuildTask;
+        var commands = new[]
+        {
+            new[] { "symbol", "list", "--include-overrides", "--db", _fixture.DatabasePath },
+            new[] { "overrides", "Alpha.Pianist::Play()", "--include-overrides", "--db", _fixture.DatabasePath },
+            new[] { "conditions", "--include-overrides", "--db", _fixture.DatabasePath },
+            new[] { "index", _fixture.RootPath, "--include-overrides", "--db", _fixture.DatabasePath },
+        };
+
+        foreach (var args in commands)
+        {
+            var result = await RunAsync(args);
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains("Unknown option(s): --include-overrides", result.StandardError);
+        }
+    }
+
+    [Fact]
+    public async Task IncludeOverridesComposesWithDispatchAndShortNames()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "callers", "Alpha.Pianist::Play()", "--include-overrides", "--dispatch", "all", "--short-names",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("ProPianist::Play()", result.StandardOutput);
+        Assert.DoesNotContain("Alpha.ProPianist::Play()", result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task IncludeOverridesComposesWithExcludeLambdaCalls()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "callees", "Alpha.DescendantCallees::Execute()", "--include-overrides", "--exclude-lambda-calls",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("1 callee call(s)", result.StandardOutput);
+        Assert.Contains("DirectCall", result.StandardOutput);
+        Assert.DoesNotContain("OuterLambdaCall", result.StandardOutput);
+    }
+
+    [Theory]
+    [InlineData("--help")]
+    [InlineData("symbol", "find", "--help")]
+    [InlineData("definition", "--help")]
+    [InlineData("references", "--help")]
+    [InlineData("callers", "--help")]
+    [InlineData("callees", "--help")]
+    public async Task IncludeOverridesAppearsInGlobalAndSupportedCommandHelp(params string[] args)
+    {
+        var result = await RunAsync(args);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains(
+            "--include-overrides         Include descendant overrides and interface implementations",
+            result.StandardOutput);
+    }
+
+    [Theory]
     [InlineData("symbol", "list", "--kind", "type")]
     [InlineData("symbol", "list", "unexpected")]
     [InlineData("callers", "Alpha.AClass::Play()", "--exclude-lambda-calls")]
