@@ -100,6 +100,11 @@ type. The extractor records a binding containing:
 - the interface contract method;
 - the real implementation method.
 
+Extraction also persists the Roslyn type kind for type symbols. The query
+layer uses it to distinguish a class base-chain lookup from an interface
+base-interface lookup without treating a class's default interface members as
+class-inherited members.
+
 Bindings cover explicit implementation, implicit implementation, inherited
 class implementation, abstract implementation, derived overrides, and
 default interface methods. Partial declarations and repeated interface paths
@@ -120,6 +125,11 @@ databases are rejected without modification and must be rebuilt. No automatic
 migration or deletion is performed.
 
 The schema adds:
+
+```sql
+-- Added to the version 3 symbols table definition.
+type_kind INTEGER
+```
 
 ```sql
 CREATE TABLE interface_method_bindings (
@@ -155,7 +165,8 @@ ON interface_method_bindings(analysis_profile_id, implementing_type_id);
 Bindings are inserted in the same transaction as symbols, calls, and symbol
 relations. The existing `symbols.accessibility` column supplies accessibility
 information for inherited alias resolution; no new accessibility column is
-required.
+required. The new nullable `symbols.type_kind` column stores the Roslyn type
+kind for type symbols and remains null for non-type symbols.
 
 ## Method resolution and expansion
 
@@ -163,11 +174,15 @@ A shared query-layer `MethodTargetResolver` is used by every affected command.
 Its behavior is:
 
 1. Parse the query using the existing symbol query grammar.
-2. Find methods declared on every matching receiver type.
+2. Find methods declared with the requested name on every matching receiver
+   type.
 3. Without `--include-overrides`, return the exact matches unchanged.
 4. With the option, use each exact match as a branch-scoped search seed.
-5. If no matching method is declared on a receiver type, recursively walk its
-   `Inherits` edges toward base classes.
+5. If no same-name method is declared on a receiver type, recursively walk its
+   `Inherits` edges toward base classes. For an interface receiver, walk its
+   base-interface `Implements` edges instead. A declared same-name method
+   suppresses base lookup even when the requested parameter signature does
+   not match it.
 6. At the nearest base level that declares any accessible method with the
    requested name, stop walking higher to preserve C# name-hiding semantics.
 7. Apply the optional parameter signature to methods at that selected level.
@@ -182,10 +197,12 @@ Its behavior is:
 11. Deduplicate results by real method ID and order them by display name,
     document path, and source position.
 
-Recursive type and method CTEs use `UNION`, not `UNION ALL`, so visited IDs or
-visited `(method, branch)` pairs are not expanded repeatedly. This guarantees
-termination for self-cycles and multi-node cycles in malformed persisted
-data.
+ID-only descendant and override closures use `UNION`, not `UNION ALL`, so
+visited IDs or visited `(method, branch)` pairs are not expanded repeatedly.
+The ancestor lookup needs inheritance depth for nearest-member selection; it
+uses a path-bearing recursive CTE and rejects an ID already present in the
+current path before recursing. These two stopping rules guarantee termination
+for self-cycles and multi-node cycles in malformed persisted data.
 
 An omitted namespace may select multiple receiver types. Each receiver is
 resolved and expanded independently before method IDs are deduplicated.
@@ -232,6 +249,7 @@ Core extraction tests cover:
 - explicit and implicit interface implementation;
 - interface implementation inherited from a base class;
 - abstract and default-interface implementations;
+- inherited members of derived interfaces;
 - derived-type binding selection;
 - partial-type and repeated-path deduplication.
 
@@ -250,6 +268,8 @@ Query and CLI tests cover:
 - concrete implementation search returning Pianist and ProPianist only;
 - exclusion of interface-statically-typed calls from concrete searches;
 - inherited alias resolution returning Base and D2 without a synthetic D1;
+- derived-interface alias resolution constrained to implementations of that
+  derived interface;
 - exclusion of sibling branches and `new` method hiding;
 - unchanged exact behavior when the option is absent;
 - all five commands in table and JSON output;
