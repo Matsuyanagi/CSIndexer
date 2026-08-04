@@ -45,7 +45,14 @@ public sealed record StoredSymbol(
     int? SourceLength,
     bool IsGenerated,
     string? AssemblyName,
-    IReadOnlyList<StoredParameter> Parameters);
+    IReadOnlyList<StoredParameter> Parameters,
+    int? TypeKind,
+    int? Accessibility);
+
+public sealed record StoredInterfaceMethodBinding(
+    long ImplementingTypeId,
+    long InterfaceMethodId,
+    long ImplementationMethodId);
 
 public sealed record StoredCall(
     long Id,

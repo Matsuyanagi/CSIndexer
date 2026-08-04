@@ -36,7 +36,7 @@ public sealed class SchemaMigrator
                 }
 
                 await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
-                await CreateVersionTwoAsync(connection, cancellationToken);
+                await CreateVersionThreeAsync(connection, cancellationToken);
                 return;
             }
 
@@ -77,7 +77,7 @@ public sealed class SchemaMigrator
         }
     }
 
-    private static async Task CreateVersionTwoAsync(
+    private static async Task CreateVersionThreeAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -89,7 +89,7 @@ public sealed class SchemaMigrator
                 version INTEGER NOT NULL
             );
 
-            INSERT INTO schema_info(version) VALUES (2);
+            INSERT INTO schema_info(version) VALUES (3);
 
             CREATE TABLE analysis_profiles (
                 id                    INTEGER PRIMARY KEY,
@@ -165,6 +165,7 @@ public sealed class SchemaMigrator
                 parameter_count       INTEGER,
                 method_kind           INTEGER,
                 accessibility         INTEGER,
+                type_kind             INTEGER,
                 is_static             INTEGER NOT NULL DEFAULT 0,
                 is_abstract           INTEGER NOT NULL DEFAULT 0,
                 is_virtual            INTEGER NOT NULL DEFAULT 0,
@@ -271,6 +272,32 @@ public sealed class SchemaMigrator
                   REFERENCES symbols(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE interface_method_bindings (
+                analysis_profile_id      INTEGER NOT NULL,
+                implementing_type_id     INTEGER NOT NULL,
+                interface_method_id      INTEGER NOT NULL,
+                implementation_method_id INTEGER NOT NULL,
+
+                PRIMARY KEY (
+                    analysis_profile_id,
+                    implementing_type_id,
+                    interface_method_id,
+                    implementation_method_id
+                ),
+
+                FOREIGN KEY(analysis_profile_id)
+                  REFERENCES analysis_profiles(id),
+
+                FOREIGN KEY(implementing_type_id)
+                  REFERENCES symbols(id) ON DELETE CASCADE,
+
+                FOREIGN KEY(interface_method_id)
+                  REFERENCES symbols(id) ON DELETE CASCADE,
+
+                FOREIGN KEY(implementation_method_id)
+                  REFERENCES symbols(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE conditional_symbols_used (
                 analysis_profile_id INTEGER NOT NULL,
                 document_id         INTEGER NOT NULL,
@@ -316,6 +343,12 @@ public sealed class SchemaMigrator
 
             CREATE INDEX ix_relations_target
             ON symbol_relations(target_symbol_id, relation_kind);
+
+            CREATE INDEX ix_interface_method_bindings_contract
+            ON interface_method_bindings(analysis_profile_id, interface_method_id);
+
+            CREATE INDEX ix_interface_method_bindings_type
+            ON interface_method_bindings(analysis_profile_id, implementing_type_id);
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

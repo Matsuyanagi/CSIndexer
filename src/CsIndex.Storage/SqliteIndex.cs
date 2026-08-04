@@ -112,6 +112,13 @@ public sealed class SqliteIndex(string databasePath)
                 snapshot.Relations,
                 symbolIds,
                 cancellationToken);
+            await InsertInterfaceMethodBindingsAsync(
+                connection,
+                transaction,
+                profileId,
+                snapshot.InterfaceMethodBindings,
+                symbolIds,
+                cancellationToken);
             await InsertConditionalSymbolsAsync(
                 connection,
                 transaction,
@@ -318,12 +325,14 @@ public sealed class SqliteIndex(string databasePath)
                 analysis_profile_id, project_id, stable_key, kind, name, namespace_name,
                 type_simple_name, type_metadata_name, fully_qualified_name, display_name,
                 containing_symbol_id, arity, parameter_count, method_kind, accessibility,
+                type_kind,
                 is_static, is_abstract, is_virtual, is_override, async_role,
                 async_involvement_depth, source_document_id, source_start, source_length, is_generated)
             VALUES(
                 $profile_id, $project_id, $stable_key, $kind, $name, $namespace_name,
                 $type_simple_name, $type_metadata_name, $fully_qualified_name, $display_name,
                 NULL, $arity, $parameter_count, $method_kind, $accessibility,
+                $type_kind,
                 $is_static, $is_abstract, $is_virtual, $is_override, $async_role,
                 $async_involvement_depth, $source_document_id, $source_start, $source_length, $is_generated);
             SELECT last_insert_rowid();
@@ -344,6 +353,7 @@ public sealed class SqliteIndex(string databasePath)
         command.Parameters.AddWithValue("$parameter_count", (object?)symbol.ParameterCount ?? DBNull.Value);
         command.Parameters.AddWithValue("$method_kind", (object?)symbol.MethodKind ?? DBNull.Value);
         command.Parameters.AddWithValue("$accessibility", (object?)symbol.Accessibility ?? DBNull.Value);
+        command.Parameters.AddWithValue("$type_kind", (object?)symbol.TypeKind ?? DBNull.Value);
         command.Parameters.AddWithValue("$is_static", symbol.IsStatic);
         command.Parameters.AddWithValue("$is_abstract", symbol.IsAbstract);
         command.Parameters.AddWithValue("$is_virtual", symbol.IsVirtual);
@@ -497,6 +507,31 @@ public sealed class SqliteIndex(string databasePath)
             command.Parameters.AddWithValue("$source_id", symbolIds[relation.SourceSymbolKey]);
             command.Parameters.AddWithValue("$target_id", symbolIds[relation.TargetSymbolKey]);
             command.Parameters.AddWithValue("$kind", (int)relation.RelationKind);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task InsertInterfaceMethodBindingsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long profileId,
+        IEnumerable<InterfaceMethodBindingData> bindings,
+        IReadOnlyDictionary<string, long> symbolIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            INSERT OR IGNORE INTO interface_method_bindings(
+                analysis_profile_id, implementing_type_id,
+                interface_method_id, implementation_method_id)
+            VALUES($profile_id, $type_id, $interface_id, $implementation_id);
+            """);
+        foreach (var binding in bindings)
+        {
+            command.Parameters.Clear();
+            command.Parameters.AddWithValue("$profile_id", profileId);
+            command.Parameters.AddWithValue("$type_id", symbolIds[binding.ImplementingTypeKey]);
+            command.Parameters.AddWithValue("$interface_id", symbolIds[binding.InterfaceMethodKey]);
+            command.Parameters.AddWithValue("$implementation_id", symbolIds[binding.ImplementationMethodKey]);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }

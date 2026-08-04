@@ -50,11 +50,86 @@ public sealed class SqliteIndexTests
             GeneratedFilter.Include,
             cancellationToken: cancellationToken));
 
-        Assert.Equal(2, SchemaMigrator.CurrentVersion);
-        Assert.Equal(2, RequestHasher.SchemaVersion);
+        Assert.Equal(3, SchemaMigrator.CurrentVersion);
+        Assert.Equal(3, RequestHasher.SchemaVersion);
         Assert.Equal(AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable, caller.AsyncRole);
         Assert.Equal(0, caller.AsyncInvolvementDepth);
         Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
+    }
+
+    [Fact]
+    public async Task Save_PersistsTypeKindAndInterfaceMethodBindings()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var interfaceType = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "IPlayable",
+            kind: IndexedSymbolKind.Type,
+            cancellationToken: cancellationToken));
+        var contract = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Play",
+            typeSimpleName: "IPlayable",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+        var bindings = await repository.GetInterfaceMethodBindingsAsync(
+            profile.Id,
+            [contract.Id],
+            cancellationToken);
+
+        Assert.Equal(3, SchemaMigrator.CurrentVersion);
+        Assert.Equal(3, RequestHasher.SchemaVersion);
+        Assert.Equal((int)IndexedTypeKind.Interface, interfaceType.TypeKind);
+        Assert.Equal((int)IndexedAccessibility.Public, interfaceType.Accessibility);
+        Assert.Equal(2, bindings.Count);
+        Assert.All(bindings, binding => Assert.Equal(contract.Id, binding.InterfaceMethodId));
+    }
+
+    [Fact]
+    public async Task Save_ReplacementRemovesPriorInterfaceMethodBindingsWithoutAffectingOtherProfile()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        var first = CreateOverrideSearchSnapshot(temporary.Path, "first");
+        var second = CreateOverrideSearchSnapshot(temporary.Path, "second");
+
+        await index.SaveAsync(first, cancellationToken);
+        await index.SaveAsync(second, cancellationToken);
+        first.InterfaceMethodBindings.Clear();
+        await index.SaveAsync(first, cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var firstProfile = await repository.GetProfileAsync("first", cancellationToken);
+        var secondProfile = await repository.GetProfileAsync("second", cancellationToken);
+        var firstContract = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            firstProfile.Id,
+            name: "Play",
+            typeSimpleName: "IPlayable",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+        var secondContract = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            secondProfile.Id,
+            name: "Play",
+            typeSimpleName: "IPlayable",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+
+        Assert.Empty(await repository.GetInterfaceMethodBindingsAsync(
+            firstProfile.Id,
+            [firstContract.Id],
+            cancellationToken));
+        Assert.NotEmpty(await repository.GetInterfaceMethodBindingsAsync(
+            secondProfile.Id,
+            [secondContract.Id],
+            cancellationToken));
     }
 
     [Fact]
@@ -248,6 +323,54 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task VersionTwoDatabase_ProducesExplicitErrorWithoutModification()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "version-two.sqlite");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ToString();
+        string journalModeBefore;
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            journalModeBefore = Assert.IsType<string>(await command.ExecuteScalarAsync(cancellationToken));
+            command.CommandText = """
+                CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info(version) VALUES (2);
+                CREATE TABLE version_two_marker(id INTEGER PRIMARY KEY);
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() =>
+            new SqliteIndex(databasePath).EnsureCreatedAsync(cancellationToken));
+
+        Assert.Contains("Unsupported database schema version 2", exception.Message, StringComparison.Ordinal);
+        await using var verificationConnection = new SqliteConnection(connectionString);
+        await verificationConnection.OpenAsync(cancellationToken);
+        await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = "PRAGMA journal_mode;";
+        var journalModeAfter = Assert.IsType<string>(
+            await verificationCommand.ExecuteScalarAsync(cancellationToken));
+        Assert.Equal(journalModeBefore, journalModeAfter);
+        verificationCommand.CommandText = """
+            SELECT version,
+                   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'version_two_marker')
+            FROM schema_info;
+            """;
+        await using var reader = await verificationCommand.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        Assert.Equal(2, reader.GetInt32(0));
+        Assert.Equal(1, reader.GetInt32(1));
+    }
+
+    [Fact]
     public async Task UnrecognizedNonEmptyDatabase_ProducesExplicitErrorWithoutModification()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -356,7 +479,7 @@ public sealed class SqliteIndexTests
             $"journalModeAfter={journalModeAfter}");
     }
 
-    private static IndexSnapshot CreateSnapshot(string root)
+    private static IndexSnapshot CreateSnapshot(string root, string profileName = "test")
     {
         var inputFingerprint = HashUtilities.Sha256("input");
         var requestHash = HashUtilities.Sha256("request");
@@ -367,13 +490,13 @@ public sealed class SqliteIndexTests
             RequestHash = requestHash,
             Profile = new AnalysisProfileData
             {
-                Name = "test",
+                Name = profileName,
                 InputMode = InputMode.Directory,
                 RuntimeIdentifier = "win-x64",
                 OperatingSystem = "Windows",
                 Architecture = "x64",
                 PreprocessorSymbols = ["WINDOWS"],
-                ProfileHash = HashUtilities.Sha256("profile"),
+                ProfileHash = HashUtilities.Sha256($"profile-{profileName}"),
             },
         };
         snapshot.Projects.Add(new ProjectData
@@ -454,6 +577,75 @@ public sealed class SqliteIndexTests
             SourceLength = 6,
         });
         return snapshot;
+    }
+
+    private static IndexSnapshot CreateOverrideSearchSnapshot(string root, string profileName = "override")
+    {
+        var snapshot = CreateSnapshot(root, profileName);
+        snapshot.Symbols.Clear();
+        snapshot.Calls.Clear();
+
+        AddType("i-playable", "IPlayable", IndexedTypeKind.Interface, 0);
+        AddMethod("i-playable-play", "IPlayable", "i-playable", 10);
+        AddType("pianist", "Pianist", IndexedTypeKind.Class, 20);
+        AddMethod("pianist-play", "Pianist", "pianist", 30);
+        AddType("game", "Game", IndexedTypeKind.Class, 40);
+        AddMethod("game-play", "Game", "game", 50);
+        snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+        {
+            ImplementingTypeKey = "pianist",
+            InterfaceMethodKey = "i-playable-play",
+            ImplementationMethodKey = "pianist-play",
+        });
+        snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+        {
+            ImplementingTypeKey = "game",
+            InterfaceMethodKey = "i-playable-play",
+            ImplementationMethodKey = "game-play",
+        });
+        return snapshot;
+
+        void AddType(string stableKey, string name, IndexedTypeKind typeKind, int sourceStart)
+        {
+            snapshot.Symbols[stableKey] = new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = "project",
+                Kind = IndexedSymbolKind.Type,
+                Name = name,
+                NamespaceName = string.Empty,
+                TypeSimpleName = name,
+                TypeMetadataName = name,
+                FullyQualifiedName = name,
+                DisplayName = name,
+                TypeKind = (int)typeKind,
+                Accessibility = (int)IndexedAccessibility.Public,
+                SourceDocumentKey = "project|source",
+                SourceStart = sourceStart,
+                SourceLength = name.Length,
+            };
+        }
+
+        void AddMethod(string stableKey, string typeName, string containingTypeKey, int sourceStart)
+        {
+            snapshot.Symbols[stableKey] = new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = "project",
+                Kind = IndexedSymbolKind.Method,
+                Name = "Play",
+                NamespaceName = string.Empty,
+                TypeSimpleName = typeName,
+                FullyQualifiedName = $"{typeName}.Play()",
+                DisplayName = $"{typeName}.Play()",
+                ContainingSymbolKey = containingTypeKey,
+                ParameterCount = 0,
+                Accessibility = (int)IndexedAccessibility.Public,
+                SourceDocumentKey = "project|source",
+                SourceStart = sourceStart,
+                SourceLength = 4,
+            };
+        }
     }
 
     private static IndexSnapshot CreateLambdaCallSnapshot(string root)

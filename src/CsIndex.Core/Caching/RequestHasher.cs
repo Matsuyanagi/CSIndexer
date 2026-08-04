@@ -7,7 +7,7 @@ namespace CsIndex.Core.Caching;
 public static class RequestHasher
 {
     public const string ToolVersion = "0.1.0";
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     public static byte[] Build(ResolvedInput input, IndexOptions options)
     {

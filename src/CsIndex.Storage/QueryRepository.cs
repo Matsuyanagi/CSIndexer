@@ -64,7 +64,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 s.is_static, s.is_abstract, s.is_virtual, s.is_override,
                 s.async_role, s.async_involvement_depth,
                 d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name
+                p.assembly_name, s.type_kind, s.accessibility
             FROM symbols s
             LEFT JOIN documents d ON d.id = s.source_document_id
             LEFT JOIN projects p ON p.id = s.project_id
@@ -105,7 +105,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 s.is_static, s.is_abstract, s.is_virtual, s.is_override,
                 s.async_role, s.async_involvement_depth,
                 d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name
+                p.assembly_name, s.type_kind, s.accessibility
             FROM symbols s
             LEFT JOIN documents d ON d.id = s.source_document_id
             LEFT JOIN projects p ON p.id = s.project_id
@@ -132,7 +132,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 s.is_static, s.is_abstract, s.is_virtual, s.is_override,
                 s.async_role, s.async_involvement_depth,
                 d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name
+                p.assembly_name, s.type_kind, s.accessibility
             FROM symbols s
             LEFT JOIN documents d ON d.id = s.source_document_id
             LEFT JOIN projects p ON p.id = s.project_id
@@ -150,6 +150,41 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
         command.Parameters.AddWithValue("$async_involved", asyncInvolved);
         return await ReadSymbolsAsync(connection, command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<StoredInterfaceMethodBinding>> GetInterfaceMethodBindingsAsync(
+        long profileId,
+        IEnumerable<long> interfaceMethodIds,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = interfaceMethodIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var placeholders = AddIdParameters(command, ids);
+        command.CommandText = $"""
+            SELECT implementing_type_id, interface_method_id, implementation_method_id
+            FROM interface_method_bindings
+            WHERE analysis_profile_id = $profile_id
+              AND interface_method_id IN ({placeholders})
+            ORDER BY implementing_type_id, implementation_method_id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        var result = new List<StoredInterfaceMethodBinding>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new StoredInterfaceMethodBinding(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2)));
+        }
+
+        return result;
     }
 
     public async Task<IReadOnlyList<StoredCall>> GetCallsByCalleeAsync(
@@ -493,7 +528,9 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.IsDBNull(20) ? null : reader.GetInt32(20),
                     reader.GetBoolean(21),
                     reader.IsDBNull(22) ? null : reader.GetString(22),
-                    []));
+                    [],
+                    reader.IsDBNull(23) ? null : reader.GetInt32(23),
+                    reader.IsDBNull(24) ? null : reader.GetInt32(24)));
             }
         }
 
