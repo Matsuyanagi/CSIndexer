@@ -1934,7 +1934,7 @@ Undefined in current profile:
 
 初期段階では `table` と `json` を優先してよい。
 
-schema version 3では既存の`table` / `json`出力へ非同期解析情報を追加する。新しいコマンドやフィルターは追加しない。
+In schema version 3, the async-analysis fields added to the existing `table` / `json` outputs below introduce no additional commands or filters.
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
