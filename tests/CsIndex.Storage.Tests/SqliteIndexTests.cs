@@ -93,6 +93,59 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task GetInterfaceMethodBindingsAsync_OrdersSharedImplementationByInterfaceMethodId()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+
+        await index.SaveAsync(
+            CreateOverrideSearchSnapshot(temporary.Path, includeBindingOrderFixture: true),
+            cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var leftContract = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Play",
+            typeSimpleName: "ILeft",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+        var rightContract = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Play",
+            typeSimpleName: "IRight",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+        var implementingType = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "DualPlayer",
+            kind: IndexedSymbolKind.Type,
+            cancellationToken: cancellationToken));
+        var implementation = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Play",
+            typeSimpleName: "DualPlayer",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+
+        var bindings = await repository.GetInterfaceMethodBindingsAsync(
+            profile.Id,
+            [rightContract.Id, leftContract.Id],
+            cancellationToken);
+
+        Assert.Equal(2, bindings.Count);
+        Assert.All(bindings, binding =>
+        {
+            Assert.Equal(implementingType.Id, binding.ImplementingTypeId);
+            Assert.Equal(implementation.Id, binding.ImplementationMethodId);
+        });
+        Assert.Equal(
+            new[] { leftContract.Id, rightContract.Id }.Order().ToArray(),
+            bindings.Select(binding => binding.InterfaceMethodId));
+    }
+
+    [Fact]
     public async Task Save_ReplacementRemovesPriorInterfaceMethodBindingsWithoutAffectingOtherProfile()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -579,7 +632,10 @@ public sealed class SqliteIndexTests
         return snapshot;
     }
 
-    private static IndexSnapshot CreateOverrideSearchSnapshot(string root, string profileName = "override")
+    private static IndexSnapshot CreateOverrideSearchSnapshot(
+        string root,
+        string profileName = "override",
+        bool includeBindingOrderFixture = false)
     {
         var snapshot = CreateSnapshot(root, profileName);
         snapshot.Symbols.Clear();
@@ -603,6 +659,27 @@ public sealed class SqliteIndexTests
             InterfaceMethodKey = "i-playable-play",
             ImplementationMethodKey = "game-play",
         });
+        if (includeBindingOrderFixture)
+        {
+            AddType("i-left", "ILeft", IndexedTypeKind.Interface, 60);
+            AddMethod("i-left-play", "ILeft", "i-left", 70);
+            AddType("i-right", "IRight", IndexedTypeKind.Interface, 80);
+            AddMethod("i-right-play", "IRight", "i-right", 90);
+            AddType("dual-player", "DualPlayer", IndexedTypeKind.Class, 100);
+            AddMethod("dual-player-play", "DualPlayer", "dual-player", 110);
+            snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+            {
+                ImplementingTypeKey = "dual-player",
+                InterfaceMethodKey = "i-right-play",
+                ImplementationMethodKey = "dual-player-play",
+            });
+            snapshot.InterfaceMethodBindings.Add(new InterfaceMethodBindingData
+            {
+                ImplementingTypeKey = "dual-player",
+                InterfaceMethodKey = "i-left-play",
+                ImplementationMethodKey = "dual-player-play",
+            });
+        }
         return snapshot;
 
         void AddType(string stableKey, string name, IndexedTypeKind typeKind, int sourceStart)

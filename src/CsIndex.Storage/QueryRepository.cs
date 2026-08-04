@@ -171,7 +171,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             FROM interface_method_bindings
             WHERE analysis_profile_id = $profile_id
               AND interface_method_id IN ({placeholders})
-            ORDER BY implementing_type_id, implementation_method_id;
+            ORDER BY implementing_type_id, implementation_method_id, interface_method_id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         var result = new List<StoredInterfaceMethodBinding>();
