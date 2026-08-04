@@ -181,3 +181,33 @@ Alternatives: `symbol list`をmethodだけにする、document全体でラムダ
 Consequences: 一覧とcallee検索はラムダ本体の実行可能な呼び出しを既定で見落とさない。表示を短縮しても機械処理用の識別子は安定する。ラムダ番号はownerの構造を表すため、別owner間で番号を比較する意味はない。
 
 Date: 2026-08-02
+
+## DEC-0019: Branch-scoped interface bindings and query-time override expansion
+
+Status: Accepted
+
+Context: A method-only relation between an interface contract and its
+implementation cannot distinguish a class that implements a derived interface
+from a sibling that implements only the base interface. Inherited method
+queries also need to return a real declaration while preserving the queried
+receiver branch.
+
+Decision: Persist `interface_method_bindings` per analysis profile with the
+implementing type, exact interface contract method, and real implementation
+method. Resolve `--include-overrides` at query time with a seed containing the
+real method and receiver type branch. Interface searches expand through the
+exact contract's scoped bindings; class and abstract-class searches expand
+only through descendant `Overrides` branches. Inherited aliases return their
+real base declaration rather than a synthetic receiver declaration.
+
+Alternatives: Store a global method-to-interface edge without type context,
+materialize a transitive expansion closure at index time, or infer targets
+from receiver-value/runtime flow.
+
+Consequences: Queries stay profile-scoped, deterministic, cycle-safe, and
+descendant-only. Concrete searches do not include base/interface contracts,
+sibling implementations, or interface-statically-typed call sites. The
+feature requires schema and request-hash version 3; version 2 databases must
+be rebuilt rather than migrated automatically.
+
+Date: 2026-08-05

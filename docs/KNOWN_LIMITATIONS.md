@@ -12,6 +12,22 @@
 - 同じProfile名の再インデックスは、そのProfileの以前のデータを原子的に置き換えます。複数Profileは別名で保存できますが、`--all-profiles`横断検索はPhase 4です。
 - Source Linkと外部シンボルのソース取得は未実装です。外部定義はシンボル名、アセンブリ名、「ソースなし」を返します。
 
+## Override-aware method search
+
+- Interface implementation expansion can enumerate only types analyzed from
+  the selected source profile. Metadata-only implementation types outside that
+  profile are not enumerated.
+- Expansion is intentionally descendant-only. A concrete root does not expand
+  upward to base methods or interface contracts, and it does not cross into a
+  sibling implementation branch.
+- The feature does not perform receiver-value/data-flow or runtime-flow
+  analysis. A call statically bound to `IPlayable::Play()` is therefore not
+  returned by a concrete-rooted `Pianist::Play()` search; search the interface
+  contract to include that call site.
+- Incomplete compilation can prevent Roslyn from identifying an interface
+  implementation binding. Such a binding is omitted and the affected results
+  are conservatively partial rather than inferred.
+
 ## 非同期解析
 
 - `ReturnsAwaitable`は既知の`Task` / `ValueTask` / `UniTask`型をRoslynシンボルで照合します。custom awaitableの呼び出しが構造上`await`されている場合は辺を`Awaited`、所有関数を`ContainsAwait`として検出しますが、awaitされずに返却・保存・引数渡し・未観測実行されるcustom awaitableの辺は`None`となり、起点や中継関数を網羅できません。

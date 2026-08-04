@@ -60,6 +60,51 @@ csindex conditions
 
 検索構文は`[namespace.]type::method[(parameter-types)]`です。namespace省略は全候補へ展開し、parameter list省略は全overload、`()`は引数なしだけを選びます。C# keyword型は`System.*`へ正規化し、大文字小文字は区別します。
 
+### Override-aware method search
+
+`--include-overrides` is disabled by default. It is accepted only by these
+five method-query forms:
+
+```powershell
+csindex symbol find "IPlayable::Play()" --include-overrides
+csindex definition "IPlayable::Play()" --include-overrides
+csindex references "IPlayable::Play()" --include-overrides
+csindex callers "IPlayable::Play()" --include-overrides
+csindex callees "IPlayable::Play()" --include-overrides
+```
+
+The option requires a method query. A type-only query such as
+`csindex symbol find "IPlayable" --include-overrides`, and the
+`definition --at` form, fail with:
+
+```text
+--include-overrides requires a method query.
+```
+
+`symbol list`, `overrides`, `conditions`, and `index` reject the option as an
+unknown option. Without the option, every command keeps its exact-method
+lookup behavior.
+
+Expansion returns only real declarations and is descendant-only. An interface
+query is scoped to that exact contract: `IPlayable::Play()` includes the
+interface method and indexed real implementations such as `Pianist::Play()`,
+`ProPianist::Play()`, and `Game::Play()`. It does not use a derived-interface
+root to include types that implement only the base interface.
+
+A concrete query follows only its own override branch. For example,
+`Pianist::Play()` includes `Pianist::Play()` and `ProPianist::Play()`, but not
+the sibling `Game::Play()` implementation. It does not expand upward to an
+interface or base contract, cross to sibling branches, or infer runtime
+targets through receiver-value flow. Consequently, a concrete `references`
+or `callers` search excludes a call site statically bound to
+`IPlayable::Play()`; search `IPlayable::Play()` to include that call site.
+
+For an inherited alias, `D1::Play()` resolves to its real inherited
+declaration, for example `InheritedBase::Play()`, then expands only within
+the `D1` descendant branch. Its output can include `D2::Play()` but never a
+synthetic `D1::Play()` symbol or an override from another branch. A declared
+`new` member remains its own real declaration and is not an override.
+
 `symbol find`、`symbol list`、`definition`、`references`、`callers`、`callees`、`overrides`では、`--short-names`によりtable出力とJSONの`displayName`からnamespaceを省略できます。既定は完全修飾表示です。
 
 ### `symbol list`

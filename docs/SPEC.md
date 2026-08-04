@@ -1027,7 +1027,7 @@ enum ReferenceKind
 
 伝播方向は「非同期関数へ到達する呼び出し元方向」のみである。非同期起点から呼ばれる同期関数へは伝播せず、非同期起点へ到達しない循環のdepthはnullのままとする。
 
-Coreモデルとschema version 2のSQLite列は次の対応とする。
+Coreモデルとschema version 3のSQLite列は次の対応とする。
 
 | Coreモデル | SQLite列 |
 |---|---|
@@ -1420,6 +1420,51 @@ csindex symbol find "GameNS.Player"
 
 ---
 
+## 18.7 Override-aware method search
+
+`--include-overrides` is an opt-in mode for method queries. It is accepted
+only by the following five commands:
+
+```text
+csindex symbol find <method-query> --include-overrides
+csindex definition <method-query> --include-overrides
+csindex references <method-query> --include-overrides
+csindex callers <method-query> --include-overrides
+csindex callees <method-query> --include-overrides
+```
+
+Without the option, method resolution remains the existing exact lookup.
+The option requires a method query; a type-only query, or the
+`definition --at` form, fails with the invalid-argument message
+`--include-overrides requires a method query.` The option is not accepted by
+`symbol list`, `overrides`, `conditions`, or `index`.
+
+Expansion is descendant-only and returns real stored method declarations.
+An interface root is expanded in the scope of that exact interface contract:
+`IPlayable::Play()` includes the interface member and the indexed real
+implementations such as `Pianist::Play()`, `ProPianist::Play()`, and
+`Game::Play()`. A query rooted in a derived interface does not include a type
+that implements only the base interface.
+
+A concrete root expands only through transitive overrides in that receiver
+type's descendant branch. `Pianist::Play()` includes
+`Pianist::Play()` and `ProPianist::Play()`, but not `Game::Play()` or another
+sibling implementation of `IPlayable`. A concrete-rooted search does not
+expand upward to base or interface contracts, does not cross into sibling
+branches, and does not infer targets from receiver-value or runtime-flow
+analysis. In particular, concrete `references` and `callers` results exclude
+call sites whose static callee is `IPlayable::Play()`.
+
+When a receiver inherits a method without declaring it, the resolver returns
+the real inherited declaration and keeps the receiver branch as the expansion
+scope. For example, `D1::Play()` may resolve to `InheritedBase::Play()` and
+include `D2::Play()` below `D1`, but it does not emit a synthetic
+`D1::Play()` symbol or include an override from another branch. A declared
+`new` member resolves to that real declaration and is not treated as an
+override.
+
+---
+
 # 19. SQLite設計
 
 SQLiteを主データベースにする。
@@ -1431,6 +1476,10 @@ SQLiteを主データベースにする。
   index.sqlite
   manifest.json
 ```
+
+The current database schema version and request-hash schema version are `3`.
+Version 2 databases are rejected without modification and must be rebuilt
+into a version 3 database. No automatic migration or deletion is performed.
 
 ## 19.1 必須テーブル
 
@@ -1522,6 +1571,7 @@ CREATE TABLE symbols (
 
     method_kind           INTEGER,
     accessibility         INTEGER,
+    type_kind             INTEGER,
 
     is_static             INTEGER NOT NULL DEFAULT 0,
     is_abstract           INTEGER NOT NULL DEFAULT 0,
@@ -1618,6 +1668,44 @@ CREATE TABLE symbol_relations (
 );
 ```
 
+### interface_method_bindings
+
+`interface_method_bindings` preserves the selected real implementation for a
+specific interface contract and implementing type. The binding is scoped to
+the analysis profile so a query can retain its interface branch context.
+
+```sql
+CREATE TABLE interface_method_bindings (
+    analysis_profile_id      INTEGER NOT NULL,
+    implementing_type_id     INTEGER NOT NULL,
+    interface_method_id      INTEGER NOT NULL,
+    implementation_method_id INTEGER NOT NULL,
+
+    PRIMARY KEY (
+        analysis_profile_id,
+        implementing_type_id,
+        interface_method_id,
+        implementation_method_id
+    ),
+
+    FOREIGN KEY(analysis_profile_id)
+      REFERENCES analysis_profiles(id),
+
+    FOREIGN KEY(implementing_type_id)
+      REFERENCES symbols(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(interface_method_id)
+      REFERENCES symbols(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(implementation_method_id)
+      REFERENCES symbols(id) ON DELETE CASCADE
+);
+```
+
+`symbols.type_kind` is nullable. It stores the Roslyn type kind for type
+symbols and is NULL for non-type symbols; inherited alias resolution uses it
+to distinguish class base chains from interface base-interface chains.
+
 ### conditional_symbols_used
 
 ```sql
@@ -1664,6 +1752,12 @@ ON calls(document_id, source_start);
 
 CREATE INDEX ix_relations_target
 ON symbol_relations(target_symbol_id, relation_kind);
+
+CREATE INDEX ix_interface_method_bindings_contract
+ON interface_method_bindings(analysis_profile_id, interface_method_id);
+
+CREATE INDEX ix_interface_method_bindings_type
+ON interface_method_bindings(analysis_profile_id, implementing_type_id);
 ```
 
 ## 19.3 トランザクション
@@ -1840,12 +1934,30 @@ Undefined in current profile:
 
 初期段階では `table` と `json` を優先してよい。
 
-schema version 2では既存の`table` / `json`出力へ非同期解析情報を追加する。新しいコマンドやフィルターは追加しない。
+schema version 3では既存の`table` / `json`出力へ非同期解析情報を追加する。新しいコマンドやフィルターは追加しない。
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
 - symbol table: `symbol find`で`WriteSymbols`が出力する一致symbol行に限り、ロールが`None`かつdepthがnullの場合を除いて`[async: <AsyncRole>; depth: <number|null>]`を付ける。`definition`の定義位置行や`callers`のeffective caller行は対象外とする
 - call table: 既存の呼び出し情報の後へ`[<AsyncUsageKind>]`を付ける
+
+---
+
+## 21.10 Override-aware method-query option
+
+The five method-query commands listed in section 18.7 accept
+`--include-overrides`; its default is off. `symbol find`, `definition`, and
+the call-oriented commands report only real stored declarations in their
+matched or expanded target sets. `references` and `callers` then search calls
+to those real callee IDs, while `callees` searches calls made by each expanded
+real method.
+
+The expansion is query-time, profile-scoped, deterministic, and cycle-safe.
+It travels only to descendant implementations: interface searches use the
+exact interface contract's bindings, while class and abstract-class searches
+follow only descendant override branches. This option does not alter the
+independent `--dispatch` presentation mode and never performs upward,
+sibling-branch, or runtime-flow expansion.
 
 ---
 

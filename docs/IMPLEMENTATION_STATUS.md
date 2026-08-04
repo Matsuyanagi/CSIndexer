@@ -2,14 +2,14 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 非同期関与解析・関数一覧/ラムダ呼び出し出力（完了）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 非同期関与解析・関数一覧/ラムダ呼び出し出力（完了） / Override-aware method search（completed）
 
 ## Last Completed Work
 
 - .NET 10 Windows CLI、Roslyn、SQLiteの責務分離されたソリューションを作成
 - MSBuildWorkspaceによるProject/Solution入力とAdhocWorkspaceによるDirectory入力を実装
 - 型、メソッド、コンストラクター、ローカル関数、ラムダ、呼び出し、参照、継承関係を抽出
-- SQLiteスキーマv2、原子的な更新、破損・非対応DB検出、変更なしキャッシュを実装
+- SQLiteスキーマv3、原子的な更新、破損・非対応DB検出、変更なしキャッシュを実装
 - 全検索コマンド、table / JSON出力、生成コードフィルターを実装
 - Phase 1/2の自動受け入れテストとCLIプロセス試験を完了
 - Roslynで`AsyncRole`と`AsyncUsageKind`を抽出し、Task/ValueTask/UniTask、UniTaskVoid、非同期ストリーム、await/await foreach/await usingを分類
@@ -18,6 +18,8 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 - `symbol list`を追加し、既定でmethodとlambdaを一覧、`--kind method|lambda`と`--async-involved`で絞り込み可能にした
 - `--short-names`でtable表示およびJSONの`displayName`だけを短縮し、`fullyQualifiedName`を含むcanonical JSON fieldは不変にした
 - ラムダはownerごとに`<lambda#1>`から採番し、`callees`はネストしたラムダdescendantの呼び出しを再帰的に既定で含め、`--exclude-lambda-calls`で直接呼び出しへ限定可能にした
+- Added opt-in `--include-overrides` support to `symbol find`, method-query `definition`, `references`, `callers`, and `callees`; the default remains exact method lookup.
+- Added branch-scoped interface method bindings, nullable `symbols.type_kind`, inherited real-declaration alias resolution, and descendant-only query-time expansion. Schema and request-hash versions are now 3; version 2 databases are rejected and require rebuilding.
 
 ## Currently Implementing
 
@@ -32,15 +34,15 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 
 - Command: `dotnet build CsIndex.sln --configuration Release`
 - Result: 成功（警告0、エラー0）
-- Date: 2026-08-02
+- Date: 2026-08-05
 
 ## Test Status
 
 - Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 89
+- Passed: 125
 - Failed: 0
 - Skipped: 0
-- Date: 2026-08-02
+- Date: 2026-08-05
 
 ## Known Broken Areas
 
@@ -65,7 +67,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 
 ## Database Schema Version
 
-- 2
+- 3
 
 ## CLI Commands Implemented
 
