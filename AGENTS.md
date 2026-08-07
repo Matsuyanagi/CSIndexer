@@ -173,3 +173,38 @@ Continue autonomously through safe, approved, in-scope work.
 Stop and request direction when requirements conflict, a material product or
 architecture decision is unresolved, permissions are missing, or the next
 action would be destructive, externally visible, or materially expand scope.
+
+## Subagent Model Fallback
+
+For bounded implementation tasks, use the `implementer` custom agent.
+
+Model-selection procedure:
+
+1. First attempt to spawn `implementer` with `gpt-5.6-luna` and `max`
+   reasoning effort.
+2. If and only if the spawn fails because Luna is unavailable, unsupported,
+   disabled, or not included in the current account or workspace entitlement,
+   retry the same task once with `gpt-5.6-terra` and `max` reasoning effort.
+3. Preserve the exact same task brief, constraints, acceptance criteria,
+   interfaces, and report contract when retrying.
+4. Record that the fallback occurred and include the original availability
+   error in the final report.
+5. Do not retry Luna repeatedly during the same task after an availability
+   failure.
+
+Do not treat the following as model-availability failures:
+
+- Permission or sandbox denial
+- Invalid agent configuration
+- Missing files or dependencies
+- Test or build failure
+- Implementation difficulty
+- Context or requirements ambiguity
+
+Handle those failures according to their actual cause instead of switching
+models.
+
+If explicit model selection is unavailable in the current client, spawn
+`implementer` without a model override. The configured default
+`gpt-5.6-terra` will then be used.
+
