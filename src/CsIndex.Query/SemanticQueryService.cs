@@ -11,6 +11,8 @@ public sealed class SemanticQueryService(QueryRepository repository)
 
     private readonly SymbolQueryParser _parser = new();
     private readonly MethodTargetResolver _methodTargetResolver = new(repository);
+    private readonly AsyncPathResolver _asyncPathResolver = new(repository);
+    private readonly CallerTreeBuilder _callerTreeBuilder = new(repository);
 
     public async Task<QueryContext> FindSymbolsAsync(
         string queryText,
@@ -129,6 +131,41 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 ShowSource: true),
             profileName,
             sourceOnly: true,
+            cancellationToken);
+    }
+
+    public async Task<AsyncPathResult> FindAsyncPathAsync(
+        string queryText,
+        int maxNodes = 500,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateMaxNodes(maxNodes);
+        var (profile, root) = await ResolveSingleSourceMethodAsync(
+            queryText,
+            profileName,
+            cancellationToken);
+        return await _asyncPathResolver.ResolveAsync(profile, root, maxNodes, cancellationToken);
+    }
+
+    public async Task<CallerTreeResult> FindCallerTreeAsync(
+        string queryText,
+        int depth = 3,
+        int maxNodes = 500,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateDepth(depth);
+        ValidateMaxNodes(maxNodes);
+        var (profile, root) = await ResolveSingleSourceMethodAsync(
+            queryText,
+            profileName,
+            cancellationToken);
+        return await _callerTreeBuilder.BuildAsync(
+            profile,
+            root,
+            depth,
+            maxNodes,
             cancellationToken);
     }
 
@@ -422,6 +459,49 @@ public sealed class SemanticQueryService(QueryRepository repository)
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Includes);
         ArgumentNullException.ThrowIfNull(request.Excludes);
+    }
+
+    private async Task<(StoredProfile Profile, StoredSymbol Root)> ResolveSingleSourceMethodAsync(
+        string queryText,
+        string? profileName,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var query = _parser.Parse(queryText);
+        if (!query.IsMethodQuery)
+        {
+            throw new SymbolQueryParseException("Graph queries require an exact source-backed method query.");
+        }
+
+        var context = await FindSymbolsAsync(
+            queryText,
+            profileName,
+            sourceOnly: true,
+            includeOverrides: false,
+            cancellationToken);
+        if (context.MatchedSymbols.Count != 1)
+        {
+            throw new SymbolQueryParseException(
+                $"Graph query must resolve exactly one source-backed method: {queryText}");
+        }
+
+        return (context.Profile, context.MatchedSymbols[0]);
+    }
+
+    private static void ValidateDepth(int depth)
+    {
+        if (depth < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(depth), "Depth cannot be negative.");
+        }
+    }
+
+    private static void ValidateMaxNodes(int maxNodes)
+    {
+        if (maxNodes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxNodes), "Maximum node count must be positive.");
+        }
     }
 
     private async Task<QueryContext> FindTargetSymbolsAsync(

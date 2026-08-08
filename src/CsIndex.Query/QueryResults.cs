@@ -27,3 +27,21 @@ public sealed record RelationResult(QueryContext Context, IReadOnlyList<StoredRe
 public sealed record ConditionsResult(StoredProfile Profile, IReadOnlyList<ConditionalSummary> Symbols);
 
 public sealed record SourcePoint(string Path, int Line, int Column, int Offset);
+
+public sealed record AsyncPathResult(
+    StoredProfile Profile,
+    StoredSymbol Root,
+    IReadOnlyList<StoredSymbol> Nodes,
+    bool Found,
+    bool Truncated);
+
+public sealed record CallerTreeNode(StoredSymbol Symbol, int Depth);
+
+public sealed record CallerTreeEdge(long CallerSymbolId, long CalleeSymbolId);
+
+public sealed record CallerTreeResult(
+    StoredProfile Profile,
+    StoredSymbol Root,
+    IReadOnlyList<CallerTreeNode> Nodes,
+    IReadOnlyList<CallerTreeEdge> Edges,
+    bool Truncated);

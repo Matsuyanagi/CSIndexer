@@ -3,6 +3,7 @@ using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
 using CsIndex.Query;
 using CsIndex.Storage;
+using Microsoft.Data.Sqlite;
 
 namespace CsIndex.IntegrationTests;
 
@@ -203,6 +204,79 @@ public sealed class SemanticIndexFixture : IDisposable
                 }
             }
 
+            public class AsyncGraph
+            {
+                public void Start() => Middle();
+                public void Middle() => EndAsync();
+                public async Task EndAsync() { await Task.Yield(); }
+                public async Task SelfAsync() { await Task.Yield(); }
+                public void Unreachable() { }
+
+                public void CycleStart() => CycleMiddle();
+                public void CycleMiddle()
+                {
+                    CycleStart();
+                    EndAsync();
+                }
+
+                public void EqualStart()
+                {
+                    EqualLeft();
+                    EqualRight();
+                }
+
+                public void EqualLeft() => EqualEndAsync();
+                public void EqualRight() => EqualEndAsync();
+                public async Task EqualEndAsync() { await Task.Yield(); }
+            }
+
+            public sealed class GraphCreated
+            {
+                public GraphCreated() { }
+            }
+
+            public class CallerGraph
+            {
+                public void DirectTarget() { }
+                public void DirectCaller() => DirectTarget();
+
+                public void DepthTarget() { }
+                public void DepthOne() => DepthTarget();
+                public void DepthTwo() => DepthOne();
+                public void DepthThree() => DepthTwo();
+                public void DepthFour() => DepthThree();
+
+                public void RecursiveTarget() { }
+                public void RecursiveRight()
+                {
+                    RecursiveLeft();
+                    RecursiveTarget();
+                }
+
+                public void RecursiveLeft() => RecursiveRight();
+
+                public void LambdaTarget() { }
+                public void LambdaOwner()
+                {
+                    Action action = () => LambdaTarget();
+                    _ = action;
+                }
+
+                public void OrderingTarget() { }
+                public void ZCaller() => OrderingTarget();
+                public void ACaller() => OrderingTarget();
+
+                public void MetadataTarget() { }
+                public void MetadataCaller()
+                {
+                    MetadataTarget();
+                    object value = new object();
+                    _ = value.ToString();
+                }
+
+                public void ObjectCreator() => _ = new GraphCreated();
+            }
+
             public class Player { }
 
             public static class PlayerExtensions
@@ -393,6 +467,61 @@ public sealed class SemanticIndexFixture : IDisposable
     public string? PrimaryProfileName => null;
     public string SecondaryProfileName => "secondary";
     public SemanticQueryService Query => new(new SqliteIndex(DatabasePath).CreateQueryRepository());
+    public QueryRepository Repository => new SqliteIndex(DatabasePath).CreateQueryRepository();
+
+    public async Task<StoredSymbol> GetStoredSymbolAsync(
+        string displayName,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var symbols = await Repository.FindExecutableSymbolsAsync(
+            profile.Id,
+            sourceOnly: false,
+            cancellationToken);
+        return symbols.Single(symbol => symbol.DisplayName == displayName);
+    }
+
+    public async Task SetAsyncNextSymbolIdAsync(
+        string displayName,
+        long? asyncNextSymbolId,
+        string? profileName = null,
+        bool allowMissingTarget = false,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = DatabasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        if (allowMissingTarget)
+        {
+            command.CommandText = "PRAGMA foreign_keys = OFF;";
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        command.CommandText = """
+            UPDATE symbols
+            SET async_next_symbol_id = $async_next_symbol_id
+            WHERE analysis_profile_id = $profile_id
+              AND display_name = $display_name;
+            """;
+        command.Parameters.AddWithValue("$async_next_symbol_id", (object?)asyncNextSymbolId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$profile_id", profile.Id);
+        command.Parameters.AddWithValue("$display_name", displayName);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected one symbol named '{displayName}' in profile '{profile.Name}', but updated {updated}.");
+        }
+    }
 
     public string GetLocation(string text)
     {
