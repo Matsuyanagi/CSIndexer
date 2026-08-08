@@ -137,6 +137,17 @@ public sealed class SymbolPatternMatcherTests
     }
 
     [Fact]
+    public void LambdaSuffixPattern_UsesIgnoreCaseForTheMarkerAndCanonicalName()
+    {
+        var matcher = new SymbolPatternMatcher(Request("::<LAMBDA#1>", ignoreCase: true));
+
+        Assert.True(matcher.IsMatch(Symbol(
+            "Tokyo.Gamer::Function()::<lambda#1>",
+            kind: IndexedSymbolKind.Lambda,
+            name: "<lambda#1>")));
+    }
+
+    [Fact]
     public void NonLambdaPattern_DoesNotMatchAnUnrelatedLambda()
     {
         var matcher = new SymbolPatternMatcher(Request("*.Gamer::Play"));

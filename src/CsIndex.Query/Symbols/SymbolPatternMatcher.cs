@@ -35,8 +35,11 @@ public sealed class SymbolPatternMatcher
             request.UseRegex,
             request.IgnoreCase,
             timeout);
+        var lambdaMarkerComparison = request.IgnoreCase
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
         _lambdaSuffixPattern = request.UseRegex || request.Pattern is null ||
-                               !request.Pattern.Contains("::<lambda#", StringComparison.Ordinal)
+                               !request.Pattern.Contains("::<lambda#", lambdaMarkerComparison)
             ? null
             : CompileSuffix(request.Pattern, "pattern", request.IgnoreCase, timeout);
     }
