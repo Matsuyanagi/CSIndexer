@@ -1023,16 +1023,17 @@ enum ReferenceKind
 
 呼び出し式と`await`が別文のときはデータフローを遡らないため、生成元の呼び出し辺を`Awaited`へ変更しない。ただし実際の`await`は所有関数の`ContainsAwait`として記録する。
 
-非同期関与はnullable整数`AsyncInvolvementDepth`で表す。ソース情報を優先して統合済みのシンボルのうち、`None`以外の直接ロールを1つ以上持つものを起点（depth 0）とする。全ドキュメント抽出後、解決済みの通常呼び出し（`ReferenceKind.Invocation`）から`callee_definition_key -> caller_symbol_key`の逆辺を作り、全起点を同時にキューへ入れる複数始点BFSを1回実行する。呼び出し元はcalleeの距離+1とし、既訪問の最短距離以下になる候補は再投入しない。この停止条件により自己再帰・相互再帰・複数循環でも有限に停止し、複数経路がある場合は最短距離だけを保持する。
+非同期関与はnullable整数`AsyncInvolvementDepth`で表す。ソース情報を優先して統合済みのシンボルのうち、`None`以外の直接ロールを1つ以上持つものを起点（depth 0）とする。全ドキュメント抽出後、解決済みの通常呼び出し（`ReferenceKind.Invocation`）から`callee_definition_key -> caller_symbol_key`の逆辺を作り、全起点を同時にキューへ入れる複数始点BFSを1回実行する。呼び出し元はcalleeの距離+1とし、最初または厳密に短い候補だけを更新する。各非起点には選択されたcalleeの`AsyncNextSymbolKey`も保存し、同距離の後続候補で上書きしない。この停止条件により自己再帰・相互再帰・複数循環でも有限に停止し、複数経路がある場合は最短距離と1つの決定的next hopだけを保持する。
 
 伝播方向は「非同期関数へ到達する呼び出し元方向」のみである。非同期起点から呼ばれる同期関数へは伝播せず、非同期起点へ到達しない循環のdepthはnullのままとする。
 
-Coreモデルとschema version 3のSQLite列は次の対応とする。
+Coreモデルとschema version 4のSQLite列は次の対応とする。
 
 | Coreモデル | SQLite列 |
 |---|---|
 | `SymbolData.AsyncRole` | `symbols.async_role INTEGER NOT NULL DEFAULT 0` |
 | `SymbolData.AsyncInvolvementDepth` | `symbols.async_involvement_depth INTEGER` |
+| `SymbolData.AsyncNextSymbolKey` | `symbols.async_next_symbol_id INTEGER` |
 | `CallData.AsyncUsageKind` | `calls.async_usage_kind INTEGER NOT NULL DEFAULT 0` |
 
 ---
@@ -1165,6 +1166,39 @@ version: sha256:...
 ```
 
 表示用番号と永続識別子を分離する。
+
+### 16.1.1 Shipped owner-scoped numbering
+
+Every lambda is numbered in source order within its nearest non-lambda
+executable owner. Nested lambdas therefore share the surrounding method,
+local function, accessor, or synthetic initializer counter rather than
+restarting at the immediately enclosing lambda:
+
+```text
+Game.Player::Update()::<lambda#1>
+Game.Player::Update()::<lambda#2>
+Game.Player::Update()::<lambda#3>
+```
+
+The stored `containing_symbol_id` remains the immediate lexical owner. This is
+intentional: calls written in a nested lambda remain calls from that nested
+lambda, even though its display counter is scoped to the non-lambda owner.
+Ownership is not a call edge.
+
+### 16.1.2 Shipped member initializer owners
+
+Field, property, and event initializers receive distinct synthetic owners:
+
+```text
+Namespace.Type::<initializer:fieldName>
+Namespace.Type::<initializer:PropertyName>
+Namespace.Type::<initializer:EventName>
+```
+
+The synthetic owner has a source-backed stable key incorporating its
+containing type, document, display, source span, and document content hash;
+its lambdas are numbered in that initializer's source order. This also keeps
+different members of a partial type distinct.
 
 ## 16.2 ローカル関数
 
@@ -1477,9 +1511,10 @@ SQLiteを主データベースにする。
   manifest.json
 ```
 
-The current database schema version and request-hash schema version are `3`.
-Version 2 databases are rejected without modification and must be rebuilt
-into a version 3 database. No automatic migration or deletion is performed.
+The current database schema version and request-hash schema version are `4`.
+Version 1, 2, 3, and every other unsupported version are rejected without
+modification and must be rebuilt into a version 4 database. No automatic
+migration or deletion is performed.
 
 ## 19.1 必須テーブル
 
@@ -1581,6 +1616,11 @@ CREATE TABLE symbols (
     async_role            INTEGER NOT NULL DEFAULT 0,
     async_involvement_depth INTEGER,
 
+    return_type_key       TEXT,
+    normalized_source     TEXT,
+    normalized_source_hash BLOB,
+    async_next_symbol_id  INTEGER,
+
     source_document_id    INTEGER,
     source_start          INTEGER,
     source_length         INTEGER,
@@ -1590,7 +1630,10 @@ CREATE TABLE symbols (
     UNIQUE(analysis_profile_id, stable_key),
 
     FOREIGN KEY(containing_symbol_id)
-      REFERENCES symbols(id),
+      REFERENCES symbols(id) ON DELETE SET NULL,
+
+    FOREIGN KEY(async_next_symbol_id)
+      REFERENCES symbols(id) ON DELETE SET NULL,
 
     FOREIGN KEY(source_document_id)
       REFERENCES documents(id)
@@ -1740,6 +1783,9 @@ ON symbols(fully_qualified_name);
 
 CREATE INDEX ix_symbols_location
 ON symbols(source_document_id, source_start);
+
+CREATE INDEX ix_symbols_profile_async_next
+ON symbols(analysis_profile_id, async_next_symbol_id);
 
 CREATE INDEX ix_calls_callee
 ON calls(callee_definition_id);
@@ -1934,7 +1980,9 @@ Undefined in current profile:
 
 初期段階では `table` と `json` を優先してよい。
 
-In schema version 3, the async-analysis fields added to the existing `table` / `json` outputs below introduce no additional commands or filters.
+Schema version 4 retains the existing async-analysis fields and adds persisted
+async next-hop, executable metadata, normalized-source, and graph-query
+support described in section 33.
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
@@ -2632,4 +2680,109 @@ Cache reused / rebuilt
 * 変更された主要ファイル
 
 「すべて完成した」と曖昧に報告せず、Phaseと機能単位で明示すること。
+
+---
+
+# 33. Shipped symbol, source, and graph expansion
+
+This section records the schema-v4 behavior that is implemented now. It does
+not replace the authoritative acceptance requirements in
+`docs/2026-08-08.revised2.md`.
+
+## 33.1 Executable metadata and normalized source
+
+Source-defined methods, constructors, local functions, lambdas, accessors,
+operators, and conversions persist their executable metadata. Constructors
+and static constructors have no return type; non-applicable accessibility is
+not rendered as a C# modifier. Text signatures are ordered as:
+
+```text
+accessibility static async return-type display-name
+```
+
+`--short-names` shortens the displayed return/parameter types and name only.
+The JSON fields `fullyQualifiedName`, `parameters`, and `returnType` stay
+canonical.
+
+Normalized source is built from active Roslyn syntax tokens, not by regular
+expression. Comments, documentation trivia, directives, inactive conditional
+text, indentation, and ordinary line breaks are omitted. Literal token text
+(including interpolated and raw strings) is retained. A space is inserted only
+when joining adjacent token text would change lexical tokenization. The
+one-line result and SHA-256 hash are stored on `symbols`.
+
+## 33.2 Symbol and source search
+
+`symbol find` accepts a positional canonical-name pattern or component
+filters. A pattern with no `*` uses exact resolver compatibility when no
+other search modifier applies. Otherwise, wildcard matching treats only `*`
+as zero-or-more characters; all other non-regex characters are literal.
+`--regex` instead uses a culture-invariant .NET regular expression with a
+two-second timeout. `--ignore-case` enables culture-invariant regex ignore-case
+for names and ordinal ignore-case for source comparisons. Results are ordered
+by canonical display name, source path, source position, and numeric symbol ID.
+
+Lambda suffix, owner-suffix, and full lambda patterns match canonical lambda
+display names. A method pattern without parameters matches all overloads; a
+complete parameter list selects the complete signature. `--kind method|lambda`
+is a filter, not a separate identity scheme.
+
+Source predicates run after name/metadata predicates. Multiple excludes are
+ORed and short-circuit rejection; every include must match a surviving
+candidate. Source predicates exclude source-less candidates. `--show-source`
+does not filter candidates; it adds the normalized text to table/JSON output.
+Standalone `source search` requires at least one include or exclude predicate,
+while `symbol find` does not. `source show` and `source search` return only
+source-backed executable symbols.
+
+## 33.3 Persisted async path
+
+At index time, deterministic reverse multi-source BFS runs over resolved
+invocation edges. Async origins are depth zero with a null next hop. A caller
+receives the callee as its `async_next_symbol_id` only on first discovery or a
+strictly shorter path; an equal-distance discovery never replaces it. The
+stored next ID must point to the selected profile and reduce
+`async_involvement_depth` by exactly one.
+
+`csindex async tree <symbol>` follows this stored chain without recomputing or
+reselecting a route. Traversal is iterative, cancellation-aware, visited-ID
+guarded, and node-bounded. Missing, cross-profile, cyclic, or non-decreasing
+next-hop data is a database integrity error. A no-path result is successful
+and reported explicitly.
+
+## 33.4 Bounded caller graph
+
+`csindex callers tree <symbol>` is a profile-scoped breadth-first traversal of
+resolved invocation and object-creation edges. It begins at depth zero,
+defaults to depth three and 500 nodes, and interprets depth zero as unbounded
+depth while retaining the node limit. Nodes are unique and sorted by display
+name, source path, source position, and ID. Edges between already included
+nodes are retained, so cycles remain visible.
+
+Traversal includes source-backed methods/lambdas and excludes `System` and
+`System.*`. It does not use a namespace string alone to decide whether a
+symbol has source. Calls inside a lambda remain owned by that lambda; the
+containing owner is never synthesized as a caller. No delegate `Invoke`,
+event, callback, reflection, receiver-data-flow, or runtime dispatch
+inference is performed.
+
+Text output forms a spanning tree plus `Additional edges:` where needed.
+Mermaid uses safe `n<symbol-id>` IDs and escaped labels with caller-to-callee
+arrows. JSON provides root, node depths, unique edges, profile, and truncation
+state. All output modes expose truncation rather than silently omitting it.
+
+## 33.5 Schema v4 and update order
+
+Schema v4 adds `return_type_key`, `normalized_source`,
+`normalized_source_hash`, and `async_next_symbol_id` to `symbols`. The latter
+is a self foreign key with `ON DELETE SET NULL` and has the
+`ix_symbols_profile_async_next (analysis_profile_id, async_next_symbol_id)`
+index. `containing_symbol_id` is also a self foreign key with `ON DELETE SET
+NULL`.
+
+An index replacement creates all symbol rows before resolving either self
+reference. It then updates containing and async-next IDs in the same save
+transaction, inserts dependent rows, runs `PRAGMA foreign_key_check`, and
+commits only on success. Version 3 and every unsupported schema are rejected
+before WAL or DDL mutation; rebuilding is required.
 

@@ -2,10 +2,10 @@
 
 ## Version
 
-- Current schema version: 3
-- Request hash schema version: 3
+- Current schema version: 4
+- Request hash schema version: 4
 - `schema_info`は必ず1行とし、未知のversionや破損を検出した場合はDBを削除・変更せずエラーにします。
-- Version 2 databases and every other unsupported version are rejected without modification and must be rebuilt into a version 3 database. No ALTER migration or automatic deletion is performed; the database journal mode is not changed before a mismatch is rejected.
+- Version 1, 2, 3, and every other unsupported database version are rejected without modification and must be rebuilt into a version 4 database. No ALTER migration or automatic deletion is performed; the database journal mode is not changed before a mismatch is rejected.
 - `schema_info`がない場合、SQLite内部object以外のuser table / index / view / triggerが存在しない空DBだけを新規DBとして初期化します。未認識の非空DBはWAL設定・DDLより前にfail-fastし、既存object、行、journal modeを変更しません。
 
 ## Tables
@@ -14,7 +14,7 @@
 - `index_runs`: input root、input fingerprint、request hash、最終更新時刻。変更なしキャッシュの判定に使用します。
 - `projects`: profile/run、assembly、project path、target framework、project fingerprint。
 - `documents`: 絶対正規化path、content hash、予約済みsemantic hash、生成コード情報。
-- `symbols`: stable key、型/メソッド/ラムダ/initializer、表示・検索名、source span、nullable `type_kind INTEGER`（型symbolのRoslyn type kind、非型symbolはNULL）、直接非同期ロール`async_role INTEGER NOT NULL DEFAULT 0`、非同期起点までの最短距離`async_involvement_depth INTEGER`、将来互換フラグ。
+- `symbols`: stable key、型/メソッド/ラムダ/initializer、表示・検索名、source span、nullable `type_kind INTEGER`（型symbolのRoslyn type kind、非型symbolはNULL）、`method_kind`、`accessibility`、`is_static`、direct async role `async_role INTEGER NOT NULL DEFAULT 0`、async-origin distance `async_involvement_depth INTEGER`、persisted next-hop ID `async_next_symbol_id INTEGER`、`return_type_key TEXT`、`normalized_source TEXT`、and `normalized_source_hash BLOB`。
 - `method_parameters`: ordinal、正規化type key、ref kind、optional。
 - `calls`: invocation/reference分類、static/virtual/interface/dynamic dispatch、resolution status/reason、呼び出し結果の利用方法`async_usage_kind INTEGER NOT NULL DEFAULT 0`、source span。
 - `call_candidates`: 曖昧呼び出しの全候補。
@@ -24,9 +24,49 @@
 
 `docs/SPEC.md` 19.2の必須indexに加え、`index_runs`のキャッシュ検索indexを持ちます。FTS5は使用していません。
 
+## Version 4 executable-source and async-path storage
+
+The following version 4 columns are part of `symbols` in addition to the
+pre-existing identity, location, and async-role fields:
+
+```sql
+return_type_key          TEXT,
+normalized_source        TEXT,
+normalized_source_hash   BLOB,
+async_next_symbol_id     INTEGER,
+
+FOREIGN KEY(containing_symbol_id)
+  REFERENCES symbols(id) ON DELETE SET NULL,
+
+FOREIGN KEY(async_next_symbol_id)
+  REFERENCES symbols(id) ON DELETE SET NULL
+```
+
+`normalized_source` is the token-normalized executable syntax and
+`normalized_source_hash` is its SHA-256 hash. A source-backed definition is
+identified by a non-null `source_document_id`; metadata-only symbols retain no
+normalized source. `async_next_symbol_id` is null for async origins (depth
+zero) and points to the one selected next symbol for a non-origin. It is not a
+set of alternate routes.
+
+The version 4 schema adds this index:
+
+```sql
+CREATE INDEX ix_symbols_profile_async_next
+ON symbols(analysis_profile_id, async_next_symbol_id);
+```
+
+The existing indexes remain: `ix_index_runs_cache`, `ix_symbols_name`,
+`ix_symbols_short_method`, `ix_symbols_namespace_type_method`,
+`ix_symbols_fully_qualified`, `ix_symbols_location`, `ix_calls_callee`,
+`ix_calls_caller`, `ix_calls_location`, `ix_relations_target`,
+`ix_interface_method_bindings_contract`, and
+`ix_interface_method_bindings_type`. Arbitrary substring matching against
+`normalized_source` deliberately has no B-tree index or FTS table.
+
 ## Override-aware method-search storage
 
-The version 3 `interface_method_bindings` table and its foreign keys are:
+The version 4 `interface_method_bindings` table and its foreign keys are:
 
 ```sql
 CREATE TABLE interface_method_bindings (
@@ -69,12 +109,20 @@ symbols and remains NULL for all other symbol kinds.
 
 1. Roslyn結果を`IndexSnapshot`としてメモリに完成させます。
 2. 1つのSQLite transaction内で同一Profileの旧runを削除します。
-3. profile/run/project/document/symbol/call/relation/interface bindingをprepared commandで挿入します。
-4. `PRAGMA foreign_key_check`を実行します。
-5. 成功時だけcommitし、例外・キャンセル時は以前のindexを保持します。
+3. profile/run/project/document/symbol rowsをprepared commandで挿入します。
+4. 全symbolのnumeric IDが確定してから、同じtransaction内で
+   `containing_symbol_id`と`async_next_symbol_id`をstable keyから更新します。
+5. parameter/call/relation/interface-binding/conditional-symbol rowsを挿入します。
+6. `PRAGMA foreign_key_check`を実行します。
+7. 成功時だけcommitし、例外・キャンセル時は以前のindexを保持します。
 
 Foreign keyは有効、journal modeはWALです。テストと短命CLIでファイルを確実に解放するためconnection poolingは無効です。
 
-`async_role`と`async_usage_kind`はCore enumの整数値を保存し、`async_involvement_depth`は非同期起点で0、呼び出し元へ1ずつ増加、非関与時はNULLです。`QueryRepository`のすべてのsymbol/call readerがこれらの列を復元するため、RoslynワークスペースなしのDB-only queryでも同じ値を取得できます。
+`async_role`と`async_usage_kind`はCore enumの整数値を保存します。
+`async_involvement_depth` is zero at an async origin, increases by one toward
+callers, and is NULL for a non-involved symbol. `async_next_symbol_id` records
+the one deterministic next hop toward that origin. Every symbol/call reader in
+`QueryRepository` reconstructs these fields, return type, method kind, and
+normalized source for DB-only queries; Roslyn is not loaded while querying.
 
-空の新規DBと対応済みversion 3 DBにだけWALを設定します。version 2を含むversion不一致時と`schema_info`のない非空DBでは例外を返し、テーブル、行、journal modeを変更しません。connection-localな`PRAGMA foreign_keys=ON`だけはschema検査前に設定します。
+空の新規DBと対応済みversion 4 DBにだけWALを設定します。version 3を含むversion不一致時と`schema_info`のない非空DBでは例外を返し、テーブル、行、journal modeを変更しません。connection-localな`PRAGMA foreign_keys=ON`だけはschema検査前に設定します。

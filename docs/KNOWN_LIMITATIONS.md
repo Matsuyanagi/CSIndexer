@@ -5,7 +5,7 @@
 - 変更なしならRoslynを起動せずDBを再利用しますが、入力変更時は現在すべての対象Projectを再解析します。仕様22.3のプロジェクト単位差分更新と参照元Projectの保守的無効化は未実装です。
 - キャッシュの事前判定は入力ルート内のソース・構成ファイル、明示参照、define fileをハッシュします。MSBuild評価後にだけ判明する入力ルート外のProjectReferenceや暗黙MetadataReferenceの変更は、`--rebuild`が必要な場合があります。
 - 複数TFMの完全な並列インデックスと同一シンボルのProfile/TFM別表示は未実装です。`--framework`で1つを選択できます。
-- 呼び出し抽出は通常呼び出し、オブジェクト生成、method group、delegate生成、`nameof`を扱います。プロパティaccessor、イベント、演算子、変換、関数ポインターはPhase 4です。
+- 呼び出し抽出は通常呼び出し、オブジェクト生成、method group、delegate生成、`nameof`を扱います。Function-symbol and normalized-source extraction now covers accessors, operators, and conversions, but call/relation extraction for property access, event access, and function pointers remains Phase 4.
 - 未解決・曖昧呼び出しと候補は保存しますが、高度なデリゲートフロー、`dynamic`の実行時候補、reflectionは追跡しません。
 - 検索構文は通常型と通常メソッドを対象とし、ネスト型、ジェネリック型、配列型、nullable型、`ref/out/in`表記は予約済みエラーになります。
 - `--generated-source all` / `none` は予約済みで、現在は既定の`physical`だけを受け付けます。
@@ -35,7 +35,31 @@
 - `await task;`のtaskが以前の文の呼び出しで生成された場合、所有関数の`ContainsAwait`は記録しますが、データフローを遡って生成元の呼び出し辺を`Awaited`にはしません。
 - 非同期関与の伝播辺は解決済みの通常`Invocation`だけです。`dynamic`呼び出し、高度なdelegate flow、method group経由、reflection、runtime dispatch候補は追跡しません。
 - 伝播は静的に解決されたcalleeからcallerへの逆辺に限定します。仮想・interface呼び出しの実行時target候補を展開した非同期関与は保存しません。
-- `AsyncInvolvementDepth`は非同期起点までの最短距離だけを保存します。到達可能な全起点、全経路、経路を構成する辺は保存しません。
+- `AsyncInvolvementDepth` stores a shortest distance and `async_next_symbol_id` stores one selected next hop. The index does not retain every reachable origin, every equal shortest path, or a separately queryable path-edge history.
+
+## Symbol, source, and graph expansion
+
+- Version 3 and every older/unknown database version must be rebuilt. There is no automatic migration or compatibility reader for those databases.
+- Normalized-source matching is an arbitrary substring predicate over
+  source-backed executable candidates. It can scan candidates because neither
+  a B-tree index nor FTS is used for arbitrary substrings.
+- Source normalization intentionally omits trivia, comments, directives, and
+  inactive conditional text. `source show` and `source search` therefore do
+  not expose or match those removed characters, while literal token content is
+  preserved.
+- `source show`/`source search` are limited to indexed source-backed methods
+  and lambdas. Metadata-only symbols, external decompilation, and Source Link
+  retrieval are not provided.
+- `async tree` accepts an exact source-backed method root and follows the one
+  persisted async next-hop chain. It does not enumerate alternate equal paths
+  or dynamically infer another route.
+- `callers tree` follows only resolved static invocation and object-creation
+  facts. It does not infer delegate `Invoke` targets, events, callbacks,
+  reflection, receiver-value/data flow, or runtime virtual/interface dispatch.
+  Lambda ownership is not a caller edge.
+- Caller trees exclude metadata-only callers and `System`/`System.*` callers.
+  A source-backed external-looking namespace other than `System` remains in
+  scope because source definition is the primary filter.
 
 ## Unity / Phase 3
 
@@ -45,4 +69,4 @@
 
 ## Phase 4
 
-- 非物理Source Generator出力、ファイル単位差分、`semantic_hash`、仮想呼び出し候補の精密化、Source Link、call tree、DOT/YAML/JSONL、daemon、watch、IDE連携は未実装です。
+- 非物理Source Generator出力、ファイル単位差分、`semantic_hash`、仮想呼び出し候補の精密化、Source Link、caller graph以外のgeneral call-tree views、DOT/YAML/JSONL、daemon、watch、IDE連携は未実装です。

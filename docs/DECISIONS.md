@@ -211,3 +211,148 @@ feature requires schema and request-hash version 3; version 2 databases must
 be rebuilt rather than migrated automatically.
 
 Date: 2026-08-05
+
+## DEC-0020: Function-scoped lambda display numbering
+
+Status: Accepted
+
+Context: Nested lambdas need stable, searchable display names without losing
+their immediate lexical owner for call attribution. Field, property, and event
+initializers also need distinct owners.
+
+Decision: Number every lambda in source order within its nearest non-lambda
+executable owner. Keep the immediate lexical owner in `containing_symbol_id`.
+Create a synthetic initializer owner named
+`Namespace.Type::<initializer:memberName>` for field, property, and event
+initializers; its stable key is source-backed, rather than a display string
+alone.
+
+Supersedes: only the nested-lambda numbering sentence in DEC-0018. The
+remainder of DEC-0018, including function-list defaults, canonical-field
+rules, and `callees` lambda-descendant behavior, remains accepted.
+
+Alternatives: Reset the counter at every nested lambda, number the entire
+document globally, or treat ownership as a call edge.
+
+Consequences: A nested lambda is displayed under the surrounding function or
+initializer with the next owner-scoped number, while calls written inside it
+remain attributed to the immediate lambda. Adding a lambda can renumber only
+later lambdas under that same owner.
+
+Date: 2026-08-08
+
+## DEC-0021: Token-normalized executable source and source-filter semantics
+
+Status: Accepted
+
+Context: Source search needs stable text without corrupting literals or token
+boundaries, and must combine predictably with symbol filters.
+
+Decision: Build normalized source from Roslyn active syntax tokens. Preserve
+token text, omit trivia/directives/disabled text, and add one space only when
+adjacent token text would otherwise tokenize differently. Store the resulting
+one-line text and SHA-256 hash. Evaluate source excludes first with OR
+semantics, then AND all includes; use ordinal matching by default and ordinal
+ignore-case only when requested.
+
+Alternatives: Regex-based comment stripping, searching original files at
+query time, or FTS-only search semantics.
+
+Consequences: Comments are unavailable to source search, literals are
+preserved, and arbitrary substring predicates can require a scan of
+source-backed executable candidates. `--show-source` affects output only.
+
+Date: 2026-08-08
+
+## DEC-0022: Schema version 4 with non-mutating rebuild rejection
+
+Status: Accepted
+
+Context: Executable metadata, normalized source, and a persisted async path
+need storage additions incompatible with schema version 3.
+
+Decision: Set the schema and request-hash versions to 4. Add return type,
+normalized source/hash, and a self-referencing async-next ID to `symbols`.
+Insert symbols first, then update containing and async-next IDs in the same
+transaction once numeric IDs are known. Reject version 3 and every other
+unsupported version without ALTER, deletion, WAL changes, or user-data
+mutation.
+
+Alternatives: ALTER migration, automatic database recreation, or resolving
+async paths without a stored next hop.
+
+Consequences: Existing indexes must be rebuilt. A successful index replacement
+is atomic and DB-only queries can reconstruct the persisted fields.
+
+Date: 2026-08-08
+
+## DEC-0023: Persist one deterministic async shortest-path next hop
+
+Status: Accepted
+
+Context: A shortest distance alone cannot reproduce one chosen route when
+equal-length paths exist.
+
+Decision: Use deterministic reverse multi-source BFS over resolved invocation
+edges. Sort origins and adjacency deterministically, record `depth + 1` and
+the callee next hop on first or strictly shorter discovery, and never replace
+an equal-distance hop. Query-time display follows only the persisted chain
+and validates decreasing depth, profile membership, and cycles.
+
+Alternatives: Re-run a graph search while rendering, persist every route, or
+choose a route from an unspecified SQL order.
+
+Consequences: `async tree` emits one repeatable path and reports inconsistent
+stored data as an error. It does not retain all reachable async origins or all
+equal paths.
+
+Date: 2026-08-08
+
+## DEC-0024: Bounded source-backed caller graph
+
+Status: Accepted
+
+Context: Caller visualization must terminate on cycles and avoid presenting
+external or inferred runtime behavior as indexed source facts.
+
+Decision: Traverse resolved invocation/object-creation caller edges
+breadth-first within one profile. Retain unique nodes and edges, apply depth
+and node limits, include only source-backed method/lambda callers, exclude
+`System` namespaces, and render graph IDs from symbol IDs. Do not synthesize
+lambda ownership edges or infer delegate `Invoke`, events, callbacks,
+reflection, or runtime dispatch.
+
+Alternatives: Recursive unbounded traversal, display-name graph identifiers,
+or delegate/data-flow inference.
+
+Consequences: Tree, Mermaid, and JSON output describe the same bounded static
+graph, including cycle edges between already included nodes. Some runtime
+execution paths are intentionally absent.
+
+Date: 2026-08-08
+
+## DEC-0025: Canonical wildcard and bounded regex symbol search
+
+Status: Accepted
+
+Context: Symbol search needs pattern flexibility without changing existing
+exact-query resolution or letting regex execution depend on culture or run
+without a bound.
+
+Decision: Preserve the exact resolver for unmodified non-wildcard positional
+patterns. Outside that path, evaluate canonical stored display-name and
+component fields. Without `--regex`, only `*` is special and matches zero or
+more characters; every other character is literal. With `--regex`, all name
+patterns are culture-invariant .NET regular expressions with a two-second
+timeout, and `*` retains regex meaning. Use case-sensitive matching by default;
+`--ignore-case` enables culture-invariant regex ignore-case for names and
+ordinal ignore-case for source terms.
+
+Alternatives: Apply SQL `LIKE` semantics, use the current culture, compile
+unbounded regexes, or shorten names before matching.
+
+Consequences: Wildcard/regex matching is predictable and canonical fields are
+never changed by `--short-names`. Invalid or timed-out patterns fail as query
+errors instead of silently producing a partial result.
+
+Date: 2026-08-08

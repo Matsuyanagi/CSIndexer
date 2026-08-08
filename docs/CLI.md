@@ -37,6 +37,10 @@ csindex index C:\Source --mode directory --define FEATURE_AUDIO
 
 ```powershell
 csindex symbol find "Player::Play"
+csindex async tree "Game.Player::Play()"
+csindex callers tree "Game.Player::Play()"
+csindex source show "Game.Player::Play()"
+csindex source search --include "PrintVar("
 csindex symbol list
 csindex symbol list --kind lambda --async-involved --output json
 csindex definition "Player::Play()"
@@ -49,7 +53,8 @@ csindex overrides "BaseClass::Run()"
 csindex conditions
 ```
 
-共通オプション:
+Legacy flat-query options (where accepted; nested-command availability is
+specified exactly in the schema-v4 section below):
 
 - `--db <path>`。省略時はcurrent directoryの`.csindex/index.sqlite`。
 - `--profile <name>`
@@ -115,7 +120,7 @@ synthetic `D1::Play()` symbol or an override from another branch. A declared
 - `--async-involved`は`asyncInvolvementDepth`を持つsymbolだけを返します。直接の非同期起点もdepth `0`として含まれます。
 - `--short-names`は表示名だけを短縮します。たとえば`Alpha.AClass::Play()`は`AClass::Play()`として表示されます。
 
-JSONは`{ "profile": "...", "symbols": [...] }`です。各symbolには`id`、`stableKey`、`kind`、`displayName`、`fullyQualifiedName`、`namespaceName`、`typeSimpleName`、`parameters`、`location`、`isGenerated`、`assemblyName`、`asyncRole`、`isAsyncInvolved`、`asyncInvolvementDepth`を出力します。`--short-names`を指定しても`fullyQualifiedName`、`stableKey`、`namespaceName`、`parameters`などのcanonical JSON fieldは変更されず、短縮されるのは`displayName`だけです。
+JSONは`{ "profile": "...", "symbols": [...] }`です。各symbolには`id`、`stableKey`、`kind`、`displayName`、`signature`、`fullyQualifiedName`、`namespaceName`、`typeSimpleName`、`parameters`、`location`、`isGenerated`、`assemblyName`、`accessibility`、`isStatic`、`isAsync`、`asyncRole`、`isAsyncInvolved`、`asyncInvolvementDepth`、`returnType`、`methodKind`、`sourceAvailable`を出力します。`--short-names`を指定しても`fullyQualifiedName`、`stableKey`、`namespaceName`、`parameters`、`returnType`などのcanonical JSON fieldは変更されず、短縮されるのは`displayName`と`signature`だけです。
 
 ### `callees`とラムダ呼び出し
 
@@ -153,3 +158,145 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 - `3`: fatal input/analysis/cancellation failure
 - `4`: SQLite/schema failure
 - `5`: `--require-single` failure
+
+## Symbol, source, and graph commands (schema v4)
+
+All commands in this section accept `--db <path>` (default:
+`.csindex/index.sqlite` below the current directory) and `--profile <name>`.
+`--short-names` is presentation-only: it shortens displayed names and
+signatures, never canonical stored values or matching semantics.
+
+### `symbol find`
+
+```text
+csindex symbol find [<pattern>] [options]
+```
+
+`<pattern>` is optional only when at least one of `--namespace`, `--type`, or
+`--method` is present. It accepts at most one positional value. The supported
+options are:
+
+- `--namespace <pattern>`, `--type <pattern>`, and `--method <pattern>`;
+  supplied name filters are combined with AND semantics.
+- `--kind method|lambda`.
+- `--regex`, which makes every supplied name pattern a culture-invariant .NET
+  regular expression with a two-second timeout. Matching is case-sensitive by
+  default; `--ignore-case` adds culture-invariant .NET regex ignore-case for
+  name filters and ordinal ignore-case for source filters. In regex mode `*`
+  remains regex syntax; it is not a wildcard option applied in addition to
+  regex.
+- Without `--regex`, `*` matches zero or more characters and all other
+  characters are literals. A pattern without `*` preserves the existing exact
+  resolver when no other search modifier is supplied. A method pattern without
+  a parameter list matches its overloads; a parameter list matches the full
+  signature. Lambda suffix forms (`::<lambda#N>`, owner suffixes, and full
+  lambda names) match canonical lambda display names.
+- Repeatable `--include <text>` and `--exclude <text>`. Excludes are ORed and
+  evaluated before ANDed includes. A source condition limits candidates to
+  source-backed executable symbols. `--show-source` only controls
+  presentation; it does not add a filter.
+- `--output table|json` (default `table`), `--require-single`, and
+  `--short-names`.
+
+`--include-overrides` remains available only for its legacy exact method-query
+mode. It cannot be combined with component, kind, regex, case, or source
+search options; `--show-source` is allowed. An invalid request reports one of
+the following command errors (with the standard `Argument error:` prefix and
+usage hint):
+
+```text
+symbol find accepts at most one positional pattern.
+symbol find requires a pattern or at least one --namespace, --type, or --method condition.
+Unknown symbol kind: <value>. Use method or lambda.
+--include-overrides cannot be combined with component, kind, regex, case, or source search options.
+```
+
+Invalid regular expressions and regex timeouts use the `Query error:` path and
+identify the affected pattern. Unknown or unsupported options use
+`Unknown option(s): ...`.
+
+Table output starts with `Query matched <count> symbol(s):`, uses C#-like
+declaration ordering (`accessibility static async return-type name`), and
+prints `source: <normalized-source>` only when `--show-source` is set. JSON is
+`{ "profile": "...", "matched": [...] }`; each symbol object has the fields
+listed for `symbol list`, plus `normalizedSource` only when source presentation
+was requested.
+
+### Source commands
+
+```text
+csindex source show <symbol> [--output table|json] [--short-names]
+csindex source search (--include <text> | --exclude <text>)...
+    [--ignore-case] [--output table|json] [--short-names]
+```
+
+`source show` returns all source-backed executable matches (including matching
+overloads) and always presents their normalized source. Metadata-only symbols
+and non-executable matches are not returned. `source search` accepts no
+positionals and requires at least one include or exclude term. Its error text
+is exactly:
+
+```text
+source search does not accept positional arguments.
+source search requires at least one include or exclude condition.
+```
+
+Both commands use table output by default. Their JSON shape is the same as
+`symbol find` and contains `normalizedSource`; table rows include a signature,
+location, and an indented `source:` line. Source matching is ordinal and
+case-sensitive by default, or ordinal case-insensitive with `--ignore-case`.
+
+### Async shortest path
+
+```text
+csindex async tree <symbol> [--output tree|line|json] [--max-nodes 500]
+    [--short-names]
+```
+
+The root must resolve to exactly one source-backed method through the exact
+query parser. `tree` is the default output; `line` uses exactly ` -> ` between
+path nodes; `json` emits `profile`, `found`, `truncated`, `root`, and `nodes`.
+An async origin prints as `async <name>`. If no origin is reachable, tree and
+line output are exactly `No reachable asynchronous function: <root>` and JSON
+has `found: false` with an empty `nodes` array. The root counts toward the
+positive `--max-nodes` limit (default `500`); a cut path appends
+`<truncated>` in tree/line and has `truncated: true` in JSON.
+
+### Caller tree
+
+```text
+csindex callers tree <symbol> [--depth 3] [--max-nodes 500]
+    [--output tree|mermaid|json] [--short-names]
+```
+
+The root has depth zero. `--depth 0` removes the depth bound; otherwise the
+default is `3`. The positive `--max-nodes` default is `500` and includes the
+root. `tree` is the default and can include an `Additional edges:` section for
+non-spanning/cycle edges. `mermaid` emits `flowchart TD`, `n<symbol-id>` node
+IDs, escaped canonical labels, caller-to-callee arrows, and `%% truncated`
+when cut. JSON emits `profile`, `truncated`, a `root` symbol object, `nodes`
+with `depth`, and `edges` with caller/callee symbol IDs.
+
+Caller traversal is breadth-first, profile-scoped, and ordered by display
+name, source path, source offset, and ID. It uses resolved invocation and
+object-creation edges, includes only source-backed methods/lambdas, and
+excludes `System` and `System.*` symbols. It does not invent a call edge from
+a lambda owner and does not infer delegate `Invoke`, event, callback, or
+runtime dispatch execution.
+
+Graph validation errors include:
+
+```text
+This command requires exactly one symbol query.
+Depth must be an integer.
+Depth cannot be negative.
+Maximum node count must be an integer.
+Maximum node count must be positive.
+Graph queries require an exact source-backed method query.
+Graph query must resolve exactly one source-backed method: <query>
+Unknown async tree output: <value>. Use tree, line, json.
+Unknown callers tree output: <value>. Use tree, mermaid, json.
+```
+
+Corrupt persisted async-path data is a database error rather than a silently
+reselected path; the message begins `Async path integrity failure:`.

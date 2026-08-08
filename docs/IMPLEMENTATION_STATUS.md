@@ -2,14 +2,14 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 非同期関与解析・関数一覧/ラムダ呼び出し出力（完了） / Override-aware method search（completed）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed）
 
 ## Last Completed Work
 
 - .NET 10 Windows CLI、Roslyn、SQLiteの責務分離されたソリューションを作成
 - MSBuildWorkspaceによるProject/Solution入力とAdhocWorkspaceによるDirectory入力を実装
 - 型、メソッド、コンストラクター、ローカル関数、ラムダ、呼び出し、参照、継承関係を抽出
-- SQLiteスキーマv3、原子的な更新、破損・非対応DB検出、変更なしキャッシュを実装
+- SQLiteスキーマv4、原子的な更新、破損・非対応DB検出、変更なしキャッシュを実装。schema v3は非変更で拒否し、再indexを要求する
 - 全検索コマンド、table / JSON出力、生成コードフィルターを実装
 - Phase 1/2の自動受け入れテストとCLIプロセス試験を完了
 - Roslynで`AsyncRole`と`AsyncUsageKind`を抽出し、Task/ValueTask/UniTask、UniTaskVoid、非同期ストリーム、await/await foreach/await usingを分類
@@ -19,7 +19,11 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 - `--short-names`でtable表示およびJSONの`displayName`だけを短縮し、`fullyQualifiedName`を含むcanonical JSON fieldは不変にした
 - ラムダはownerごとに`<lambda#1>`から採番し、`callees`はネストしたラムダdescendantの呼び出しを再帰的に既定で含め、`--exclude-lambda-calls`で直接呼び出しへ限定可能にした
 - Added opt-in `--include-overrides` support to `symbol find`, method-query `definition`, `references`, `callers`, and `callees`; the default remains exact method lookup.
-- Added branch-scoped interface method bindings, nullable `symbols.type_kind`, inherited real-declaration alias resolution, and descendant-only query-time expansion. Schema and request-hash versions are now 3; version 2 databases are rejected and require rebuilding.
+- Added branch-scoped interface method bindings, nullable `symbols.type_kind`, inherited real-declaration alias resolution, and descendant-only query-time expansion. Its original schema-v3 decision is superseded by the schema-v4 rebuild requirement.
+- Added return type, method kind, normalized executable source, and SHA-256 source hash persistence for methods, constructors, local functions, lambdas, accessors, operators, and conversions.
+- Added function-scoped source-order lambda numbering, initializer owners for fields/properties/events, and preserved immediate lambda containment for call ownership.
+- Added `async_next_symbol_id` and deterministic reverse-BFS path selection; `async tree` reconstructs and validates one persisted path.
+- Added exact/wildcard/component/regex `symbol find`, normalized-source show/search and source predicates, and bounded caller-tree output in text, Mermaid, and JSON.
 
 ## Currently Implementing
 
@@ -32,17 +36,20 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 
 ## Build Status
 
-- Command: `dotnet build CsIndex.sln --configuration Release`
-- Result: 成功（警告0、エラー0）
-- Date: 2026-08-05
+- Command: `rtk dotnet build CsIndex.sln --configuration Release`
+- Result: 9 projects; 0 warnings, 0 errors
+- Date: 2026-08-08
 
 ## Test Status
 
-- Command: `dotnet test CsIndex.sln --configuration Release`
-- Passed: 125
+- Command: `rtk dotnet test CsIndex.sln --configuration Release`
+- Passed: 222
 - Failed: 0
 - Skipped: 0
-- Date: 2026-08-05
+- Warnings: 0
+- Date: 2026-08-08
+- Focused Release projects: Core 45 passed; Storage 24 passed; Query 27
+  passed; Integration 126 passed. Every project reported 0 warnings.
 
 ## Known Broken Areas
 
@@ -54,25 +61,39 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 �
 - src/CsIndex.Core/Analysis/AsyncSymbolClassifier.cs
 - src/CsIndex.Core/Analysis/AsyncOperationClassifier.cs
 - src/CsIndex.Core/Analysis/AsyncInvolvementPropagator.cs
+- src/CsIndex.Core/Analysis/SourceNormalizer.cs
 - src/CsIndex.Core/Input/WorkspaceLoader.cs
 - src/CsIndex.Storage/SqliteIndex.cs
 - src/CsIndex.Storage/Schema/SchemaMigrator.cs
 - src/CsIndex.Query/SemanticQueryService.cs
+- src/CsIndex.Query/AsyncPathResolver.cs
+- src/CsIndex.Query/CallerTreeBuilder.cs
+- src/CsIndex.Query/Symbols/SymbolPatternMatcher.cs
+- src/CsIndex.Query/Symbols/SourceTextFilter.cs
 - src/CsIndex.Cli/Program.cs
 - src/CsIndex.Cli/OutputFormatter.cs
+- src/CsIndex.Cli/GraphOutputFormatter.cs
 - tests/CsIndex.Core.Tests/AsyncSemanticExtractorTests.cs
 - tests/CsIndex.Core.Tests/AsyncInvolvementPropagatorTests.cs
+- tests/CsIndex.Core.Tests/ExecutableSymbolExtractionTests.cs
+- tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
 - tests/CsIndex.IntegrationTests/PhaseOneAcceptanceTests.cs
+- tests/CsIndex.IntegrationTests/SymbolSourceQueryTests.cs
+- tests/CsIndex.IntegrationTests/GraphQueryTests.cs
 
 ## Database Schema Version
 
-- 3
+- 4
 
 ## CLI Commands Implemented
 
 - `index`
 - `symbol find`
+- `async tree`
+- `callers tree`
+- `source show`
+- `source search`
 - `symbol list`
 - `definition` / `definition --at`
 - `references`
