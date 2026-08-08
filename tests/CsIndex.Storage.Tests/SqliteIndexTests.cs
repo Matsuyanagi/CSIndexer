@@ -28,6 +28,130 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task Save_CreatesVersionFourSchemaWithExecutableMetadataAndAsyncNextForeignKey()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+
+        await index.SaveAsync(CreateSnapshot(temporary.Path), cancellationToken);
+
+        Assert.Equal(4, SchemaMigrator.CurrentVersion);
+        Assert.Equal(4, RequestHasher.SchemaVersion);
+
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = "PRAGMA table_info(symbols);";
+        var columns = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                columns.Add(reader.GetString(1), reader.GetString(2));
+            }
+        }
+
+        Assert.Equal("TEXT", columns["return_type_key"]);
+        Assert.Equal("TEXT", columns["normalized_source"]);
+        Assert.Equal("BLOB", columns["normalized_source_hash"]);
+        Assert.Equal("INTEGER", columns["async_next_symbol_id"]);
+
+        command.CommandText = "PRAGMA foreign_key_list(symbols);";
+        var hasAsyncNextForeignKey = false;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                hasAsyncNextForeignKey |= reader.GetString(2) == "symbols" &&
+                                          reader.GetString(3) == "async_next_symbol_id" &&
+                                          reader.GetString(4) == "id" &&
+                                          reader.GetString(6) == "SET NULL";
+            }
+        }
+
+        Assert.True(hasAsyncNextForeignKey);
+
+        command.CommandText = "PRAGMA index_info(ix_symbols_profile_async_next);";
+        var asyncNextIndexColumns = new List<string>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                asyncNextIndexColumns.Add(reader.GetString(2));
+            }
+        }
+
+        Assert.Equal(["analysis_profile_id", "async_next_symbol_id"], asyncNextIndexColumns);
+    }
+
+    [Fact]
+    public async Task Save_RoundTripsExecutableMetadataAndAsyncNextAcrossAllSymbolReaders()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        const string normalizedSource = "async Task<int> Caller(){return 1;}";
+        var normalizedSourceHash = HashUtilities.Sha256(normalizedSource);
+        var snapshot = CreateSnapshot(temporary.Path);
+        snapshot.Symbols["caller"] = snapshot.Symbols["caller"] with
+        {
+            MethodKind = 0,
+            ReturnTypeKey = "System.Threading.Tasks.Task<System.Int32>",
+            NormalizedSource = normalizedSource,
+            NormalizedSourceHash = normalizedSourceHash,
+        };
+        snapshot.Symbols["callee"] = snapshot.Symbols["callee"] with
+        {
+            AsyncInvolvementDepth = 1,
+            AsyncNextSymbolKey = "caller",
+        };
+
+        await index.SaveAsync(snapshot, cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var caller = Assert.Single(
+            await repository.FindSymbolCandidatesAsync(
+                profile.Id,
+                name: "Caller",
+                cancellationToken: cancellationToken),
+            symbol => symbol.StableKey == "caller");
+        var callee = Assert.Single(
+            await repository.FindSymbolCandidatesAsync(
+                profile.Id,
+                name: "Callee",
+                cancellationToken: cancellationToken),
+            symbol => symbol.StableKey == "callee");
+
+        AssertExecutableMetadata(caller, normalizedSource, normalizedSourceHash);
+        Assert.Equal(caller.Id, callee.AsyncNextSymbolId);
+
+        var byId = Assert.Single(await repository.GetSymbolsByIdsAsync(
+            profile.Id,
+            [caller.Id],
+            cancellationToken));
+        var function = Assert.Single(
+            await repository.FindFunctionSymbolsAsync(
+                profile.Id,
+                kind: IndexedSymbolKind.Method,
+                asyncInvolved: false,
+                cancellationToken),
+            symbol => symbol.Id == caller.Id);
+
+        AssertExecutableMetadata(byId, normalizedSource, normalizedSourceHash);
+        AssertExecutableMetadata(function, normalizedSource, normalizedSourceHash);
+    }
+
+    [Fact]
     public async Task Save_RestoresAsyncAnalysisFromDatabase()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -50,8 +174,8 @@ public sealed class SqliteIndexTests
             GeneratedFilter.Include,
             cancellationToken: cancellationToken));
 
-        Assert.Equal(3, SchemaMigrator.CurrentVersion);
-        Assert.Equal(3, RequestHasher.SchemaVersion);
+        Assert.Equal(4, SchemaMigrator.CurrentVersion);
+        Assert.Equal(4, RequestHasher.SchemaVersion);
         Assert.Equal(AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable, caller.AsyncRole);
         Assert.Equal(0, caller.AsyncInvolvementDepth);
         Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
@@ -84,8 +208,8 @@ public sealed class SqliteIndexTests
             [contract.Id],
             cancellationToken);
 
-        Assert.Equal(3, SchemaMigrator.CurrentVersion);
-        Assert.Equal(3, RequestHasher.SchemaVersion);
+        Assert.Equal(4, SchemaMigrator.CurrentVersion);
+        Assert.Equal(4, RequestHasher.SchemaVersion);
         Assert.Equal((int)IndexedTypeKind.Interface, interfaceType.TypeKind);
         Assert.Equal((int)IndexedAccessibility.Public, interfaceType.Accessibility);
         Assert.Equal(5, bindings.Count);
@@ -711,6 +835,38 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task Save_MissingAsyncNextSymbolKeyDoesNotResolveAnotherProfileAndRollsBack()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateSnapshot(temporary.Path, "first"), cancellationToken);
+        await index.SaveAsync(CreateSnapshot(temporary.Path, "other"), cancellationToken);
+        var invalid = CreateSnapshot(temporary.Path, "first");
+        invalid.Symbols.Remove("caller");
+        invalid.Calls.Clear();
+        invalid.Symbols["callee"] = invalid.Symbols["callee"] with
+        {
+            AsyncInvolvementDepth = 1,
+            AsyncNextSymbolKey = "caller",
+        };
+
+        await Assert.ThrowsAsync<IndexDatabaseException>(() => index.SaveAsync(invalid, cancellationToken));
+
+        var repository = index.CreateQueryRepository();
+        var firstProfile = await repository.GetProfileAsync("first", cancellationToken);
+        var otherProfile = await repository.GetProfileAsync("other", cancellationToken);
+        Assert.Single(await repository.FindSymbolCandidatesAsync(
+            firstProfile.Id,
+            name: "Caller",
+            cancellationToken: cancellationToken));
+        Assert.Single(await repository.FindSymbolCandidatesAsync(
+            otherProfile.Id,
+            name: "Caller",
+            cancellationToken: cancellationToken));
+    }
+
+    [Fact]
     public async Task CorruptDatabase_ProducesExplicitError()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -822,6 +978,65 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task VersionThreeDatabase_ProducesExplicitErrorWithoutRowObjectOrJournalModeMutation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "version-three.sqlite");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ToString();
+        string journalModeBefore;
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            journalModeBefore = Assert.IsType<string>(await command.ExecuteScalarAsync(cancellationToken));
+            command.CommandText = """
+                CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info(version) VALUES (3);
+                CREATE TABLE version_three_marker(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO version_three_marker(value) VALUES ('preserve-me');
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var exception = await Record.ExceptionAsync(() =>
+            new SqliteIndex(databasePath).EnsureCreatedAsync(cancellationToken));
+
+        await using var verificationConnection = new SqliteConnection(connectionString);
+        await verificationConnection.OpenAsync(cancellationToken);
+        await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = "PRAGMA journal_mode;";
+        var journalModeAfter = Assert.IsType<string>(
+            await verificationCommand.ExecuteScalarAsync(cancellationToken));
+        verificationCommand.CommandText = """
+            SELECT version,
+                   (SELECT COUNT(*) FROM version_three_marker WHERE value = 'preserve-me'),
+                   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'version_three_marker')
+            FROM schema_info;
+            """;
+        await using var reader = await verificationCommand.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        var version = reader.GetInt32(0);
+        var markerRows = reader.GetInt32(1);
+        var markerTables = reader.GetInt32(2);
+
+        Assert.True(
+            exception is IndexDatabaseException indexException &&
+            indexException.Message.Contains("Unsupported database schema version 3", StringComparison.Ordinal) &&
+            version == 3 &&
+            markerRows == 1 &&
+            markerTables == 1 &&
+            string.Equals(journalModeBefore, journalModeAfter, StringComparison.OrdinalIgnoreCase),
+            $"exception={exception?.GetType().Name ?? "none"}; version={version}; markerRows={markerRows}; " +
+            $"markerTables={markerTables}; journalModeBefore={journalModeBefore}; journalModeAfter={journalModeAfter}");
+    }
+
+    [Fact]
     public async Task UnrecognizedNonEmptyDatabase_ProducesExplicitErrorWithoutModification()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -928,6 +1143,17 @@ public sealed class SqliteIndexTests
             $"exception={exception?.GetType().Name ?? "none"}; markerRows={markerRows}; " +
             $"schemaInfoTables={schemaInfoTables}; journalModeBefore={journalModeBefore}; " +
             $"journalModeAfter={journalModeAfter}");
+    }
+
+    private static void AssertExecutableMetadata(
+        StoredSymbol symbol,
+        string expectedNormalizedSource,
+        byte[] expectedNormalizedSourceHash)
+    {
+        Assert.Equal(0, symbol.MethodKind);
+        Assert.Equal("System.Threading.Tasks.Task<System.Int32>", symbol.ReturnTypeKey);
+        Assert.Equal(expectedNormalizedSource, symbol.NormalizedSource);
+        Assert.Equal(expectedNormalizedSourceHash, symbol.NormalizedSourceHash);
     }
 
     private static async Task<StoredSymbol> GetSymbolAsync(

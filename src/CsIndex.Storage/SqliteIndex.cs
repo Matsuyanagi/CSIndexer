@@ -91,6 +91,12 @@ public sealed class SqliteIndex(string databasePath)
                 snapshot.Symbols.Values,
                 symbolIds,
                 cancellationToken);
+            await UpdateAsyncNextSymbolsAsync(
+                connection,
+                transaction,
+                snapshot.Symbols.Values,
+                symbolIds,
+                cancellationToken);
             await InsertParametersAsync(
                 connection,
                 transaction,
@@ -327,14 +333,16 @@ public sealed class SqliteIndex(string databasePath)
                 containing_symbol_id, arity, parameter_count, method_kind, accessibility,
                 type_kind,
                 is_static, is_abstract, is_virtual, is_override, async_role,
-                async_involvement_depth, source_document_id, source_start, source_length, is_generated)
+                async_involvement_depth, return_type_key, normalized_source, normalized_source_hash,
+                source_document_id, source_start, source_length, is_generated)
             VALUES(
                 $profile_id, $project_id, $stable_key, $kind, $name, $namespace_name,
                 $type_simple_name, $type_metadata_name, $fully_qualified_name, $display_name,
                 NULL, $arity, $parameter_count, $method_kind, $accessibility,
                 $type_kind,
                 $is_static, $is_abstract, $is_virtual, $is_override, $async_role,
-                $async_involvement_depth, $source_document_id, $source_start, $source_length, $is_generated);
+                $async_involvement_depth, $return_type_key, $normalized_source, $normalized_source_hash,
+                $source_document_id, $source_start, $source_length, $is_generated);
             SELECT last_insert_rowid();
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
@@ -362,6 +370,10 @@ public sealed class SqliteIndex(string databasePath)
         command.Parameters.AddWithValue(
             "$async_involvement_depth",
             (object?)symbol.AsyncInvolvementDepth ?? DBNull.Value);
+        command.Parameters.AddWithValue("$return_type_key", (object?)symbol.ReturnTypeKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$normalized_source", (object?)symbol.NormalizedSource ?? DBNull.Value);
+        command.Parameters.Add("$normalized_source_hash", SqliteType.Blob).Value =
+            (object?)symbol.NormalizedSourceHash ?? DBNull.Value;
         command.Parameters.AddWithValue("$source_document_id", symbol.SourceDocumentKey is not null &&
                                                                documentIds.TryGetValue(symbol.SourceDocumentKey, out var documentId)
             ? documentId
@@ -392,6 +404,32 @@ public sealed class SqliteIndex(string databasePath)
             }
 
             containingParameter.Value = containingId;
+            idParameter.Value = symbolIds[symbol.StableKey];
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task UpdateAsyncNextSymbolsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<SymbolData> symbols,
+        IReadOnlyDictionary<string, long> symbolIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            UPDATE symbols SET async_next_symbol_id = $next_id WHERE id = $id;
+            """);
+        var nextParameter = command.Parameters.Add("$next_id", SqliteType.Integer);
+        var idParameter = command.Parameters.Add("$id", SqliteType.Integer);
+        foreach (var symbol in symbols.Where(symbol => symbol.AsyncNextSymbolKey is not null))
+        {
+            if (!symbolIds.TryGetValue(symbol.AsyncNextSymbolKey!, out var nextId))
+            {
+                throw new InvalidOperationException(
+                    $"Async next symbol key '{symbol.AsyncNextSymbolKey}' for '{symbol.StableKey}' is missing from the current snapshot.");
+            }
+
+            nextParameter.Value = nextId;
             idParameter.Value = symbolIds[symbol.StableKey];
             await command.ExecuteNonQueryAsync(cancellationToken);
         }

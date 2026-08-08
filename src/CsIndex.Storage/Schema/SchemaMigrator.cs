@@ -36,7 +36,7 @@ public sealed class SchemaMigrator
                 }
 
                 await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
-                await CreateVersionThreeAsync(connection, cancellationToken);
+                await CreateVersionFourAsync(connection, cancellationToken);
                 return;
             }
 
@@ -77,7 +77,7 @@ public sealed class SchemaMigrator
         }
     }
 
-    private static async Task CreateVersionThreeAsync(
+    private static async Task CreateVersionFourAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -89,7 +89,7 @@ public sealed class SchemaMigrator
                 version INTEGER NOT NULL
             );
 
-            INSERT INTO schema_info(version) VALUES (3);
+            INSERT INTO schema_info(version) VALUES (4);
 
             CREATE TABLE analysis_profiles (
                 id                    INTEGER PRIMARY KEY,
@@ -172,6 +172,10 @@ public sealed class SchemaMigrator
                 is_override           INTEGER NOT NULL DEFAULT 0,
                 async_role            INTEGER NOT NULL DEFAULT 0,
                 async_involvement_depth INTEGER,
+                return_type_key       TEXT,
+                normalized_source     TEXT,
+                normalized_source_hash BLOB,
+                async_next_symbol_id  INTEGER,
                 source_document_id    INTEGER,
                 source_start          INTEGER,
                 source_length         INTEGER,
@@ -186,6 +190,9 @@ public sealed class SchemaMigrator
                   REFERENCES projects(id) ON DELETE CASCADE,
 
                 FOREIGN KEY(containing_symbol_id)
+                  REFERENCES symbols(id) ON DELETE SET NULL,
+
+                FOREIGN KEY(async_next_symbol_id)
                   REFERENCES symbols(id) ON DELETE SET NULL,
 
                 FOREIGN KEY(source_document_id)
@@ -331,6 +338,9 @@ public sealed class SchemaMigrator
 
             CREATE INDEX ix_symbols_location
             ON symbols(source_document_id, source_start);
+
+            CREATE INDEX ix_symbols_profile_async_next
+            ON symbols(analysis_profile_id, async_next_symbol_id);
 
             CREATE INDEX ix_calls_callee
             ON calls(callee_definition_id);

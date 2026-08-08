@@ -56,24 +56,14 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT
-                s.id, s.stable_key, s.kind, s.name, s.namespace_name,
-                s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
-                s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
-                s.is_static, s.is_abstract, s.is_virtual, s.is_override,
-                s.async_role, s.async_involvement_depth,
-                d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name, s.type_kind, s.accessibility
-            FROM symbols s
-            LEFT JOIN documents d ON d.id = s.source_document_id
-            LEFT JOIN projects p ON p.id = s.project_id
-            WHERE s.analysis_profile_id = $profile_id
+        command.CommandText = BuildSymbolSelect("""
+            s.analysis_profile_id = $profile_id
               AND ($name IS NULL OR s.name = $name)
               AND ($type_name IS NULL OR s.type_simple_name = $type_name)
               AND ($kind IS NULL OR s.kind = $kind)
               AND ($source_only = 0 OR s.source_document_id IS NOT NULL)
-            ORDER BY s.display_name, d.normalized_path, s.source_start;
+            """) + """
+            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$name", (object?)name ?? DBNull.Value);
@@ -97,19 +87,9 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, values);
-        command.CommandText = $"""
-            SELECT
-                s.id, s.stable_key, s.kind, s.name, s.namespace_name,
-                s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
-                s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
-                s.is_static, s.is_abstract, s.is_virtual, s.is_override,
-                s.async_role, s.async_involvement_depth,
-                d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name, s.type_kind, s.accessibility
-            FROM symbols s
-            LEFT JOIN documents d ON d.id = s.source_document_id
-            LEFT JOIN projects p ON p.id = s.project_id
-            WHERE s.analysis_profile_id = $profile_id AND s.id IN ({placeholders})
+        command.CommandText = BuildSymbolSelect($"""
+            s.analysis_profile_id = $profile_id AND s.id IN ({placeholders})
+            """) + """
             ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
@@ -124,25 +104,15 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT
-                s.id, s.stable_key, s.kind, s.name, s.namespace_name,
-                s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
-                s.display_name, s.containing_symbol_id, s.arity, s.parameter_count,
-                s.is_static, s.is_abstract, s.is_virtual, s.is_override,
-                s.async_role, s.async_involvement_depth,
-                d.normalized_path, s.source_start, s.source_length, s.is_generated,
-                p.assembly_name, s.type_kind, s.accessibility
-            FROM symbols s
-            LEFT JOIN documents d ON d.id = s.source_document_id
-            LEFT JOIN projects p ON p.id = s.project_id
-            WHERE s.analysis_profile_id = $profile_id
+        command.CommandText = BuildSymbolSelect("""
+            s.analysis_profile_id = $profile_id
               AND (
                   ($kind IS NOT NULL AND s.kind = $kind)
                   OR ($kind IS NULL AND s.kind IN ($method_kind, $lambda_kind))
               )
               AND ($async_involved = 0 OR s.async_involvement_depth IS NOT NULL)
-            ORDER BY s.display_name, d.normalized_path, s.source_start;
+            """) + """
+            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
@@ -784,6 +754,26 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         }
     }
 
+    private const string SymbolProjection = """
+        s.id, s.stable_key, s.kind, s.name, s.namespace_name,
+        s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
+        s.display_name, s.containing_symbol_id, s.arity, s.parameter_count, s.method_kind,
+        s.is_static, s.is_abstract, s.is_virtual, s.is_override,
+        s.async_role, s.async_involvement_depth, s.async_next_symbol_id,
+        s.return_type_key, s.normalized_source, s.normalized_source_hash,
+        d.normalized_path, s.source_start, s.source_length, s.is_generated,
+        p.assembly_name, s.type_kind, s.accessibility
+        """;
+
+    private static string BuildSymbolSelect(string whereClause) => $"""
+        SELECT
+            {SymbolProjection}
+        FROM symbols s
+        LEFT JOIN documents d ON d.id = s.source_document_id
+        LEFT JOIN projects p ON p.id = s.project_id
+        WHERE {whereClause}
+        """;
+
     private static async Task<IReadOnlyList<StoredSymbol>> ReadSymbolsAsync(
         SqliteConnection connection,
         SqliteCommand command,
@@ -807,20 +797,25 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.IsDBNull(9) ? null : reader.GetInt64(9),
                     reader.GetInt32(10),
                     reader.IsDBNull(11) ? null : reader.GetInt32(11),
-                    reader.GetBoolean(12),
+                    reader.IsDBNull(12) ? null : reader.GetInt32(12),
                     reader.GetBoolean(13),
                     reader.GetBoolean(14),
                     reader.GetBoolean(15),
-                    (AsyncRole)reader.GetInt32(16),
-                    reader.IsDBNull(17) ? null : reader.GetInt32(17),
-                    reader.IsDBNull(18) ? null : reader.GetString(18),
-                    reader.IsDBNull(19) ? null : reader.GetInt32(19),
-                    reader.IsDBNull(20) ? null : reader.GetInt32(20),
-                    reader.GetBoolean(21),
-                    reader.IsDBNull(22) ? null : reader.GetString(22),
+                    reader.GetBoolean(16),
+                    (AsyncRole)reader.GetInt32(17),
+                    reader.IsDBNull(18) ? null : reader.GetInt32(18),
+                    reader.IsDBNull(19) ? null : reader.GetInt64(19),
+                    reader.IsDBNull(20) ? null : reader.GetString(20),
+                    reader.IsDBNull(21) ? null : reader.GetString(21),
+                    reader.IsDBNull(22) ? null : reader.GetFieldValue<byte[]>(22),
+                    reader.IsDBNull(23) ? null : reader.GetString(23),
+                    reader.IsDBNull(24) ? null : reader.GetInt32(24),
+                    reader.IsDBNull(25) ? null : reader.GetInt32(25),
+                    reader.GetBoolean(26),
+                    reader.IsDBNull(27) ? null : reader.GetString(27),
                     [],
-                    reader.IsDBNull(23) ? null : reader.GetInt32(23),
-                    reader.IsDBNull(24) ? null : reader.GetInt32(24)));
+                    reader.IsDBNull(28) ? null : reader.GetInt32(28),
+                    reader.IsDBNull(29) ? null : reader.GetInt32(29)));
             }
         }
 
