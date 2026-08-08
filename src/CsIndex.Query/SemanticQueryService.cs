@@ -48,6 +48,90 @@ public sealed class SemanticQueryService(QueryRepository repository)
         return new QueryContext(profile, matches);
     }
 
+    public async Task<QueryContext> SearchSymbolsAsync(
+        SymbolSearchRequest request,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateSearchRequest(request);
+        if (CanUseExactSearch(request))
+        {
+            var exact = await FindSymbolsAsync(
+                request.Pattern!,
+                profileName,
+                sourceOnly: false,
+                includeOverrides: false,
+                cancellationToken);
+            return exact with { ShowSource = request.ShowSource };
+        }
+
+        return await SearchStoredExecutableSymbolsAsync(
+            request,
+            profileName,
+            sourceOnly: false,
+            cancellationToken);
+    }
+
+    public async Task<QueryContext> ShowSourceAsync(
+        string queryText,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var context = await SearchSymbolsAsync(
+            new SymbolSearchRequest(
+                queryText,
+                NamespacePattern: null,
+                TypePattern: null,
+                MethodPattern: null,
+                Kind: null,
+                UseRegex: false,
+                IgnoreCase: false,
+                Includes: [],
+                Excludes: [],
+                ShowSource: true),
+            profileName,
+            cancellationToken);
+        return context with
+        {
+            MatchedSymbols = context.MatchedSymbols
+                .Where(IsSourceBackedExecutable)
+                .ToArray(),
+            ShowSource = true,
+        };
+    }
+
+    public Task<QueryContext> SearchSourceAsync(
+        IReadOnlyList<string> includes,
+        IReadOnlyList<string> excludes,
+        bool ignoreCase,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(includes);
+        ArgumentNullException.ThrowIfNull(excludes);
+        if (includes.Count == 0 && excludes.Count == 0)
+        {
+            throw new SymbolQueryParseException(
+                "source search requires at least one include or exclude condition.");
+        }
+
+        return SearchStoredExecutableSymbolsAsync(
+            new SymbolSearchRequest(
+                Pattern: null,
+                NamespacePattern: null,
+                TypePattern: null,
+                MethodPattern: null,
+                Kind: null,
+                UseRegex: false,
+                IgnoreCase: ignoreCase,
+                Includes: includes,
+                Excludes: excludes,
+                ShowSource: true),
+            profileName,
+            sourceOnly: true,
+            cancellationToken);
+    }
+
     public async Task<QueryContext> ListSymbolsAsync(
         IndexedSymbolKind? kind,
         bool asyncInvolved,
@@ -268,6 +352,76 @@ public sealed class SemanticQueryService(QueryRepository repository)
             profileId,
             directIds.Concat(containingIds),
             cancellationToken);
+    }
+
+    private async Task<QueryContext> SearchStoredExecutableSymbolsAsync(
+        SymbolSearchRequest request,
+        string? profileName,
+        bool sourceOnly,
+        CancellationToken cancellationToken)
+    {
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var hasSourceFilters = request.Includes.Count > 0 || request.Excludes.Count > 0;
+        var candidates = await repository.FindExecutableSymbolsAsync(
+            profile.Id,
+            sourceOnly || hasSourceFilters,
+            cancellationToken);
+        var matcher = new SymbolPatternMatcher(request);
+        var comparison = request.IgnoreCase
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var matches = new List<StoredSymbol>();
+        foreach (var symbol in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!matcher.IsMatch(symbol))
+            {
+                continue;
+            }
+
+            if (hasSourceFilters && !SourceTextFilter.IsMatch(
+                    symbol.NormalizedSource,
+                    request.Includes,
+                    request.Excludes,
+                    comparison))
+            {
+                continue;
+            }
+
+            if (sourceOnly && !IsSourceBackedExecutable(symbol))
+            {
+                continue;
+            }
+
+            matches.Add(symbol);
+        }
+
+        return new QueryContext(profile, matches, request.ShowSource);
+    }
+
+    private static bool CanUseExactSearch(SymbolSearchRequest request) =>
+        request.Pattern is not null &&
+        !request.Pattern.Contains('*', StringComparison.Ordinal) &&
+        !request.Pattern.Contains("::<lambda#", StringComparison.Ordinal) &&
+        !request.UseRegex &&
+        !request.IgnoreCase &&
+        request.NamespacePattern is null &&
+        request.TypePattern is null &&
+        request.MethodPattern is null &&
+        request.Kind is null &&
+        request.Includes.Count == 0 &&
+        request.Excludes.Count == 0;
+
+    private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
+        symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
+        symbol.DocumentPath is not null &&
+        symbol.NormalizedSource is not null;
+
+    private static void ValidateSearchRequest(SymbolSearchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Includes);
+        ArgumentNullException.ThrowIfNull(request.Excludes);
     }
 
     private async Task<QueryContext> FindTargetSymbolsAsync(

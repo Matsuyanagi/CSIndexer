@@ -9,7 +9,10 @@ public enum DispatchSearchMode
     All = 3,
 }
 
-public sealed record QueryContext(StoredProfile Profile, IReadOnlyList<StoredSymbol> MatchedSymbols);
+public sealed record QueryContext(
+    StoredProfile Profile,
+    IReadOnlyList<StoredSymbol> MatchedSymbols,
+    bool ShowSource = false);
 
 public sealed record DefinitionResult(QueryContext Context, IReadOnlyList<StoredSymbol> Definitions);
 

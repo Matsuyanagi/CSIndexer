@@ -286,6 +286,83 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void Play() { }
             }
         }
+
+        namespace Tokyo
+        {
+            public class Gamer
+            {
+                public void Play() { PrintVar("required"); }
+                public void Play(string name) { PrintVar(name); }
+                private static void PrintVar(string value) { }
+            }
+
+            public class SourceBodies
+            {
+                public void Match()
+                {
+                    // comment-only-marker
+                    var literal = "/*keep*/ //keep";
+                    PrintVar("required");
+                    _ = literal;
+                }
+
+                public void Excluded()
+                {
+                    PrintVar("required");
+                    BlockedMarker();
+                }
+
+                public void Other() { PrintVar("other"); }
+
+                private static void PrintVar(string value) { }
+                private static void BlockedMarker() { }
+            }
+
+            public class LambdaSearch
+            {
+                public static Action Field = () => LambdaMarker("field");
+                public static Action Property { get; } = () => LambdaMarker("property");
+                public static event Action? Changed = () => LambdaMarker("event");
+
+                public void Function()
+                {
+                    Action first = () => LambdaMarker("first");
+                    Action outer = () =>
+                    {
+                        Action nested = () => LambdaMarker("nested");
+                        _ = nested;
+                    };
+                    _ = first;
+                    _ = outer;
+                }
+
+                private static void LambdaMarker(string value) { }
+            }
+
+            public class MetadataCaller
+            {
+                public void CallMetadata()
+                {
+                    object value = new object();
+                    _ = value.ToString();
+                }
+            }
+
+        #if SECONDARY
+            public class SecondaryOnly
+            {
+                public void Play() { }
+            }
+        #endif
+        }
+
+        namespace Fukuoka
+        {
+            public class Gamer
+            {
+                public void Pray() { }
+            }
+        }
         """;
 
     private const string GeneratedSource = """
@@ -313,6 +390,8 @@ public sealed class SemanticIndexFixture : IDisposable
     public string MainSourcePath { get; }
     public string DatabasePath { get; }
     public Task BuildTask { get; }
+    public string? PrimaryProfileName => null;
+    public string SecondaryProfileName => "secondary";
     public SemanticQueryService Query => new(new SqliteIndex(DatabasePath).CreateQueryRepository());
 
     public string GetLocation(string text)
@@ -339,7 +418,19 @@ public sealed class SemanticIndexFixture : IDisposable
 
     private async Task BuildAsync()
     {
-        var options = new IndexOptions { InputPath = RootPath, ForcedMode = InputMode.Directory };
+        await BuildProfileAsync(SecondaryProfileName, ["SECONDARY"]);
+        await BuildProfileAsync(PrimaryProfileName, []);
+    }
+
+    private async Task BuildProfileAsync(string? profileName, IReadOnlyList<string> defines)
+    {
+        var options = new IndexOptions
+        {
+            InputPath = RootPath,
+            ForcedMode = InputMode.Directory,
+            ProfileName = profileName,
+            Defines = defines,
+        };
         var coordinator = AnalysisCoordinator.CreateDefault();
         var input = coordinator.ResolveInput(options);
         var fingerprint = await coordinator.BuildInputFingerprintAsync(input, options, CancellationToken.None);

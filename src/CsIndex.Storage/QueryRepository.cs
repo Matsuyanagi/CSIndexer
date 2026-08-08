@@ -122,6 +122,27 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         return await ReadSymbolsAsync(connection, command, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<StoredSymbol>> FindExecutableSymbolsAsync(
+        long profileId,
+        bool sourceOnly,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = BuildSymbolSelect("""
+            s.analysis_profile_id = $profile_id
+              AND s.kind IN ($method_kind, $lambda_kind)
+              AND ($source_only = 0 OR s.source_document_id IS NOT NULL)
+            """) + """
+            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
+        command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+        command.Parameters.AddWithValue("$source_only", sourceOnly);
+        return await ReadSymbolsAsync(connection, command, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<StoredInterfaceMethodBinding>> GetInterfaceMethodBindingsAsync(
         long profileId,
         IEnumerable<long> interfaceMethodIds,
