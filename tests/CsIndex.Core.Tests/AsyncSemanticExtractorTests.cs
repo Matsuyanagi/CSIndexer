@@ -133,6 +133,18 @@ public sealed class AsyncSemanticExtractorTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_RecordsTheAsyncNextHopForASynchronousCaller()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+        var leaf = GetMethod(snapshot, "LeafAsync");
+        var stored = GetMethod(snapshot, "Stored");
+
+        Assert.Equal(1, stored.AsyncInvolvementDepth);
+        Assert.Equal(leaf.StableKey, stored.AsyncNextSymbolKey);
+        Assert.Null(leaf.AsyncNextSymbolKey);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_ClassifiesGenericTaskAsAwaitable()
     {
         var snapshot = await AnalyzeAsync(Source);

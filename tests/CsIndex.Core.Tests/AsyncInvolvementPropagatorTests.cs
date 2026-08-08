@@ -55,6 +55,63 @@ public sealed class AsyncInvolvementPropagatorTests
         Assert.Equal(1, snapshot.Symbols["caller"].AsyncInvolvementDepth);
     }
 
+    [Fact]
+    public void Apply_RecordsOneNextHopAndDoesNotReplaceAnEqualPath()
+    {
+        var snapshot = CreateSnapshot();
+        AddMethod(snapshot, "root", AsyncRole.None);
+        AddMethod(snapshot, "middle-a", AsyncRole.None);
+        AddMethod(snapshot, "middle-b", AsyncRole.None);
+        AddMethod(snapshot, "async-a", AsyncRole.DeclaredAsync);
+        AddMethod(snapshot, "async-b", AsyncRole.DeclaredAsync);
+        AddCall(snapshot, "root", "middle-a");
+        AddCall(snapshot, "root", "middle-b");
+        AddCall(snapshot, "middle-a", "async-a");
+        AddCall(snapshot, "middle-b", "async-b");
+
+        AsyncInvolvementPropagator.Apply(snapshot);
+
+        Assert.Equal(2, snapshot.Symbols["root"].AsyncInvolvementDepth);
+        Assert.Equal("middle-a", snapshot.Symbols["root"].AsyncNextSymbolKey);
+    }
+
+    [Fact]
+    public void Apply_UpdatesNextHopWhenAStrictlyShorterPathIsFound()
+    {
+        var snapshot = CreateSnapshot();
+        AddMethod(snapshot, "root", AsyncRole.None);
+        AddMethod(snapshot, "bridge", AsyncRole.None);
+        AddMethod(snapshot, "far", AsyncRole.DeclaredAsync);
+        AddMethod(snapshot, "near", AsyncRole.DeclaredAsync);
+        AddCall(snapshot, "root", "bridge");
+        AddCall(snapshot, "bridge", "far");
+        AddCall(snapshot, "root", "near");
+
+        AsyncInvolvementPropagator.Apply(snapshot);
+
+        Assert.Equal(1, snapshot.Symbols["root"].AsyncInvolvementDepth);
+        Assert.Equal("near", snapshot.Symbols["root"].AsyncNextSymbolKey);
+    }
+
+    [Fact]
+    public void Apply_OriginsHaveNullNextAndCyclesTerminate()
+    {
+        var snapshot = CreateSnapshot();
+        AddMethod(snapshot, "a", AsyncRole.None);
+        AddMethod(snapshot, "b", AsyncRole.None);
+        AddMethod(snapshot, "origin", AsyncRole.DeclaredAsync);
+        AddCall(snapshot, "a", "b");
+        AddCall(snapshot, "b", "a");
+        AddCall(snapshot, "b", "origin");
+        AddCall(snapshot, "origin", "origin");
+
+        AsyncInvolvementPropagator.Apply(snapshot);
+
+        Assert.Equal("b", snapshot.Symbols["a"].AsyncNextSymbolKey);
+        Assert.Equal("origin", snapshot.Symbols["b"].AsyncNextSymbolKey);
+        Assert.Null(snapshot.Symbols["origin"].AsyncNextSymbolKey);
+    }
+
     [Fact(Timeout = 5_000)]
     public void Apply_SelfRecursiveOriginTerminatesAtDepthZero()
     {

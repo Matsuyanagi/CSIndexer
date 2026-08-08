@@ -21,6 +21,11 @@ public static class AsyncInvolvementPropagator
             .Where(call => call.ReferenceKind == ReferenceKind.Invocation &&
                            call.ResolutionStatus == ResolutionStatus.Resolved &&
                            call.CalleeDefinitionKey is not null)
+            .OrderBy(call => call.CalleeDefinitionKey!, StringComparer.Ordinal)
+            .ThenBy(call => call.DocumentKey, StringComparer.Ordinal)
+            .ThenBy(call => call.SourceStart)
+            .ThenBy(call => call.CallerSymbolKey, StringComparer.Ordinal)
+            .ThenBy(call => call.SourceLength)
             .GroupBy(call => call.CalleeDefinitionKey!, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
@@ -28,10 +33,14 @@ public static class AsyncInvolvementPropagator
                 StringComparer.Ordinal);
 
         var distance = new Dictionary<string, int>(StringComparer.Ordinal);
+        var next = new Dictionary<string, string?>(StringComparer.Ordinal);
         var queue = new Queue<string>();
-        foreach (var symbol in snapshot.Symbols.Values.Where(symbol => (symbol.AsyncRole & OriginRoles) != 0))
+        foreach (var symbol in snapshot.Symbols.Values
+                     .Where(symbol => (symbol.AsyncRole & OriginRoles) != 0)
+                     .OrderBy(symbol => symbol.StableKey, StringComparer.Ordinal))
         {
             distance[symbol.StableKey] = 0;
+            next[symbol.StableKey] = null;
             queue.Enqueue(symbol.StableKey);
         }
 
@@ -51,6 +60,7 @@ public static class AsyncInvolvementPropagator
                 }
 
                 distance[caller] = candidate;
+                next[caller] = callee;
                 queue.Enqueue(caller);
             }
         }
@@ -60,6 +70,7 @@ public static class AsyncInvolvementPropagator
             snapshot.Symbols[key] = snapshot.Symbols[key] with
             {
                 AsyncInvolvementDepth = distance.TryGetValue(key, out var value) ? value : null,
+                AsyncNextSymbolKey = next.TryGetValue(key, out var nextKey) ? nextKey : null,
             };
         }
     }

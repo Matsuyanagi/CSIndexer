@@ -66,6 +66,7 @@ public sealed record SymbolData
     public bool IsOverride { get; init; }
     public AsyncRole AsyncRole { get; init; }
     public int? AsyncInvolvementDepth { get; init; }
+    public string? AsyncNextSymbolKey { get; init; }
     public string? SourceDocumentKey { get; init; }
     public int? SourceStart { get; init; }
     public int? SourceLength { get; init; }
