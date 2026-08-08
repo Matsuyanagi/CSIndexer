@@ -451,6 +451,36 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Theory]
+    [InlineData("Tokyo.*::Play")]
+    [InlineData("::<lambda#1>")]
+    public async Task SymbolFindIncludeOverridesRejectsExtendedPositionalPatterns(string pattern)
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "symbol", "find", pattern, "--include-overrides", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains("--include-overrides cannot be combined", result.StandardError);
+    }
+
+    [Fact]
+    public async Task SymbolFindIncludeOverridesComposesWithShowSource()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--show-source", "--output", "json",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var overriddenPlay = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            symbol.GetProperty("displayName").GetString() == "Alpha.ProPianist::Play()");
+        Assert.Equal("public override void Play()=>ProPianistBody();", overriddenPlay.GetProperty("normalizedSource").GetString());
+    }
+
+    [Theory]
     [InlineData("symbol", "find", "Alpha.IPlayable")]
     [InlineData("definition", "--at", "Source.cs:1:1")]
     public async Task IncludeOverridesRejectsNonMethodQueries(params string[] args)

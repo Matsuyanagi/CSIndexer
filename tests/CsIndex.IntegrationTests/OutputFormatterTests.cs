@@ -194,6 +194,81 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void GraphOutputFormatterUsesCallerEdgesForBranchesAndAdditionalEdges()
+    {
+        var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
+        var a = CreateSymbol(AsyncRole.None, null, id: 102, displayName: "Example.A()");
+        var z = CreateSymbol(AsyncRole.None, null, id: 103, displayName: "Example.Z()");
+        var a2 = CreateSymbol(AsyncRole.None, null, id: 104, displayName: "Example.A2()");
+        var z2 = CreateSymbol(AsyncRole.None, null, id: 105, displayName: "Example.Z2()");
+        var shared = CreateSymbol(AsyncRole.None, null, id: 106, displayName: "Example.Shared()");
+        var result = new CallerTreeResult(
+            CreateProfile(),
+            root,
+            [
+                new CallerTreeNode(root, 0),
+                new CallerTreeNode(a, 1),
+                new CallerTreeNode(z, 1),
+                new CallerTreeNode(a2, 2),
+                new CallerTreeNode(z2, 2),
+                new CallerTreeNode(shared, 2),
+            ],
+            [
+                new CallerTreeEdge(root.Id, a.Id),
+                new CallerTreeEdge(a.Id, root.Id),
+                new CallerTreeEdge(z.Id, root.Id),
+                new CallerTreeEdge(a2.Id, z.Id),
+                new CallerTreeEdge(z2.Id, a.Id),
+                new CallerTreeEdge(shared.Id, z.Id),
+                new CallerTreeEdge(shared.Id, a.Id),
+            ],
+            Truncated: true);
+        var formatter = new GraphOutputFormatter(shortNames: false);
+
+        var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree"));
+        var mermaid = CaptureText(() => formatter.WriteCallerTree(result, "mermaid"));
+        using var json = CaptureJson(() => formatter.WriteCallerTree(result, "json"));
+
+        Assert.Equal(
+            "Example.Root()" + Environment.NewLine +
+            "└─ Example.A()" + Environment.NewLine +
+            "   └─ Example.Shared()" + Environment.NewLine +
+            "   └─ Example.Z2()" + Environment.NewLine +
+            "└─ Example.Z()" + Environment.NewLine +
+            "   └─ Example.A2()" + Environment.NewLine +
+            "└─ <truncated>" + Environment.NewLine +
+            "Additional edges:" + Environment.NewLine +
+            "  Example.Root() -> Example.A()" + Environment.NewLine +
+            "  Example.Shared() -> Example.Z()" + Environment.NewLine,
+            tree);
+        Assert.All(
+            [
+                "n101[\"Example.Root()\"]",
+                "n102[\"Example.A()\"]",
+                "n103[\"Example.Z()\"]",
+                "n104[\"Example.A2()\"]",
+                "n105[\"Example.Z2()\"]",
+                "n106[\"Example.Shared()\"]",
+                "n101 --> n102",
+                "n102 --> n101",
+                "n103 --> n101",
+                "n104 --> n103",
+                "n105 --> n102",
+                "n106 --> n102",
+                "n106 --> n103",
+            ],
+            edge => Assert.Contains(edge, mermaid));
+        Assert.Equal(
+            [101L, 102L, 103L, 104L, 106L, 105L],
+            json.RootElement.GetProperty("nodes").EnumerateArray()
+                .Select(node => node.GetProperty("symbol").GetProperty("id").GetInt64()));
+        Assert.Equal(
+            ["101->102", "102->101", "103->101", "104->103", "105->102", "106->102", "106->103"],
+            json.RootElement.GetProperty("edges").EnumerateArray()
+                .Select(edge => $"{edge.GetProperty("callerSymbolId").GetInt64()}->{edge.GetProperty("calleeSymbolId").GetInt64()}"));
+    }
+
+    [Fact]
     public void GraphOutputFormatterHonorsCancellationBeforeWriting()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");

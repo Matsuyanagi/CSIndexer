@@ -207,19 +207,14 @@ internal static class Program
         QueryContext result;
         if (parsed.HasFlag("include-overrides"))
         {
-            if (UsesExtendedSymbolSearch(parsed))
+            if (!IsLegacyExactOverrideSearch(request))
             {
                 throw new CliUsageException(
                     "--include-overrides cannot be combined with component, kind, regex, case, or source search options.");
             }
 
-            if (request.Pattern is null)
-            {
-                throw new CliUsageException("--include-overrides requires a positional method query.");
-            }
-
             result = await service.FindSymbolsAsync(
-                request.Pattern,
+                request.Pattern!,
                 parsed.GetSingle("profile"),
                 includeOverrides: true,
                 cancellationToken: cancellationToken);
@@ -606,15 +601,18 @@ internal static class Program
         _ => throw new CliUsageException($"Unknown symbol kind: {value}. Use method or lambda."),
     };
 
-    private static bool UsesExtendedSymbolSearch(CliArguments parsed) =>
-        parsed.GetSingle("namespace") is not null ||
-        parsed.GetSingle("type") is not null ||
-        parsed.GetSingle("method") is not null ||
-        parsed.GetSingle("kind") is not null ||
-        parsed.HasFlag("regex") ||
-        parsed.HasFlag("ignore-case") ||
-        parsed.GetMany("include").Count > 0 ||
-        parsed.GetMany("exclude").Count > 0;
+    private static bool IsLegacyExactOverrideSearch(SymbolSearchRequest request) =>
+        request.Pattern is not null &&
+        !request.Pattern.Contains('*') &&
+        !request.Pattern.Contains("::<lambda#", StringComparison.OrdinalIgnoreCase) &&
+        request.NamespacePattern is null &&
+        request.TypePattern is null &&
+        request.MethodPattern is null &&
+        request.Kind is null &&
+        !request.UseRegex &&
+        !request.IgnoreCase &&
+        request.Includes.Count == 0 &&
+        request.Excludes.Count == 0;
 
     private static string ParseOutput(string value, string command, params string[] allowed)
     {
