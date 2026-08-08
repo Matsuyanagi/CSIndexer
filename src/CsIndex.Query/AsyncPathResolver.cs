@@ -61,6 +61,16 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
                     $"next-hop symbol ID {nextSymbolId} does not decrease depth from {currentDepth} by exactly one");
             }
 
+            if (nextDepth == 0 && next.AsyncNextSymbolId is not null)
+            {
+                throw IntegrityFailure($"async origin symbol ID {next.Id} has a next-hop ID");
+            }
+
+            if (nextDepth > 0 && next.AsyncNextSymbolId is null)
+            {
+                throw IntegrityFailure($"non-origin symbol ID {next.Id} has no next-hop ID");
+            }
+
             if (nodes.Count == maxNodes)
             {
                 return new AsyncPathResult(profile, root, nodes, Found: true, Truncated: true);

@@ -235,6 +235,78 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task AsyncPath_RejectsAFetchedNonOriginWithoutANextHopBeforeTruncation()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var middle = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Middle()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        try
+        {
+            await fixture.SetAsyncNextSymbolIdAsync(
+                middle.DisplayName,
+                asyncNextSymbolId: null,
+                fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken);
+
+            await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                "Alpha.AsyncGraph::Start()",
+                maxNodes: 1,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+        }
+        finally
+        {
+            await fixture.SetAsyncNextSymbolIdAsync(
+                middle.DisplayName,
+                middle.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task AsyncPath_RejectsAFetchedOriginWithANextHopBeforeTruncation()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var middle = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Middle()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var origin = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::EndAsync()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        try
+        {
+            await fixture.SetAsyncNextSymbolIdAsync(
+                origin.DisplayName,
+                middle.Id,
+                fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken);
+
+            await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                middle.DisplayName,
+                maxNodes: 1,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+        }
+        finally
+        {
+            await fixture.SetAsyncNextSymbolIdAsync(
+                origin.DisplayName,
+                origin.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task AsyncPath_RejectsANextHopFromAnotherProfile()
     {
         await fixture.BuildTask;
@@ -457,6 +529,47 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                          node.Symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal));
             Assert.False(string.Equals(node.Symbol.AssemblyName, "System.Private.CoreLib", StringComparison.Ordinal));
         });
+    }
+
+    [Fact]
+    public async Task CallerTree_SortsAllCallersAtTheSameDepthBeforeApplyingTheNodeLimit()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var unlimited = await fixture.Query.FindCallerTreeAsync(
+            "Alpha.CallerGraph::Root()",
+            depth: 0,
+            maxNodes: 100,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var limited = await fixture.Query.FindCallerTreeAsync(
+            "Alpha.CallerGraph::Root()",
+            depth: 0,
+            maxNodes: 4,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(
+            [
+                "Alpha.CallerGraph::Root()",
+                "Alpha.CallerGraph::A()",
+                "Alpha.CallerGraph::Z()",
+                "Alpha.CallerGraph::A2()",
+                "Alpha.CallerGraph::Z2()",
+            ],
+            unlimited.Nodes.Select(node => node.Symbol.DisplayName));
+        Assert.Equal(
+            [
+                "Alpha.CallerGraph::Root()",
+                "Alpha.CallerGraph::A()",
+                "Alpha.CallerGraph::Z()",
+                "Alpha.CallerGraph::A2()",
+            ],
+            limited.Nodes.Select(node => node.Symbol.DisplayName));
+        Assert.True(limited.Truncated);
+        Assert.Contains(limited.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::A2()");
+        Assert.DoesNotContain(limited.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::Z2()");
     }
 
     [Fact]

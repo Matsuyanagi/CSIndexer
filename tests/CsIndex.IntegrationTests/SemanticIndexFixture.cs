@@ -266,6 +266,12 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void ZCaller() => OrderingTarget();
                 public void ACaller() => OrderingTarget();
 
+                public void Root() { }
+                public void A() => Root();
+                public void Z() => Root();
+                public void A2() => Z();
+                public void Z2() => A();
+
                 public void MetadataTarget() { }
                 public void MetadataCaller()
                 {

@@ -20,71 +20,99 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         var nodesById = new Dictionary<long, CallerTreeNode> { [root.Id] = rootNode };
         var edges = new List<CallerTreeEdge>();
         var edgeSet = new HashSet<CallerTreeEdge>();
-        var frontier = new Queue<CallerTreeNode>();
-        frontier.Enqueue(rootNode);
+        var currentFrontier = new List<CallerTreeNode> { rootNode };
         var truncated = false;
 
-        while (frontier.TryDequeue(out var calleeNode))
+        while (currentFrontier.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (depth != 0 && calleeNode.Depth >= depth)
+            if (depth != 0 && currentFrontier[0].Depth >= depth)
             {
-                continue;
+                break;
             }
 
-            var calls = await repository.GetCallsByCalleeAsync(
-                profile.Id,
-                [calleeNode.Symbol.Id],
-                GeneratedFilter.Include,
-                CallKinds,
-                cancellationToken);
-            var matchingCalls = new List<StoredCall>();
-            foreach (var call in calls)
+            var candidateEdges = new List<CallerTreeEdge>();
+            var candidateEdgeSet = new HashSet<CallerTreeEdge>();
+            foreach (var calleeNode in currentFrontier)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (TargetsCallee(call, calleeNode.Symbol.Id))
+                var calls = await repository.GetCallsByCalleeAsync(
+                    profile.Id,
+                    [calleeNode.Symbol.Id],
+                    GeneratedFilter.Include,
+                    CallKinds,
+                    cancellationToken);
+                foreach (var call in calls)
                 {
-                    matchingCalls.Add(call);
-                }
-            }
-
-            if (matchingCalls.Count == 0)
-            {
-                continue;
-            }
-
-            var callers = await repository.GetSymbolsByIdsAsync(
-                profile.Id,
-                matchingCalls.Select(call => call.CallerSymbolId),
-                cancellationToken);
-            foreach (var caller in callers
-                         .Where(IsSourceBackedNonSystemExecutable)
-                         .OrderBy(symbol => symbol.DisplayName, StringComparer.Ordinal)
-                         .ThenBy(symbol => symbol.DocumentPath ?? string.Empty, StringComparer.Ordinal)
-                         .ThenBy(symbol => symbol.SourceStart ?? -1)
-                         .ThenBy(symbol => symbol.Id))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!nodesById.TryGetValue(caller.Id, out var callerNode))
-                {
-                    if (nodes.Count == maxNodes)
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!TargetsCallee(call, calleeNode.Symbol.Id))
                     {
-                        truncated = true;
                         continue;
                     }
 
-                    callerNode = new CallerTreeNode(caller, calleeNode.Depth + 1);
-                    nodesById.Add(caller.Id, callerNode);
-                    nodes.Add(callerNode);
-                    frontier.Enqueue(callerNode);
-                }
-
-                var edge = new CallerTreeEdge(callerNode.Symbol.Id, calleeNode.Symbol.Id);
-                if (edgeSet.Add(edge))
-                {
-                    edges.Add(edge);
+                    var candidateEdge = new CallerTreeEdge(call.CallerSymbolId, calleeNode.Symbol.Id);
+                    if (candidateEdgeSet.Add(candidateEdge))
+                    {
+                        candidateEdges.Add(candidateEdge);
+                    }
                 }
             }
+
+            if (candidateEdges.Count == 0)
+            {
+                break;
+            }
+
+            var callersById = (await repository.GetSymbolsByIdsAsync(
+                profile.Id,
+                candidateEdges.Select(edge => edge.CallerSymbolId),
+                cancellationToken))
+                .Where(IsSourceBackedNonSystemExecutable)
+                .ToDictionary(symbol => symbol.Id);
+            var sortedCallers = callersById.Values
+                         .OrderBy(symbol => symbol.DisplayName, StringComparer.Ordinal)
+                         .ThenBy(symbol => symbol.DocumentPath ?? string.Empty, StringComparer.Ordinal)
+                         .ThenBy(symbol => symbol.SourceStart ?? -1)
+                         .ThenBy(symbol => symbol.Id)
+                         .ToArray();
+            var nextFrontier = new List<CallerTreeNode>();
+            foreach (var caller in sortedCallers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (nodesById.ContainsKey(caller.Id))
+                {
+                    continue;
+                }
+
+                if (nodes.Count == maxNodes)
+                {
+                    truncated = true;
+                    continue;
+                }
+
+                var callerNode = new CallerTreeNode(caller, currentFrontier[0].Depth + 1);
+                nodesById.Add(caller.Id, callerNode);
+                nodes.Add(callerNode);
+                nextFrontier.Add(callerNode);
+            }
+
+            var candidateEdgesByCaller = candidateEdges.ToLookup(edge => edge.CallerSymbolId);
+            foreach (var caller in sortedCallers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (var candidateEdge in candidateEdgesByCaller[caller.Id])
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (nodesById.ContainsKey(candidateEdge.CallerSymbolId) &&
+                        nodesById.ContainsKey(candidateEdge.CalleeSymbolId) &&
+                        edgeSet.Add(candidateEdge))
+                    {
+                        edges.Add(candidateEdge);
+                    }
+                }
+            }
+
+            currentFrontier = nextFrontier;
         }
 
         return new CallerTreeResult(profile, root, nodes, edges, truncated);
