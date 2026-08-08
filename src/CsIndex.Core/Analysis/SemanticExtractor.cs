@@ -205,6 +205,14 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 documentState.AccessorOwners[accessorNode.SpanStart] = data.StableKey;
             }
 
+            CreateExpressionBodiedGetterOwners(
+                root,
+                semanticModel,
+                documentState,
+                projectState.Data.Key,
+                projectState.Compilation,
+                cancellationToken);
+
             foreach (var localNode in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
             {
                 if (semanticModel.GetDeclaredSymbol(localNode, cancellationToken) is not IMethodSymbol method)
@@ -234,7 +242,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 documentState.LocalFunctionOwners[localNode.SpanStart] = data.StableKey;
             }
 
-            CreateInitializerOwners(root, documentState, projectState.Data.Key);
+            CreateInitializerOwners(
+                root,
+                semanticModel,
+                documentState,
+                projectState.Data.Key,
+                cancellationToken);
             CreateTopLevelOwner(root, documentState, projectState.Data.Key);
             CreateLambdaOwners(root, documentState, semanticModel, projectState.Data.Key, cancellationToken);
 
@@ -651,8 +664,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private void CreateInitializerOwners(
         CompilationUnitSyntax root,
+        SemanticModel semanticModel,
         DocumentAnalysisState documentState,
-        string projectKey)
+        string projectKey,
+        CancellationToken cancellationToken)
     {
         foreach (var initializer in root.DescendantNodes().OfType<EqualsValueClauseSyntax>())
         {
@@ -672,16 +687,17 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
-            var containingType = _snapshot.Symbols.Values.FirstOrDefault(symbol =>
-                symbol.SourceDocumentKey == documentState.Data.Key &&
-                symbol.Kind == IndexedSymbolKind.Type &&
-                symbol.SourceStart == typeDeclaration.SpanStart);
-            if (containingType is null)
+            if (semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) is not INamedTypeSymbol typeSymbol)
             {
                 continue;
             }
 
-            var containingTypeKey = containingType.StableKey;
+            var containingTypeKey = EnsureType(typeSymbol);
+            if (!_snapshot.Symbols.TryGetValue(containingTypeKey, out var containingType))
+            {
+                continue;
+            }
+
             var memberName = declaration switch
             {
                 VariableDeclaratorSyntax variable => variable.Identifier.ValueText,
@@ -718,6 +734,53 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 IsGenerated = documentState.Data.IsGenerated,
             });
             documentState.InitializerOwners[initializer.SpanStart] = stableKey;
+        }
+    }
+
+    private void CreateExpressionBodiedGetterOwners(
+        CompilationUnitSyntax root,
+        SemanticModel semanticModel,
+        DocumentAnalysisState documentState,
+        string projectKey,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        foreach (var member in root.DescendantNodes().OfType<BasePropertyDeclarationSyntax>()
+                     .Where(member => member is PropertyDeclarationSyntax { ExpressionBody: not null } or
+                         IndexerDeclarationSyntax { ExpressionBody: not null }))
+        {
+            var property = member switch
+            {
+                PropertyDeclarationSyntax propertyDeclaration =>
+                    semanticModel.GetDeclaredSymbol(propertyDeclaration, cancellationToken) as IPropertySymbol,
+                IndexerDeclarationSyntax indexerDeclaration =>
+                    semanticModel.GetDeclaredSymbol(indexerDeclaration, cancellationToken) as IPropertySymbol,
+                _ => null,
+            };
+            if (property?.GetMethod is not { } getter)
+            {
+                continue;
+            }
+
+            var containingKey = EnsureType(getter.ContainingType);
+            var normalizedSource = SourceNormalizer.Normalize(member);
+            var data = _canonicalizer.CreateMethod(
+                getter.OriginalDefinition,
+                actualTarget: false,
+                projectKey,
+                documentState.Data.Key,
+                member.SpanStart,
+                member.Span.Length,
+                documentState.Data.IsGenerated,
+                containingKey) with
+            {
+                AsyncRole = AsyncSymbolClassifier.Classify(getter.OriginalDefinition, compilation),
+                NormalizedSource = normalizedSource.Text,
+                NormalizedSourceHash = normalizedSource.Hash,
+            };
+            UpsertSymbol(data);
+            _sourceSymbolKeys[getter.OriginalDefinition] = data.StableKey;
+            documentState.ExpressionBodiedMemberOwners[member.SpanStart] = data.StableKey;
         }
     }
 
