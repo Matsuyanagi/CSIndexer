@@ -11,8 +11,6 @@ internal static class SymbolNameShortener
     public static string Shorten(string name) => QualifiedTypeToken.Replace(name, static match =>
     {
         var shortName = match.Value[(match.Value.LastIndexOf('.') + 1)..];
-        return match.Value.StartsWith("System.Threading.Tasks.", StringComparison.Ordinal)
-            ? $"Tasks.{shortName}"
-            : shortName;
+        return shortName;
     });
 }

@@ -9,6 +9,263 @@ public sealed class CliCommandTests : IDisposable
     private readonly SemanticIndexFixture _fixture = new();
 
     [Fact]
+    public void SymbolFindArgumentsSupportRepeatableSourceConditionsAndSearchFlags()
+    {
+        var parsed = CliArguments.Parse(
+        [
+            "--regex", "--ignore-case", "--show-source",
+            "--include", "first", "--include=second", "--exclude", "third",
+            "--namespace", "Tokyo.*", "--type", "*Gamer", "--method", "P*l*y", "--kind", "lambda",
+        ]);
+
+        Assert.True(parsed.HasFlag("regex"));
+        Assert.True(parsed.HasFlag("ignore-case"));
+        Assert.True(parsed.HasFlag("show-source"));
+        Assert.Equal(["first", "second"], parsed.GetMany("include"));
+        Assert.Equal(["third"], parsed.GetMany("exclude"));
+        Assert.Equal("Tokyo.*", parsed.GetSingle("namespace"));
+        Assert.Equal("*Gamer", parsed.GetSingle("type"));
+        Assert.Equal("P*l*y", parsed.GetSingle("method"));
+        Assert.Equal("lambda", parsed.GetSingle("kind"));
+        Assert.Empty(parsed.Positionals);
+    }
+
+    [Fact]
+    public async Task SourceSearchRequiresAtLeastOneIncludeOrExcludeCondition()
+    {
+        var result = await RunAsync("source", "search");
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains("source search requires at least one include or exclude condition", result.StandardError);
+    }
+
+    [Fact]
+    public async Task GraphCommandsValidateValuesRootsAndUnsupportedOptions()
+    {
+        await _fixture.BuildTask;
+
+        var invalidDepth = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--depth", "-1", "--db", _fixture.DatabasePath);
+        var invalidMaxNodes = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "0", "--db", _fixture.DatabasePath);
+        var invalidAsyncOutput = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--output", "mermaid", "--db", _fixture.DatabasePath);
+        var invalidCallerOutput = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output", "line", "--db", _fixture.DatabasePath);
+        var ambiguousRoot = await RunAsync(
+            "async", "tree", "Alpha.AClass::Play", "--db", _fixture.DatabasePath);
+        var missingRoot = await RunAsync(
+            "callers", "tree", "Alpha.Missing::Run()", "--db", _fixture.DatabasePath);
+        var unsupportedOption = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, invalidDepth.ExitCode);
+        Assert.Contains("Depth cannot be negative", invalidDepth.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, invalidMaxNodes.ExitCode);
+        Assert.Contains("Maximum node count must be positive", invalidMaxNodes.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, invalidAsyncOutput.ExitCode);
+        Assert.Contains("Unknown async tree output: mermaid", invalidAsyncOutput.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, invalidCallerOutput.ExitCode);
+        Assert.Contains("Unknown callers tree output: line", invalidCallerOutput.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, ambiguousRoot.ExitCode);
+        Assert.Contains("Graph query must resolve exactly one source-backed method", ambiguousRoot.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, missingRoot.ExitCode);
+        Assert.Contains("Graph query must resolve exactly one source-backed method", missingRoot.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, unsupportedOption.ExitCode);
+        Assert.Contains("Unknown option(s): --include", unsupportedOption.StandardError);
+    }
+
+    [Fact]
+    public async Task SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering()
+    {
+        await _fixture.BuildTask;
+
+        var lambda = await RunAsync(
+            "symbol", "find", "::<lambda#1>", "--kind", "lambda", "--output", "json", "--db", _fixture.DatabasePath);
+        var components = await RunAsync(
+            "symbol", "find", "--namespace", "Tokyo", "--type", "Gamer", "--method", "Play", "--output", "json",
+            "--db", _fixture.DatabasePath);
+        var regex = await RunAsync(
+            "symbol", "find", "--regex", "^(Tokyo|Fukuoka)\\.Gamer::P[lr]ay$", "--output", "json", "--db", _fixture.DatabasePath);
+        var sourceFiltered = await RunAsync(
+            "symbol", "find", "Tokyo.*::Play", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--show-source",
+            "--output", "json", "--db", _fixture.DatabasePath);
+        var ignoredCase = await RunAsync(
+            "symbol", "find", "TOKYO.GAMER::PLAY", "--ignore-case", "--output", "json", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, lambda.ExitCode);
+        using var lambdaDocument = JsonDocument.Parse(lambda.StandardOutput);
+        Assert.Contains(lambdaDocument.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            symbol.GetProperty("displayName").GetString()!.Contains("::<lambda#1>", StringComparison.Ordinal));
+
+        Assert.Equal(ExitCodes.Success, components.ExitCode);
+        using var componentsDocument = JsonDocument.Parse(components.StandardOutput);
+        Assert.Equal(
+            ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            componentsDocument.RootElement.GetProperty("matched").EnumerateArray()
+                .Select(symbol => symbol.GetProperty("displayName").GetString()));
+
+        Assert.Equal(ExitCodes.Success, regex.ExitCode);
+        using var regexDocument = JsonDocument.Parse(regex.StandardOutput);
+        Assert.Equal(
+            ["Fukuoka.Gamer::Pray()", "Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            regexDocument.RootElement.GetProperty("matched").EnumerateArray()
+                .Select(symbol => symbol.GetProperty("displayName").GetString()));
+
+        Assert.Equal(ExitCodes.Success, sourceFiltered.ExitCode);
+        using var sourceDocument = JsonDocument.Parse(sourceFiltered.StandardOutput);
+        Assert.NotEmpty(sourceDocument.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.All(sourceDocument.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            Assert.True(symbol.TryGetProperty("normalizedSource", out _)));
+
+        Assert.Equal(ExitCodes.Success, ignoredCase.ExitCode);
+        using var ignoredCaseDocument = JsonDocument.Parse(ignoredCase.StandardOutput);
+        Assert.Equal(2, ignoredCaseDocument.RootElement.GetProperty("matched").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task SymbolFindAndSourceCommandsRejectInvalidSearchInput()
+    {
+        await _fixture.BuildTask;
+
+        var invalidRegex = await RunAsync("symbol", "find", "[", "--regex", "--db", _fixture.DatabasePath);
+        var noNameCondition = await RunAsync("symbol", "find", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, invalidRegex.ExitCode);
+        Assert.Contains("Invalid pattern", invalidRegex.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, noNameCondition.ExitCode);
+        Assert.Contains("symbol find requires a pattern", noNameCondition.StandardError);
+    }
+
+    [Fact]
+    public async Task SourceShowAndSearchRenderNormalizedSourceInTableAndJson()
+    {
+        await _fixture.BuildTask;
+
+        var shown = await RunAsync("source", "show", "Tokyo.Gamer::Play", "--db", _fixture.DatabasePath);
+        var shownJson = await RunAsync(
+            "source", "show", "Tokyo.Gamer::Play", "--output", "json", "--db", _fixture.DatabasePath);
+        var searched = await RunAsync(
+            "source", "search", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--output", "json", "--db",
+            _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, shown.ExitCode);
+        Assert.Contains("Tokyo.Gamer::Play()", shown.StandardOutput);
+        Assert.Contains("source:", shown.StandardOutput);
+
+        Assert.Equal(ExitCodes.Success, shownJson.ExitCode);
+        using var shownDocument = JsonDocument.Parse(shownJson.StandardOutput);
+        Assert.All(shownDocument.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            Assert.True(symbol.TryGetProperty("normalizedSource", out _)));
+
+        Assert.Equal(ExitCodes.Success, searched.ExitCode);
+        using var document = JsonDocument.Parse(searched.StandardOutput);
+        var matches = document.RootElement.GetProperty("matched").EnumerateArray().ToArray();
+        Assert.Contains(matches, symbol => symbol.GetProperty("displayName").GetString() == "Tokyo.SourceBodies::Match()");
+        Assert.DoesNotContain(matches, symbol => symbol.GetProperty("displayName").GetString() == "Tokyo.SourceBodies::Excluded()");
+        Assert.All(matches, symbol => Assert.True(symbol.TryGetProperty("normalizedSource", out _)));
+    }
+
+    [Fact]
+    public async Task AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode()
+    {
+        await _fixture.BuildTask;
+
+        var self = await RunAsync("async", "tree", "Alpha.AsyncGraph::SelfAsync()", "--db", _fixture.DatabasePath);
+        var unreachable = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Unreachable()", "--output", "line", "--db", _fixture.DatabasePath);
+        var truncatedTree = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "1", "--db", _fixture.DatabasePath);
+        var truncatedJson = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "1", "--output", "json", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, self.ExitCode);
+        Assert.Equal("async Alpha.AsyncGraph::SelfAsync()" + Environment.NewLine, self.StandardOutput);
+        Assert.Equal(ExitCodes.Success, unreachable.ExitCode);
+        Assert.Equal(
+            "No reachable asynchronous function: Alpha.AsyncGraph::Unreachable()" + Environment.NewLine,
+            unreachable.StandardOutput);
+        Assert.Equal(ExitCodes.Success, truncatedTree.ExitCode);
+        Assert.Contains("<truncated>", truncatedTree.StandardOutput);
+        Assert.Equal(ExitCodes.Success, truncatedJson.ExitCode);
+        using var document = JsonDocument.Parse(truncatedJson.StandardOutput);
+        Assert.True(document.RootElement.GetProperty("found").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("truncated").GetBoolean());
+        Assert.Single(document.RootElement.GetProperty("nodes").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task CallerTreeRendersTextMermaidJsonDepthCyclesLambdasAndShortNames()
+    {
+        await _fixture.BuildTask;
+        var root = await _fixture.GetStoredSymbolAsync(
+            "Alpha.CallerGraph::RecursiveTarget()",
+            cancellationToken: TestContext.Current.CancellationToken);
+        var right = await _fixture.GetStoredSymbolAsync(
+            "Alpha.CallerGraph::RecursiveRight()",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var table = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--short-names", "--db", _fixture.DatabasePath);
+        var mermaid = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::RecursiveTarget()", "--depth", "0", "--output", "mermaid", "--db",
+            _fixture.DatabasePath);
+        var lambda = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::LambdaTarget()", "--output", "json", "--db", _fixture.DatabasePath);
+        var bounded = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DepthTarget()", "--depth", "2", "--output", "json", "--db",
+            _fixture.DatabasePath);
+        var metadata = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::MetadataTarget()", "--depth", "0", "--output", "json", "--db",
+            _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, table.ExitCode);
+        Assert.Contains("CallerGraph::DirectTarget()", table.StandardOutput);
+        Assert.DoesNotContain("Alpha.CallerGraph::DirectTarget()", table.StandardOutput);
+
+        Assert.Equal(ExitCodes.Success, mermaid.ExitCode);
+        Assert.StartsWith("flowchart TD" + Environment.NewLine, mermaid.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains($"n{right.Id} --> n{root.Id}", mermaid.StandardOutput);
+
+        Assert.Equal(ExitCodes.Success, lambda.ExitCode);
+        using var document = JsonDocument.Parse(lambda.StandardOutput);
+        var nodes = document.RootElement.GetProperty("nodes").EnumerateArray().ToArray();
+        Assert.Contains(nodes, node => node.GetProperty("symbol").GetProperty("displayName").GetString()!
+            .Contains("::<lambda#1>", StringComparison.Ordinal));
+        Assert.DoesNotContain(nodes, node => node.GetProperty("symbol").GetProperty("displayName").GetString() ==
+            "Alpha.CallerGraph::LambdaOwner()");
+
+        Assert.Equal(ExitCodes.Success, bounded.ExitCode);
+        using var boundedDocument = JsonDocument.Parse(bounded.StandardOutput);
+        var boundedNames = boundedDocument.RootElement.GetProperty("nodes").EnumerateArray()
+            .Select(node => node.GetProperty("symbol").GetProperty("displayName").GetString())
+            .ToArray();
+        Assert.Contains("Alpha.CallerGraph::DepthTwo()", boundedNames);
+        Assert.DoesNotContain("Alpha.CallerGraph::DepthThree()", boundedNames);
+
+        Assert.Equal(ExitCodes.Success, metadata.ExitCode);
+        using var metadataDocument = JsonDocument.Parse(metadata.StandardOutput);
+        Assert.All(metadataDocument.RootElement.GetProperty("nodes").EnumerateArray(), node =>
+            Assert.False(node.GetProperty("symbol").GetProperty("namespaceName").GetString()!
+                .StartsWith("System", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task GlobalHelpDescribesTheNewNestedCommandsAndOptions()
+    {
+        var result = await RunAsync("--help");
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("csindex async tree <symbol>", result.StandardOutput);
+        Assert.Contains("csindex callers tree <symbol>", result.StandardOutput);
+        Assert.Contains("csindex source show <symbol>", result.StandardOutput);
+        Assert.Contains("csindex source search", result.StandardOutput);
+        Assert.Contains("--show-source", result.StandardOutput);
+        Assert.Contains("--include <text>", result.StandardOutput);
+        Assert.Contains("--exclude <text>", result.StandardOutput);
+    }
+
+    [Fact]
     public async Task SymbolListDefaultsToMethodsAndLambdasWithLocationsAndAsyncAnnotations()
     {
         await _fixture.BuildTask;
@@ -46,7 +303,7 @@ public sealed class CliCommandTests : IDisposable
         using var document = JsonDocument.Parse(result.StandardOutput);
         var symbols = document.RootElement.GetProperty("symbols").EnumerateArray().ToArray();
         Assert.NotEmpty(symbols);
-        Assert.All(symbols, symbol => Assert.Equal("Lambda", symbol.GetProperty("kind").GetString()));
+        Assert.All(symbols, symbol => Assert.Equal("lambda", symbol.GetProperty("kind").GetString()));
     }
 
     [Fact]

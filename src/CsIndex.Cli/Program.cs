@@ -1,3 +1,4 @@
+using System.Globalization;
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Input;
@@ -41,6 +42,14 @@ internal static class Program
                     await RunSymbolListAsync(args[2..], cancellation.Token),
                 "symbol" when args.Length > 1 && args[1] == "find" =>
                     await RunSymbolAsync(args[2..], cancellation.Token),
+                "async" when args.Length > 1 && args[1] == "tree" =>
+                    await RunAsyncTreeAsync(args[2..], cancellation.Token),
+                "callers" when args.Length > 1 && args[1] == "tree" =>
+                    await RunCallerTreeAsync(args[2..], cancellation.Token),
+                "source" when args.Length > 1 && args[1] == "show" =>
+                    await RunSourceShowAsync(args[2..], cancellation.Token),
+                "source" when args.Length > 1 && args[1] == "search" =>
+                    await RunSourceSearchAsync(args[2..], cancellation.Token),
                 "definition" => await RunDefinitionAsync(args[1..], cancellation.Token),
                 "references" => await RunReferencesAsync(args[1..], cancellation.Token),
                 "callers" => await RunCallersAsync(args[1..], cancellation.Token),
@@ -170,30 +179,160 @@ internal static class Program
     private static async Task<int> RunSymbolAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output", "require-single", "short-names", "include-overrides", "help");
+            args,
+            "db", "profile", "output", "require-single", "short-names", "include-overrides", "namespace", "type",
+            "method", "kind", "regex", "include", "exclude", "ignore-case", "show-source", "help");
         if (parsed.HasFlag("help"))
         {
             Console.WriteLine("""
-                Usage: csindex symbol find <query> [--db <path>] [--output table|json] [--short-names]
+                Usage: csindex symbol find [<pattern>] [options]
+
+                  --namespace <pattern>     Namespace component filter
+                  --type <pattern>          Type component filter
+                  --method <pattern>        Method component filter
+                  --kind method|lambda      Limit results to executable kind
+                  --regex                   Interpret name filters as regular expressions
+                  --include <text>          Require normalized source text (repeatable)
+                  --exclude <text>          Reject normalized source text (repeatable)
+                  --ignore-case             Compare name and source filters without case sensitivity
+                  --show-source             Include normalized source in output
 
                   --include-overrides         Include descendant overrides and interface implementations
                 """);
             return ExitCodes.Success;
         }
 
-        var query = RequireQuery(parsed);
+        var request = CreateSymbolSearchRequest(parsed);
         var service = CreateQueryService(parsed);
-        var result = await service.FindSymbolsAsync(
-            query,
-            parsed.GetSingle("profile"),
-            includeOverrides: parsed.HasFlag("include-overrides"),
-            cancellationToken: cancellationToken);
+        QueryContext result;
+        if (parsed.HasFlag("include-overrides"))
+        {
+            if (UsesExtendedSymbolSearch(parsed))
+            {
+                throw new CliUsageException(
+                    "--include-overrides cannot be combined with component, kind, regex, case, or source search options.");
+            }
+
+            if (request.Pattern is null)
+            {
+                throw new CliUsageException("--include-overrides requires a positional method query.");
+            }
+
+            result = await service.FindSymbolsAsync(
+                request.Pattern,
+                parsed.GetSingle("profile"),
+                includeOverrides: true,
+                cancellationToken: cancellationToken);
+            result = result with { ShowSource = request.ShowSource };
+        }
+        else
+        {
+            result = await service.SearchSymbolsAsync(
+                request,
+                parsed.GetSingle("profile"),
+                cancellationToken);
+        }
         if (RequiresSingleFailure(parsed, result.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteSymbols(result);
+        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
+        return ExitCodes.Success;
+    }
+
+    private static async Task<int> RunAsyncTreeAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "max-nodes", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("Usage: csindex async tree <symbol> [--output tree|line|json] [--max-nodes 500]");
+            return ExitCodes.Success;
+        }
+
+        var output = ParseOutput(parsed.GetSingle("output") ?? "tree", "async tree", "tree", "line", "json");
+        var result = await CreateQueryService(parsed).FindAsyncPathAsync(
+            RequireQuery(parsed),
+            ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
+            parsed.GetSingle("profile"),
+            cancellationToken);
+        new GraphOutputFormatter(parsed.HasFlag("short-names")).WriteAsyncPath(result, output, cancellationToken);
+        return ExitCodes.Success;
+    }
+
+    private static async Task<int> RunCallerTreeAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "depth", "max-nodes", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("Usage: csindex callers tree <symbol> [--depth 3] [--max-nodes 500] [--output tree|mermaid|json]");
+            return ExitCodes.Success;
+        }
+
+        var output = ParseOutput(parsed.GetSingle("output") ?? "tree", "callers tree", "tree", "mermaid", "json");
+        var result = await CreateQueryService(parsed).FindCallerTreeAsync(
+            RequireQuery(parsed),
+            ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3),
+            ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
+            parsed.GetSingle("profile"),
+            cancellationToken);
+        new GraphOutputFormatter(parsed.HasFlag("short-names")).WriteCallerTree(result, output, cancellationToken);
+        return ExitCodes.Success;
+    }
+
+    private static async Task<int> RunSourceShowAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var parsed = ParseQueryArguments(args, "db", "profile", "output", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("Usage: csindex source show <symbol> [--output table|json] [--short-names]");
+            return ExitCodes.Success;
+        }
+
+        var result = await CreateQueryService(parsed).ShowSourceAsync(
+            RequireQuery(parsed),
+            parsed.GetSingle("profile"),
+            cancellationToken);
+        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
+        return ExitCodes.Success;
+    }
+
+    private static async Task<int> RunSourceSearchAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output", "include", "exclude", "ignore-case", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            Console.WriteLine("""
+                Usage: csindex source search (--include <text> | --exclude <text>)... [options]
+
+                  --include <text>          Repeatable
+                  --exclude <text>          Repeatable
+                  --ignore-case
+                  --output table|json
+                """);
+            return ExitCodes.Success;
+        }
+
+        if (parsed.Positionals.Count != 0)
+        {
+            throw new CliUsageException("source search does not accept positional arguments.");
+        }
+
+        var includes = parsed.GetMany("include");
+        var excludes = parsed.GetMany("exclude");
+        if (includes.Count == 0 && excludes.Count == 0)
+        {
+            throw new CliUsageException("source search requires at least one include or exclude condition.");
+        }
+
+        var result = await CreateQueryService(parsed).SearchSourceAsync(
+            includes,
+            excludes,
+            parsed.HasFlag("ignore-case"),
+            parsed.GetSingle("profile"),
+            cancellationToken);
+        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -225,7 +364,7 @@ internal static class Program
             parsed.GetSingle("profile"),
             cancellationToken);
 
-        CreateFormatter(parsed).WriteSymbolList(result);
+        CreateFormatter(parsed).WriteSymbolList(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -274,7 +413,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteDefinitions(result);
+        CreateFormatter(parsed).WriteDefinitions(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -306,7 +445,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "reference(s)");
+        CreateFormatter(parsed).WriteCalls(result, "reference(s)", cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -354,7 +493,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "caller call site(s)");
+        CreateFormatter(parsed).WriteCalls(result, "caller call site(s)", cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -387,7 +526,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "callee call(s)");
+        CreateFormatter(parsed).WriteCalls(result, "callee call(s)", cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -404,7 +543,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteRelations(result);
+        CreateFormatter(parsed).WriteRelations(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -418,7 +557,7 @@ internal static class Program
 
         var service = CreateQueryService(parsed);
         var result = await service.GetConditionsAsync(parsed.GetSingle("profile"), cancellationToken);
-        CreateFormatter(parsed).WriteConditions(result);
+        CreateFormatter(parsed).WriteConditions(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -426,6 +565,95 @@ internal static class Program
     {
         var parsed = CliArguments.Parse(args);
         parsed.EnsureOnly(allowed);
+        return parsed;
+    }
+
+    private static SymbolSearchRequest CreateSymbolSearchRequest(CliArguments parsed)
+    {
+        if (parsed.Positionals.Count > 1)
+        {
+            throw new CliUsageException("symbol find accepts at most one positional pattern.");
+        }
+
+        var pattern = parsed.Positionals.Count == 1 ? parsed.Positionals[0] : null;
+        var namespacePattern = parsed.GetSingle("namespace");
+        var typePattern = parsed.GetSingle("type");
+        var methodPattern = parsed.GetSingle("method");
+        if (pattern is null && namespacePattern is null && typePattern is null && methodPattern is null)
+        {
+            throw new CliUsageException(
+                "symbol find requires a pattern or at least one --namespace, --type, or --method condition.");
+        }
+
+        return new SymbolSearchRequest(
+            pattern,
+            namespacePattern,
+            typePattern,
+            methodPattern,
+            ParseSearchKind(parsed.GetSingle("kind")),
+            parsed.HasFlag("regex"),
+            parsed.HasFlag("ignore-case"),
+            parsed.GetMany("include"),
+            parsed.GetMany("exclude"),
+            parsed.HasFlag("show-source"));
+    }
+
+    private static IndexedSymbolKind? ParseSearchKind(string? value) => value switch
+    {
+        null => null,
+        "method" => IndexedSymbolKind.Method,
+        "lambda" => IndexedSymbolKind.Lambda,
+        _ => throw new CliUsageException($"Unknown symbol kind: {value}. Use method or lambda."),
+    };
+
+    private static bool UsesExtendedSymbolSearch(CliArguments parsed) =>
+        parsed.GetSingle("namespace") is not null ||
+        parsed.GetSingle("type") is not null ||
+        parsed.GetSingle("method") is not null ||
+        parsed.GetSingle("kind") is not null ||
+        parsed.HasFlag("regex") ||
+        parsed.HasFlag("ignore-case") ||
+        parsed.GetMany("include").Count > 0 ||
+        parsed.GetMany("exclude").Count > 0;
+
+    private static string ParseOutput(string value, string command, params string[] allowed)
+    {
+        if (allowed.Contains(value, StringComparer.Ordinal))
+        {
+            return value;
+        }
+
+        throw new CliUsageException($"Unknown {command} output: {value}. Use {string.Join(", ", allowed)}.");
+    }
+
+    private static int ParseNonNegativeInteger(string? value, string description, int defaultValue)
+    {
+        if (value is null)
+        {
+            return defaultValue;
+        }
+
+        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            throw new CliUsageException($"{description} must be an integer.");
+        }
+
+        if (parsed < 0)
+        {
+            throw new CliUsageException($"{description} cannot be negative.");
+        }
+
+        return parsed;
+    }
+
+    private static int ParsePositiveInteger(string? value, string description, int defaultValue)
+    {
+        var parsed = ParseNonNegativeInteger(value, description, defaultValue);
+        if (parsed == 0)
+        {
+            throw new CliUsageException($"{description} must be positive.");
+        }
+
         return parsed;
     }
 
@@ -572,6 +800,10 @@ internal static class Program
               csindex index <input> [options]
               csindex symbol find <query> [options]
               csindex symbol list [options]
+              csindex async tree <symbol> [options]
+              csindex callers tree <symbol> [options]
+              csindex source show <symbol> [options]
+              csindex source search (--include <text> | --exclude <text>)... [options]
               csindex definition <query> [options]
               csindex definition --at <path:line:column> [options]
               csindex references <query> [options]
@@ -593,6 +825,30 @@ internal static class Program
             Symbol list options:
               --kind method|lambda         Limit listed function symbols by kind
               --async-involved             Include only symbols with async involvement
+
+            Symbol find options:
+              --namespace <pattern>        Namespace component filter
+              --type <pattern>             Type component filter
+              --method <pattern>           Method component filter
+              --kind method|lambda         Limit results to executable kind
+              --regex                      Interpret name filters as regular expressions
+              --include <text>             Require normalized source text (repeatable)
+              --exclude <text>             Reject normalized source text (repeatable)
+              --ignore-case                Compare name and source filters without case sensitivity
+              --show-source                Include normalized source in output
+
+            Async tree options:
+              --output tree|line|json      Output format (default: tree)
+              --max-nodes <count>          Maximum path nodes (default: 500)
+
+            Callers tree options:
+              --depth <count>              Maximum caller depth; 0 is unlimited (default: 3)
+              --max-nodes <count>          Maximum graph nodes (default: 500)
+              --output tree|mermaid|json   Output format (default: tree)
+
+            Source commands:
+              source show supports --output table|json
+              source search requires --include <text> or --exclude <text>
 
             Callees options:
               --exclude-lambda-calls       Exclude calls made by nested lambdas
