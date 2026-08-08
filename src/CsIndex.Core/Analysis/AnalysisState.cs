@@ -18,6 +18,7 @@ internal sealed class DocumentAnalysisState
     public required Document Document { get; init; }
     public required DocumentData Data { get; init; }
     public Dictionary<int, string> MethodOwners { get; } = [];
+    public Dictionary<int, string> AccessorOwners { get; } = [];
     public Dictionary<int, string> LocalFunctionOwners { get; } = [];
     public Dictionary<int, string> LambdaOwners { get; } = [];
     public Dictionary<int, string> InitializerOwners { get; } = [];
@@ -35,6 +36,9 @@ internal sealed class DocumentAnalysisState
                 case LocalFunctionStatementSyntax localFunction
                     when LocalFunctionOwners.TryGetValue(localFunction.SpanStart, out var localOwner):
                     return localOwner;
+                case AccessorDeclarationSyntax accessor
+                    when AccessorOwners.TryGetValue(accessor.SpanStart, out var accessorOwner):
+                    return accessorOwner;
                 case BaseMethodDeclarationSyntax method
                     when MethodOwners.TryGetValue(method.SpanStart, out var methodOwner):
                     return methodOwner;

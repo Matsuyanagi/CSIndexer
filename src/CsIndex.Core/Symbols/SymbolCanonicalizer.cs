@@ -107,6 +107,9 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             Arity = method.Arity,
             ParameterCount = method.Parameters.Length,
             MethodKind = (int)method.MethodKind,
+            ReturnTypeKey = method.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor
+                ? null
+                : FormatType(method.ReturnType),
             Accessibility = (int)method.DeclaredAccessibility,
             IsStatic = method.IsStatic,
             IsAbstract = method.IsAbstract,

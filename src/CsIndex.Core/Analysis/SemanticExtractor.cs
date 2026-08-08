@@ -157,6 +157,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 }
 
                 var containingKey = EnsureType(method.ContainingType);
+                var normalizedSource = SourceNormalizer.Normalize(methodNode);
                 var data = _canonicalizer.CreateMethod(
                     method.OriginalDefinition,
                     actualTarget: false,
@@ -168,10 +169,40 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     containingKey) with
                 {
                     AsyncRole = AsyncSymbolClassifier.Classify(method.OriginalDefinition, projectState.Compilation),
+                    NormalizedSource = normalizedSource.Text,
+                    NormalizedSourceHash = normalizedSource.Hash,
                 };
                 UpsertSymbol(data);
                 _sourceSymbolKeys[method.OriginalDefinition] = data.StableKey;
                 documentState.MethodOwners[methodNode.SpanStart] = data.StableKey;
+            }
+
+            foreach (var accessorNode in root.DescendantNodes().OfType<AccessorDeclarationSyntax>())
+            {
+                if (semanticModel.GetDeclaredSymbol(accessorNode, cancellationToken) is not IMethodSymbol method)
+                {
+                    continue;
+                }
+
+                var containingKey = EnsureType(method.ContainingType);
+                var normalizedSource = SourceNormalizer.Normalize(accessorNode);
+                var data = _canonicalizer.CreateMethod(
+                    method.OriginalDefinition,
+                    actualTarget: false,
+                    projectState.Data.Key,
+                    documentKey,
+                    accessorNode.SpanStart,
+                    accessorNode.Span.Length,
+                    generated.IsGenerated,
+                    containingKey) with
+                {
+                    AsyncRole = AsyncSymbolClassifier.Classify(method.OriginalDefinition, projectState.Compilation),
+                    NormalizedSource = normalizedSource.Text,
+                    NormalizedSourceHash = normalizedSource.Hash,
+                };
+                UpsertSymbol(data);
+                _sourceSymbolKeys[method.OriginalDefinition] = data.StableKey;
+                documentState.AccessorOwners[accessorNode.SpanStart] = data.StableKey;
             }
 
             foreach (var localNode in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
@@ -183,6 +214,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
                 var containingKey = documentState.FindOwner(localNode, includeSelf: false) ??
                                     EnsureType(method.ContainingType);
+                var normalizedSource = SourceNormalizer.Normalize(localNode);
                 var data = _canonicalizer.CreateMethod(
                     method,
                     actualTarget: false,
@@ -194,6 +226,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     containingKey) with
                 {
                     AsyncRole = AsyncSymbolClassifier.Classify(method, projectState.Compilation),
+                    NormalizedSource = normalizedSource.Text,
+                    NormalizedSourceHash = normalizedSource.Hash,
                 };
                 UpsertSymbol(data);
                 _sourceSymbolKeys[method] = data.StableKey;
@@ -638,16 +672,17 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
-            var containingTypeKey = _snapshot.Symbols.Values.FirstOrDefault(symbol =>
+            var containingType = _snapshot.Symbols.Values.FirstOrDefault(symbol =>
                 symbol.SourceDocumentKey == documentState.Data.Key &&
                 symbol.Kind == IndexedSymbolKind.Type &&
-                symbol.SourceStart == typeDeclaration.SpanStart)?.StableKey;
-            if (containingTypeKey is null)
+                symbol.SourceStart == typeDeclaration.SpanStart);
+            if (containingType is null)
             {
                 continue;
             }
 
-            var name = declaration switch
+            var containingTypeKey = containingType.StableKey;
+            var memberName = declaration switch
             {
                 VariableDeclaratorSyntax variable => variable.Identifier.ValueText,
                 PropertyDeclarationSyntax property => property.Identifier.ValueText,
@@ -655,9 +690,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             };
             var isStatic = initializer.Ancestors().OfType<MemberDeclarationSyntax>().FirstOrDefault()
                 ?.Modifiers.Any(modifier => modifier.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StaticKeyword)) == true;
-            var display = declaration is PropertyDeclarationSyntax
-                ? $"{name}::<initializer>"
-                : isStatic ? "<static-initializer>" : "<instance-initializer>";
+            var display = $"{containingType.DisplayName}::<initializer:{memberName}>";
             var stableKey = _canonicalizer.GetSyntheticStableKey(
                 containingTypeKey,
                 documentState.Data.NormalizedPath,
@@ -670,8 +703,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 StableKey = stableKey,
                 ProjectKey = projectKey,
                 Kind = IndexedSymbolKind.Initializer,
-                Name = display,
-                NamespaceName = string.Empty,
+                Name = $"<initializer:{memberName}>",
+                NamespaceName = containingType.NamespaceName,
+                TypeSimpleName = containingType.TypeSimpleName,
+                TypeMetadataName = containingType.TypeMetadataName,
                 FullyQualifiedName = display,
                 DisplayName = display,
                 ContainingSymbolKey = containingTypeKey,
@@ -732,7 +767,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         CancellationToken cancellationToken)
     {
         var counters = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var lambda in root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>())
+        foreach (var lambda in root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>()
+                     .OrderBy(lambda => lambda.SpanStart))
         {
             var outerOwner = documentState.FindOwner(lambda, includeSelf: false);
             if (outerOwner is null)
@@ -740,12 +776,14 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
-            counters.TryGetValue(outerOwner, out var count);
+            var counterOwner = FindNonLambdaOwner(outerOwner);
+            counters.TryGetValue(counterOwner, out var count);
             count++;
-            counters[outerOwner] = count;
-            var displayOwner = _snapshot.Symbols.TryGetValue(outerOwner, out var ownerSymbol)
-                ? ownerSymbol.DisplayName
-                : outerOwner;
+            counters[counterOwner] = count;
+            _snapshot.Symbols.TryGetValue(outerOwner, out var immediateOwnerSymbol);
+            var displayOwner = _snapshot.Symbols.TryGetValue(counterOwner, out var counterOwnerSymbol)
+                ? counterOwnerSymbol.DisplayName
+                : counterOwner;
             var display = $"{displayOwner}::<lambda#{count}>";
             var stableKey = _canonicalizer.GetSyntheticStableKey(
                 outerOwner,
@@ -755,23 +793,27 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 lambda.Span.Length,
                 documentState.Data.ContentHash);
             var operation = semanticModel.GetOperation(lambda, cancellationToken) as IAnonymousFunctionOperation;
+            var normalizedSource = SourceNormalizer.Normalize(lambda);
             UpsertSymbol(new SymbolData
             {
                 StableKey = stableKey,
                 ProjectKey = projectKey,
                 Kind = IndexedSymbolKind.Lambda,
                 Name = $"<lambda#{count}>",
-                NamespaceName = ownerSymbol?.NamespaceName ?? string.Empty,
-                TypeSimpleName = ownerSymbol?.TypeSimpleName,
-                TypeMetadataName = ownerSymbol?.TypeMetadataName,
+                NamespaceName = immediateOwnerSymbol?.NamespaceName ?? counterOwnerSymbol?.NamespaceName ?? string.Empty,
+                TypeSimpleName = immediateOwnerSymbol?.TypeSimpleName ?? counterOwnerSymbol?.TypeSimpleName,
+                TypeMetadataName = immediateOwnerSymbol?.TypeMetadataName ?? counterOwnerSymbol?.TypeMetadataName,
                 FullyQualifiedName = display,
                 DisplayName = display,
                 ContainingSymbolKey = outerOwner,
                 ParameterCount = operation?.Symbol.Parameters.Length ?? 0,
                 MethodKind = operation is null ? null : (int)operation.Symbol.MethodKind,
+                ReturnTypeKey = operation is null ? null : SymbolCanonicalizer.FormatType(operation.Symbol.ReturnType),
                 SourceDocumentKey = documentState.Data.Key,
                 SourceStart = lambda.SpanStart,
                 SourceLength = lambda.Span.Length,
+                NormalizedSource = normalizedSource.Text,
+                NormalizedSourceHash = normalizedSource.Hash,
                 IsGenerated = documentState.Data.IsGenerated,
                 AsyncRole = operation is null
                     ? AsyncRole.None
@@ -787,6 +829,19 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             });
             documentState.LambdaOwners[lambda.SpanStart] = stableKey;
         }
+    }
+
+    private string FindNonLambdaOwner(string immediateOwner)
+    {
+        var ownerKey = immediateOwner;
+        while (_snapshot.Symbols.TryGetValue(ownerKey, out var owner) &&
+               owner.Kind == IndexedSymbolKind.Lambda &&
+               owner.ContainingSymbolKey is { } containingOwner)
+        {
+            ownerKey = containingOwner;
+        }
+
+        return ownerKey;
     }
 
     private void ExtractNameOfReference(

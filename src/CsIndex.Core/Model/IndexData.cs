@@ -69,6 +69,9 @@ public sealed record SymbolData
     public string? SourceDocumentKey { get; init; }
     public int? SourceStart { get; init; }
     public int? SourceLength { get; init; }
+    public string? ReturnTypeKey { get; init; }
+    public string? NormalizedSource { get; init; }
+    public byte[]? NormalizedSourceHash { get; init; }
     public bool IsGenerated { get; init; }
     public IReadOnlyList<MethodParameterData> Parameters { get; init; } = [];
 }
