@@ -249,11 +249,12 @@ Context: Source search needs stable text without corrupting literals or token
 boundaries, and must combine predictably with symbol filters.
 
 Decision: Build normalized source from Roslyn active syntax tokens. Preserve
-token text, omit trivia/directives/disabled text, and add one space only when
-adjacent token text would otherwise tokenize differently. Store the resulting
-one-line text and SHA-256 hash. Evaluate source excludes first with OR
-semantics, then AND all includes; use ordinal matching by default and ordinal
-ignore-case only when requested.
+each literal token `Text`, omit trivia/directives/disabled text and layout
+outside literal tokens, and add one space only when adjacent token text would
+otherwise tokenize differently. A multiline raw literal may therefore retain
+embedded newlines. Store the layout-normalized text and SHA-256 hash. Evaluate
+source excludes first with OR semantics, then AND all includes; use ordinal
+matching by default and ordinal ignore-case only when requested.
 
 Alternatives: Regex-based comment stripping, searching original files at
 query time, or FTS-only search semantics.
@@ -326,8 +327,9 @@ Alternatives: Recursive unbounded traversal, display-name graph identifiers,
 or delegate/data-flow inference.
 
 Consequences: Tree, Mermaid, and JSON output describe the same bounded static
-graph, including cycle edges between already included nodes. Some runtime
-execution paths are intentionally absent.
+graph, including cycle edges between already included nodes. Mermaid labels use
+the displayed name (canonical by default and shortened with `--short-names`).
+Some runtime execution paths are intentionally absent.
 
 Date: 2026-08-08
 
@@ -339,14 +341,16 @@ Context: Symbol search needs pattern flexibility without changing existing
 exact-query resolution or letting regex execution depend on culture or run
 without a bound.
 
-Decision: Preserve the exact resolver for unmodified non-wildcard positional
-patterns. Outside that path, evaluate canonical stored display-name and
-component fields. Without `--regex`, only `*` is special and matches zero or
-more characters; every other character is literal. With `--regex`, all name
-patterns are culture-invariant .NET regular expressions with a two-second
-timeout, and `*` retains regex meaning. Use case-sensitive matching by default;
-`--ignore-case` enables culture-invariant regex ignore-case for names and
-ordinal ignore-case for source terms.
+Decision: Preserve the exact resolver only for a positional pattern with no
+wildcard, no `::<lambda#` marker, and no matching modifier (`--regex`,
+`--ignore-case`, component, kind, include, or exclude filters). `--show-source`
+is presentation-only and does not disqualify that path. Outside it, evaluate
+canonical stored display-name and component fields. Without `--regex`, only `*`
+is special and matches zero or more characters; every other character is
+literal. With `--regex`, all name patterns are culture-invariant .NET regular
+expressions with a two-second timeout, and `*` retains regex meaning. Use
+case-sensitive matching by default; `--ignore-case` enables culture-invariant
+regex ignore-case for names and ordinal ignore-case for source terms.
 
 Alternatives: Apply SQL `LIKE` semantics, use the current culture, compile
 unbounded regexes, or shorten names before matching.

@@ -2708,15 +2708,20 @@ Normalized source is built from active Roslyn syntax tokens, not by regular
 expression. Comments, documentation trivia, directives, inactive conditional
 text, indentation, and ordinary line breaks are omitted. Literal token text
 (including interpolated and raw strings) is retained. A space is inserted only
-when joining adjacent token text would change lexical tokenization. The
-one-line result and SHA-256 hash are stored on `symbols`.
+when joining adjacent token text would change lexical tokenization.
+Normalization removes layout outside literal tokens, but preserves each
+literal token `Text`; therefore a multiline raw literal may retain embedded
+newlines. The layout-normalized text and SHA-256 hash are stored on `symbols`.
 
 ## 33.2 Symbol and source search
 
 `symbol find` accepts a positional canonical-name pattern or component
-filters. A pattern with no `*` uses exact resolver compatibility when no
-other search modifier applies. Otherwise, wildcard matching treats only `*`
-as zero-or-more characters; all other non-regex characters are literal.
+filters. Exact resolver compatibility applies only to a positional pattern
+with neither `*` nor `::<lambda#` and no matching modifier (`--regex`,
+`--ignore-case`, component, kind, include, or exclude filters); `--show-source`
+is presentation-only and does not disqualify that path. Otherwise, wildcard
+matching treats only `*` as zero-or-more characters; all other non-regex
+characters are literal.
 `--regex` instead uses a culture-invariant .NET regular expression with a
 two-second timeout. `--ignore-case` enables culture-invariant regex ignore-case
 for names and ordinal ignore-case for source comparisons. Results are ordered
@@ -2767,7 +2772,8 @@ event, callback, reflection, receiver-data-flow, or runtime dispatch
 inference is performed.
 
 Text output forms a spanning tree plus `Additional edges:` where needed.
-Mermaid uses safe `n<symbol-id>` IDs and escaped labels with caller-to-callee
+Mermaid uses safe `n<symbol-id>` IDs and escaped displayed-name labels
+(canonical by default and shortened under `--short-names`) with caller-to-callee
 arrows. JSON provides root, node depths, unique edges, profile, and truncation
 state. All output modes expose truncation rather than silently omitting it.
 

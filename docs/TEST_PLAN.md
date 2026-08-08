@@ -90,7 +90,7 @@ verification section below.
 | 17.2.1 | Number lambdas independently in different functions. | `AsyncSemanticExtractorTests.AnalyzeAsync_NumbersLambdasByNearestNonLambdaOwner` |
 | 17.2.2 | Keep lambda names distinct for different member initializers. | `ExecutableSymbolExtractionTests.AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment` |
 | 17.2.3 | Number nested lambdas in source order. | `AsyncSemanticExtractorTests.AnalyzeAsync_NumbersLambdasByNearestNonLambdaOwner`; `ExecutableSymbolExtractionTests.AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment` |
-| 17.2.4 | Renumber only later lambdas of the same owner after insertion. | `ExecutableSymbolExtractionTests.AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment` (asserts the owner-local source-order sequence) |
+| 17.2.4 | Renumber only later lambdas of the same owner after insertion. | `ExecutableSymbolExtractionTests.AnalyzeAsync_InsertingLambdaRenumbersOnlyLaterLambdasOfSameOwner` |
 | 17.2.5 | Distinguish initializers in different files of a partial type. | `ExecutableSymbolExtractionTests.AnalyzeAsync_IndexesInitializersInLaterPartialDocument` |
 
 ### 17.3 Function attributes
@@ -101,7 +101,7 @@ verification section below.
 | 17.3.2 | Render attributes in text output. | `OutputFormatterTests.WriteSymbolsTableUsesDeclarationOrderingAndShortensReturnAndParameterTypes` |
 | 17.3.3 | Expose attributes as independent JSON fields. | `OutputFormatterTests.WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested` |
 | 17.3.4 | Apply short-name presentation to return and parameter types. | `OutputFormatterTests.WriteSymbolsTableUsesDeclarationOrderingAndShortensReturnAndParameterTypes` |
-| 17.3.5 | Render non-applicable lambda/constructor attributes correctly. | `ExecutableSymbolExtractionTests.AnalyzeAsync_ExtractsReturnTypesAndNormalizedSourceForExecutableSymbols`; Release solution verification |
+| 17.3.5 | Render non-applicable lambda/constructor attributes correctly. | `OutputFormatterTests.WriteSymbolsFormatsConstructorAndLambdaApplicableFieldsAndGatesSource` |
 
 ### 17.4 Async shortest path
 
@@ -111,13 +111,13 @@ verification section below.
 | 17.4.2 | Return a shortest path to an async function. | `GraphQueryTests.AsyncPath_FollowsThePersistedShortestPathToAnAsyncOrigin` |
 | 17.4.3 | Return one persisted route for equal distances. | `GraphQueryTests.AsyncPath_UsesThePersistedNextHopInsteadOfReselectingAnEqualRoute` |
 | 17.4.4 | Do not overwrite a next hop on an equal-distance discovery. | `AsyncInvolvementPropagatorTests.Apply_RecordsOneNextHopAndDoesNotReplaceAnEqualPath` |
-| 17.4.5 | Select the same route after reindexing. | `AsyncInvolvementPropagatorTests.Apply_RecordsOneNextHopAndDoesNotReplaceAnEqualPath`; Release solution verification |
+| 17.4.5 | Select the same route after reindexing. | `GraphQueryTests.AsyncPath_ReindexPersistsTheSameSelectedEqualRoute` |
 | 17.4.6 | Default to tree output. | `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode`; `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
 | 17.4.7 | Emit one-line output with `--output line`. | `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
 | 17.4.8 | Emit structured JSON with `--output json`. | `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
 | 17.4.9 | Report an unreachable async origin. | `GraphQueryTests.AsyncPath_RepresentsSelfAsyncAndUnreachableMethods`; `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode` |
 | 17.4.10 | Terminate on a call-graph cycle. | `GraphQueryTests.AsyncPath_TraversesACallCycleThatReachesAnAsyncOrigin`; `AsyncInvolvementPropagatorTests.Apply_OriginsHaveNullNextAndCyclesTerminate` |
-| 17.4.11 | Classify Task/ValueTask/UniTask families. | `AsyncSemanticExtractorTests.AnalyzeAsync_ExtractsAsyncRolesAndKeepsNestedOwnersSeparate`; `AsyncSemanticExtractorTests.AnalyzeAsync_ClassifiesGenericTaskAsAwaitable` |
+| 17.4.11 | Classify Task/ValueTask/UniTask families. | `AsyncSemanticExtractorTests.AnalyzeAsync_ExtractsAsyncRolesAndKeepsNestedOwnersSeparate`; `AsyncSemanticExtractorTests.AnalyzeAsync_ClassifiesGenericTaskAsAwaitable`; `AsyncSemanticExtractorTests.AnalyzeAsync_ClassifiesValueTaskVariantsAsAwaitable` |
 | 17.4.12 | Decrease persisted path depth one node at a time. | `GraphQueryTests.AsyncPath_FollowsThePersistedShortestPathToAnAsyncOrigin`; `GraphQueryTests.AsyncPath_ValidatesTheNextHopBeforeReportingTruncation` |
 | 17.4.13 | Detect inconsistent next IDs or cycles. | `GraphQueryTests.AsyncPath_RejectsANonOriginWithoutAPersistedNextHop`; `GraphQueryTests.AsyncPath_RejectsCyclicOrOriginNextHops`; `GraphQueryTests.AsyncPath_RejectsANextHopFromAnotherProfile` |
 | 17.4.14 | Mark max-node truncation. | `GraphQueryTests.AsyncPath_CountsTheRootAgainstTheNodeLimit`; `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode` |
@@ -153,14 +153,14 @@ verification section below.
 | --- | --- | --- |
 | 17.7.1 | Remove comments. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
 | 17.7.2 | Preserve comment markers inside string literals. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.3 | Normalize source to one line. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals`; `ExecutableSymbolExtractionTests.AnalyzeAsync_ExtractsReturnTypesAndNormalizedSourceForExecutableSymbols` |
+| 17.7.3 | Normalize source to one line outside literal-token text; multiline raw literal token text preserves embedded newlines. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals`; `SourceNormalizerTests.Normalize_ExcludesDirectivesAndDisabledTextAndPreservesRawStrings` |
 | 17.7.4 | Keep `var a` from becoming `vara`. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
 | 17.7.5 | Preserve token boundaries after comment removal. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.6 | Show normalized function and lambda source. | `SymbolSourceQueryTests.ShowSource_ReturnsSourceBackedExecutableOverloadsAndRequestsPresentation`; `CliCommandTests.SourceShowAndSearchRenderNormalizedSourceInTableAndJson` |
+| 17.7.6 | Show normalized function and lambda source. | `SymbolSourceQueryTests.ShowSource_ReturnsSourceBackedExecutableOverloadsAndRequestsPresentation`; `CliCommandTests.SourceShowRendersNormalizedLambdaSourceInTableAndJson` |
 | 17.7.7 | Require source-search include or exclude conditions. | `SymbolSourceQueryTests.SearchSource_RejectsAnUnboundedQuery`; `CliCommandTests.SourceSearchRequiresAtLeastOneIncludeOrExcludeCondition` |
 | 17.7.8 | Permit name-only `symbol find`. | `SymbolSourceQueryTests.ExactSearch_PreservesTheExistingResolverResults`; `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering` |
 | 17.7.9 | Combine name search with source conditions. | `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes`; `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering` |
-| 17.7.10 | Show normalized source with `symbol find --show-source`. | `OutputFormatterTests.WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested`; `CliCommandTests.SourceShowAndSearchRenderNormalizedSourceInTableAndJson` |
+| 17.7.10 | Show normalized source with `symbol find --show-source`. | `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering`; supplementary formatter evidence: `OutputFormatterTests.WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested` |
 | 17.7.11 | OR multiple excludes. | `SourceTextFilterTests.Excludes_RejectWhenAnyTermMatches`; `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes` |
 | 17.7.12 | Short-circuit includes after an exclude match. | `SourceTextFilterTests.ExcludeMatch_ShortCircuitsBeforeAnyIncludePredicate` |
 | 17.7.13 | Evaluate includes only after excludes survive. | `SourceTextFilterTests.ExcludeMatch_ShortCircuitsBeforeAnyIncludePredicate`; `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes` |
@@ -177,14 +177,14 @@ the documentation changes. The exact commands and fresh results are recorded
 in `task-7-report.md`. Fresh 2026-08-08 evidence is:
 
 - `rtk dotnet test tests/CsIndex.Core.Tests/CsIndex.Core.Tests.csproj --configuration Release`:
-  45 passed, 0 warnings.
+  46 passed, 0 warnings.
 - `rtk dotnet test tests/CsIndex.Storage.Tests/CsIndex.Storage.Tests.csproj --configuration Release`:
   24 passed, 0 warnings.
 - `rtk dotnet test tests/CsIndex.Query.Tests/CsIndex.Query.Tests.csproj --configuration Release`:
   27 passed, 0 warnings.
 - `rtk dotnet test tests/CsIndex.IntegrationTests/CsIndex.IntegrationTests.csproj --configuration Release`:
-  126 passed, 0 warnings.
-- `rtk dotnet test CsIndex.sln --configuration Release`: 222 passed, 0
+  129 passed, 0 warnings.
+- `rtk dotnet test CsIndex.sln --configuration Release`: 226 passed, 0
   warnings.
 - `rtk dotnet build CsIndex.sln --configuration Release`: 9 projects, 0
   warnings, 0 errors.

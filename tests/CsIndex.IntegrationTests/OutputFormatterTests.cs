@@ -114,6 +114,75 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void WriteSymbolsFormatsConstructorAndLambdaApplicableFieldsAndGatesSource()
+    {
+        var constructor = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 101,
+            displayName: "Tokyo.Gamer::.ctor(System.String)",
+            parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
+            namespaceName: "Tokyo",
+            name: ".ctor",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.Constructor,
+            normalizedSource: "public Gamer(string name){}",
+            accessibility: (int)IndexedAccessibility.Public);
+        var lambda = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 102,
+            displayName: "Tokyo.Gamer::Run()::<lambda#1>",
+            namespaceName: "Tokyo",
+            kind: IndexedSymbolKind.Lambda,
+            name: "<lambda#1>",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.AnonymousFunction,
+            returnTypeKey: "System.Int32",
+            normalizedSource: "()=>42",
+            accessibility: (int)IndexedAccessibility.NotApplicable);
+        var hiddenContext = new QueryContext(CreateProfile(), [constructor, lambda]);
+
+        var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(hiddenContext));
+        Assert.Equal(
+            "Query matched 2 symbol(s):" + Environment.NewLine +
+            "  public Tokyo.Gamer::.ctor(System.String)" + Environment.NewLine +
+            "  System.Int32 Tokyo.Gamer::Run()::<lambda#1>" + Environment.NewLine,
+            table);
+        Assert.DoesNotContain("source:", table);
+
+        var shownTable = CaptureText(() => new OutputFormatter("table").WriteSymbols(
+            new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
+        Assert.Contains("source: public Gamer(string name){}", shownTable);
+        Assert.Contains("source: ()=>42", shownTable);
+
+        using var hiddenJson = CaptureJson(() => new OutputFormatter("json").WriteSymbols(hiddenContext));
+        var hiddenConstructor = Assert.Single(hiddenJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            symbol.GetProperty("id").GetInt64() == constructor.Id);
+        var hiddenLambda = Assert.Single(hiddenJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+            symbol.GetProperty("id").GetInt64() == lambda.Id);
+        Assert.Equal("public Tokyo.Gamer::.ctor(System.String)", hiddenConstructor.GetProperty("signature").GetString());
+        Assert.Equal(JsonValueKind.Null, hiddenConstructor.GetProperty("returnType").ValueKind);
+        Assert.Equal("public", hiddenConstructor.GetProperty("accessibility").GetString());
+        Assert.False(hiddenConstructor.TryGetProperty("normalizedSource", out _));
+        Assert.Equal("System.Int32 Tokyo.Gamer::Run()::<lambda#1>", hiddenLambda.GetProperty("signature").GetString());
+        Assert.Equal("System.Int32", hiddenLambda.GetProperty("returnType").GetString());
+        Assert.Equal(JsonValueKind.Null, hiddenLambda.GetProperty("accessibility").ValueKind);
+        Assert.False(hiddenLambda.TryGetProperty("normalizedSource", out _));
+
+        using var shownJson = CaptureJson(() => new OutputFormatter("json").WriteSymbols(
+            new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
+        Assert.Equal(
+            "public Gamer(string name){}",
+            Assert.Single(shownJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+                symbol.GetProperty("id").GetInt64() == constructor.Id)
+            .GetProperty("normalizedSource").GetString());
+        Assert.Equal(
+            "()=>42",
+            Assert.Single(shownJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
+                symbol.GetProperty("id").GetInt64() == lambda.Id)
+            .GetProperty("normalizedSource").GetString());
+    }
+
+    [Fact]
     public void GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
@@ -437,14 +506,17 @@ public sealed class OutputFormatterTests
         string displayName = "Example.Method()",
         IReadOnlyList<StoredParameter>? parameters = null,
         string namespaceName = "Example",
+        IndexedSymbolKind kind = IndexedSymbolKind.Method,
+        string name = "Method",
+        int? methodKind = null,
         bool isStatic = false,
         string? returnTypeKey = null,
         string? normalizedSource = null,
         int? accessibility = null) => new(
         Id: id,
         StableKey: $"symbol-{id}",
-        Kind: IndexedSymbolKind.Method,
-        Name: "Method",
+        Kind: kind,
+        Name: name,
         NamespaceName: namespaceName,
         TypeSimpleName: "Example",
         TypeMetadataName: "Example",
@@ -453,7 +525,7 @@ public sealed class OutputFormatterTests
         ContainingSymbolId: null,
         Arity: 0,
         ParameterCount: 0,
-        MethodKind: null,
+        MethodKind: methodKind,
         IsStatic: isStatic,
         IsAbstract: false,
         IsVirtual: false,

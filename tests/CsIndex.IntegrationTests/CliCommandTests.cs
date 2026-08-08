@@ -167,6 +167,27 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task SourceShowRendersNormalizedLambdaSourceInTableAndJson()
+    {
+        await _fixture.BuildTask;
+
+        const string lambdaQuery = "Tokyo.LambdaSearch::Function()::<lambda#1>";
+        var table = await RunAsync("source", "show", lambdaQuery, "--db", _fixture.DatabasePath);
+        var json = await RunAsync(
+            "source", "show", lambdaQuery, "--output", "json", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, table.ExitCode);
+        Assert.Contains(lambdaQuery, table.StandardOutput);
+        Assert.Contains("source: ()=>LambdaMarker(\"first\")", table.StandardOutput);
+
+        Assert.Equal(ExitCodes.Success, json.ExitCode);
+        using var document = JsonDocument.Parse(json.StandardOutput);
+        var lambda = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(lambdaQuery, lambda.GetProperty("displayName").GetString());
+        Assert.Equal("()=>LambdaMarker(\"first\")", lambda.GetProperty("normalizedSource").GetString());
+    }
+
+    [Fact]
     public async Task AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode()
     {
         await _fixture.BuildTask;

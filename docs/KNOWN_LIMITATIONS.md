@@ -45,8 +45,9 @@
   a B-tree index nor FTS is used for arbitrary substrings.
 - Source normalization intentionally omits trivia, comments, directives, and
   inactive conditional text. `source show` and `source search` therefore do
-  not expose or match those removed characters, while literal token content is
-  preserved.
+  not expose or match those removed characters. Normalization removes layout
+  outside literal tokens but preserves each literal token `Text`, so a
+  multiline raw literal can retain embedded newlines.
 - `source show`/`source search` are limited to indexed source-backed methods
   and lambdas. Metadata-only symbols, external decompilation, and Source Link
   retrieval are not provided.

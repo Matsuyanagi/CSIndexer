@@ -475,6 +475,8 @@ public sealed class SemanticIndexFixture : IDisposable
     public SemanticQueryService Query => new(new SqliteIndex(DatabasePath).CreateQueryRepository());
     public QueryRepository Repository => new SqliteIndex(DatabasePath).CreateQueryRepository();
 
+    public Task ReindexPrimaryProfileAsync() => BuildProfileAsync(PrimaryProfileName, []);
+
     public async Task<StoredSymbol> GetStoredSymbolAsync(
         string displayName,
         string? profileName = null,

@@ -137,6 +137,85 @@ public sealed class ExecutableSymbolExtractionTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_InsertingLambdaRenumbersOnlyLaterLambdasOfSameOwner()
+    {
+        const string before = """
+            using System;
+
+            namespace Test;
+
+            public sealed class Owners
+            {
+                public void SameOwner()
+                {
+                    Action earlier = () => EarlierMarker();
+                    Action later = () => LaterMarker();
+                }
+
+                public void OtherOwner()
+                {
+                    Action first = () => OtherFirstMarker();
+                    Action second = () => OtherSecondMarker();
+                }
+
+                private static void EarlierMarker() { }
+                private static void LaterMarker() { }
+                private static void OtherFirstMarker() { }
+                private static void OtherSecondMarker() { }
+                private static void InsertedMarker() { }
+            }
+            """;
+        const string after = """
+            using System;
+
+            namespace Test;
+
+            public sealed class Owners
+            {
+                public void SameOwner()
+                {
+                    Action earlier = () => EarlierMarker();
+                    Action inserted = () => InsertedMarker();
+                    Action later = () => LaterMarker();
+                }
+
+                public void OtherOwner()
+                {
+                    Action first = () => OtherFirstMarker();
+                    Action second = () => OtherSecondMarker();
+                }
+
+                private static void EarlierMarker() { }
+                private static void LaterMarker() { }
+                private static void OtherFirstMarker() { }
+                private static void OtherSecondMarker() { }
+                private static void InsertedMarker() { }
+            }
+            """;
+
+        var beforeSnapshot = await AnalyzeAsync(("Owners.cs", before));
+        var afterSnapshot = await AnalyzeAsync(("Owners.cs", after));
+
+        var beforeEarlier = FindLambdaWithNormalizedSource(beforeSnapshot, "()=>EarlierMarker()");
+        var beforeLater = FindLambdaWithNormalizedSource(beforeSnapshot, "()=>LaterMarker()");
+        var beforeOtherFirst = FindLambdaWithNormalizedSource(beforeSnapshot, "()=>OtherFirstMarker()");
+        var beforeOtherSecond = FindLambdaWithNormalizedSource(beforeSnapshot, "()=>OtherSecondMarker()");
+        var afterEarlier = FindLambdaWithNormalizedSource(afterSnapshot, "()=>EarlierMarker()");
+        var afterInserted = FindLambdaWithNormalizedSource(afterSnapshot, "()=>InsertedMarker()");
+        var afterLater = FindLambdaWithNormalizedSource(afterSnapshot, "()=>LaterMarker()");
+        var afterOtherFirst = FindLambdaWithNormalizedSource(afterSnapshot, "()=>OtherFirstMarker()");
+        var afterOtherSecond = FindLambdaWithNormalizedSource(afterSnapshot, "()=>OtherSecondMarker()");
+
+        Assert.Equal("Test.Owners::SameOwner()::<lambda#1>", beforeEarlier.DisplayName);
+        Assert.Equal(beforeEarlier.DisplayName, afterEarlier.DisplayName);
+        Assert.Equal("Test.Owners::SameOwner()::<lambda#2>", beforeLater.DisplayName);
+        Assert.Equal("Test.Owners::SameOwner()::<lambda#3>", afterLater.DisplayName);
+        Assert.Equal("Test.Owners::SameOwner()::<lambda#2>", afterInserted.DisplayName);
+        Assert.Equal(beforeOtherFirst.DisplayName, afterOtherFirst.DisplayName);
+        Assert.Equal(beforeOtherSecond.DisplayName, afterOtherSecond.DisplayName);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_IndexesInitializersInLaterPartialDocument()
     {
         const string firstPart = """
@@ -248,6 +327,10 @@ public sealed class ExecutableSymbolExtractionTests
     private static SymbolData FindLambda(IndexSnapshot snapshot, string displayName) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>
             symbol.Kind == IndexedSymbolKind.Lambda && symbol.DisplayName == displayName);
+
+    private static SymbolData FindLambdaWithNormalizedSource(IndexSnapshot snapshot, string normalizedSource) =>
+        Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Lambda && symbol.NormalizedSource == normalizedSource);
 
     private static SymbolData FindLambdaOwnedBy(IndexSnapshot snapshot, SymbolData owner) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>

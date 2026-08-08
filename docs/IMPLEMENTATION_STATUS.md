@@ -24,6 +24,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Added function-scoped source-order lambda numbering, initializer owners for fields/properties/events, and preserved immediate lambda containment for call ownership.
 - Added `async_next_symbol_id` and deterministic reverse-BFS path selection; `async tree` reconstructs and validates one persisted path.
 - Added exact/wildcard/component/regex `symbol find`, normalized-source show/search and source predicates, and bounded caller-tree output in text, Mermaid, and JSON.
+- Added focused acceptance coverage for owner-local lambda renumbering after insertion, constructor/lambda formatter fields and source gating, persisted equal-route selection after reindexing, and lambda source-show output.
 
 ## Currently Implementing
 
@@ -43,13 +44,13 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 ## Test Status
 
 - Command: `rtk dotnet test CsIndex.sln --configuration Release`
-- Passed: 222
+- Passed: 226
 - Failed: 0
 - Skipped: 0
 - Warnings: 0
 - Date: 2026-08-08
-- Focused Release projects: Core 45 passed; Storage 24 passed; Query 27
-  passed; Integration 126 passed. Every project reported 0 warnings.
+- Focused Release projects: Core 46 passed; Storage 24 passed; Query 27
+  passed; Integration 129 passed. Every project reported 0 warnings.
 
 ## Known Broken Areas
 
@@ -77,10 +78,12 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - tests/CsIndex.Core.Tests/AsyncInvolvementPropagatorTests.cs
 - tests/CsIndex.Core.Tests/ExecutableSymbolExtractionTests.cs
 - tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
+- tests/CsIndex.IntegrationTests/CliCommandTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
 - tests/CsIndex.IntegrationTests/PhaseOneAcceptanceTests.cs
 - tests/CsIndex.IntegrationTests/SymbolSourceQueryTests.cs
 - tests/CsIndex.IntegrationTests/GraphQueryTests.cs
+- tests/CsIndex.IntegrationTests/SemanticIndexFixture.cs
 
 ## Database Schema Version
 

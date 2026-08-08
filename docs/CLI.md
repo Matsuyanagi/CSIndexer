@@ -133,7 +133,9 @@ csindex callees "Alpha.DescendantCallees::Execute()" --exclude-lambda-calls
 
 ### 非同期解析情報の出力
 
-既存の検索コマンドの結果へ非同期解析情報を追加します。非同期専用の新コマンドやフィルターはありません。
+既存の検索コマンドの結果へ非同期解析情報を追加します。schema v4では、これとは別に
+`csindex async tree`が永続化された非同期経路を表示します。`symbol list --async-involved`を
+除き、既存のフラット検索コマンドには新たな非同期専用フィルターは追加していません。
 
 symbolを含むJSON objectには次のpropertyを出力します。
 
@@ -186,11 +188,14 @@ options are:
   remains regex syntax; it is not a wildcard option applied in addition to
   regex.
 - Without `--regex`, `*` matches zero or more characters and all other
-  characters are literals. A pattern without `*` preserves the existing exact
-  resolver when no other search modifier is supplied. A method pattern without
-  a parameter list matches its overloads; a parameter list matches the full
-  signature. Lambda suffix forms (`::<lambda#N>`, owner suffixes, and full
-  lambda names) match canonical lambda display names.
+  characters are literals. The existing exact resolver is used only for a
+  positional pattern with neither `*` nor `::<lambda#`, and no matching
+  modifier (`--regex`, `--ignore-case`, component filters, `--kind`,
+  `--include`, or `--exclude`). `--show-source` is presentation-only and does
+  not disqualify that exact path. A method pattern without a parameter list
+  matches its overloads; a parameter list matches the full signature. Lambda
+  suffix forms (`::<lambda#N>`, owner suffixes, and full lambda names) match
+  canonical lambda display names.
 - Repeatable `--include <text>` and `--exclude <text>`. Excludes are ORed and
   evaluated before ANDed includes. A source condition limits candidates to
   source-backed executable symbols. `--show-source` only controls
@@ -245,6 +250,9 @@ Both commands use table output by default. Their JSON shape is the same as
 `symbol find` and contains `normalizedSource`; table rows include a signature,
 location, and an indented `source:` line. Source matching is ordinal and
 case-sensitive by default, or ordinal case-insensitive with `--ignore-case`.
+Normalized source removes layout outside literal-token text while preserving
+each literal token's `Text`; a multiline raw literal can therefore retain
+embedded newlines in the presented source.
 
 ### Async shortest path
 
@@ -273,9 +281,10 @@ The root has depth zero. `--depth 0` removes the depth bound; otherwise the
 default is `3`. The positive `--max-nodes` default is `500` and includes the
 root. `tree` is the default and can include an `Additional edges:` section for
 non-spanning/cycle edges. `mermaid` emits `flowchart TD`, `n<symbol-id>` node
-IDs, escaped canonical labels, caller-to-callee arrows, and `%% truncated`
-when cut. JSON emits `profile`, `truncated`, a `root` symbol object, `nodes`
-with `depth`, and `edges` with caller/callee symbol IDs.
+IDs, escaped displayed-name labels (canonical by default and shortened by
+`--short-names`), caller-to-callee arrows, and `%% truncated` when cut. JSON
+emits `profile`, `truncated`, a `root` symbol object, `nodes` with `depth`, and
+`edges` with caller/callee symbol IDs.
 
 Caller traversal is breadth-first, profile-scoped, and ordered by display
 name, source path, source offset, and ID. It uses resolved invocation and

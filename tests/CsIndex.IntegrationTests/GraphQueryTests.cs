@@ -100,6 +100,33 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task AsyncPath_ReindexPersistsTheSameSelectedEqualRoute()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var before = await fixture.Query.FindAsyncPathAsync(
+            "Alpha.AsyncGraph::EqualStart()",
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var beforeNextId = Assert.IsType<long>(before.Root.AsyncNextSymbolId);
+        var beforeNext = Assert.Single(before.Nodes, node => node.Id == beforeNextId);
+
+        await fixture.ReindexPrimaryProfileAsync();
+
+        var after = await fixture.Query.FindAsyncPathAsync(
+            "Alpha.AsyncGraph::EqualStart()",
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var afterNextId = Assert.IsType<long>(after.Root.AsyncNextSymbolId);
+        var afterNext = Assert.Single(after.Nodes, node => node.Id == afterNextId);
+
+        Assert.Equal(before.Nodes.Select(node => node.DisplayName), after.Nodes.Select(node => node.DisplayName));
+        Assert.Equal(beforeNext.DisplayName, afterNext.DisplayName);
+        Assert.Contains(afterNext.DisplayName, new[] { "Alpha.AsyncGraph::EqualLeft()", "Alpha.AsyncGraph::EqualRight()" });
+    }
+
+    [Fact]
     public async Task AsyncPath_TraversesACallCycleThatReachesAnAsyncOrigin()
     {
         await fixture.BuildTask;
