@@ -324,23 +324,36 @@ public sealed class SchemaMigrator
             CREATE INDEX ix_index_runs_cache
             ON index_runs(input_root, request_hash, input_fingerprint);
 
-            CREATE INDEX ix_symbols_name
-            ON symbols(name);
+            CREATE INDEX ix_symbols_profile_kind
+            ON symbols(analysis_profile_id, kind);
 
-            CREATE INDEX ix_symbols_short_method
-            ON symbols(type_simple_name, name, parameter_count);
+            CREATE INDEX ix_symbols_profile_containing
+            ON symbols(analysis_profile_id, containing_symbol_id);
 
-            CREATE INDEX ix_symbols_namespace_type_method
-            ON symbols(namespace_name, type_simple_name, name, parameter_count);
+            CREATE INDEX ix_symbols_profile_async_depth
+            ON symbols(analysis_profile_id, async_involvement_depth);
 
-            CREATE INDEX ix_symbols_fully_qualified
-            ON symbols(fully_qualified_name);
+            CREATE INDEX ix_symbols_profile_name
+            ON symbols(analysis_profile_id, name);
+
+            CREATE INDEX ix_symbols_profile_short_method
+            ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
+
+            CREATE INDEX ix_symbols_profile_namespace_type_method
+            ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
+
+            CREATE INDEX ix_symbols_profile_fully_qualified
+            ON symbols(analysis_profile_id, fully_qualified_name);
 
             CREATE INDEX ix_symbols_location
             ON symbols(source_document_id, source_start);
 
             CREATE INDEX ix_symbols_profile_async_next
             ON symbols(analysis_profile_id, async_next_symbol_id);
+
+            CREATE INDEX ix_symbols_profile_source_executable
+            ON symbols(analysis_profile_id, kind)
+            WHERE source_document_id IS NOT NULL;
 
             CREATE INDEX ix_calls_callee
             ON calls(callee_definition_id);

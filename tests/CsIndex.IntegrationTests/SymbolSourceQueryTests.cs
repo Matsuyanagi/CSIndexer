@@ -63,7 +63,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
 
         var suffix = await fixture.Query.SearchSymbolsAsync(
-            Request("::<lambda#1>", kind: IndexedSymbolKind.Lambda),
+            Request("::<lambda#1>", typePattern: "LambdaSearch", kind: IndexedSymbolKind.Lambda),
             fixture.PrimaryProfileName,
             cancellationToken);
         var ownerSuffix = await fixture.Query.SearchSymbolsAsync(
@@ -74,15 +74,36 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
             Request("Tokyo.LambdaSearch::Function()::<lambda#2>", kind: IndexedSymbolKind.Lambda),
             fixture.PrimaryProfileName,
             cancellationToken);
+        var nestedOwnerSuffix = await fixture.Query.SearchSymbolsAsync(
+            Request("Function()::<lambda#3>", kind: IndexedSymbolKind.Lambda),
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var nestedFullName = await fixture.Query.SearchSymbolsAsync(
+            Request("Tokyo.LambdaSearch::Function()::<lambda#3>", kind: IndexedSymbolKind.Lambda),
+            fixture.PrimaryProfileName,
+            cancellationToken);
 
-        Assert.Contains(suffix.MatchedSymbols, symbol =>
-            symbol.DisplayName == "Tokyo.LambdaSearch::<initializer:Field>::<lambda#1>");
+        Assert.Equal(
+            new[]
+            {
+                "Tokyo.LambdaSearch::<initializer:Changed>::<lambda#1>",
+                "Tokyo.LambdaSearch::<initializer:Field>::<lambda#1>",
+                "Tokyo.LambdaSearch::<initializer:Property>::<lambda#1>",
+                "Tokyo.LambdaSearch::Function()::<lambda#1>",
+            }.Order(StringComparer.Ordinal),
+            suffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
         Assert.Equal(
             ["Tokyo.LambdaSearch::Function()::<lambda#2>"],
             ownerSuffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
         Assert.Equal(
             ["Tokyo.LambdaSearch::Function()::<lambda#2>"],
             fullName.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.Equal(
+            ["Tokyo.LambdaSearch::Function()::<lambda#3>"],
+            nestedOwnerSuffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.Equal(
+            nestedOwnerSuffix.MatchedSymbols.Select(symbol => symbol.Id),
+            nestedFullName.MatchedSymbols.Select(symbol => symbol.Id));
     }
 
     [Fact]
@@ -115,6 +136,47 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         Assert.True(result.ShowSource);
         Assert.Equal(
             ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.All(result.MatchedSymbols, symbol => Assert.NotNull(symbol.NormalizedSource));
+    }
+
+    [Fact]
+    public async Task ShowSource_PreservesExactQueryWhitespaceWhileRestrictingToSourceExecutables()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.ShowSourceAsync(
+            " Tokyo.Gamer::Play ",
+            fixture.PrimaryProfileName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.All(result.MatchedSymbols, symbol =>
+        {
+            Assert.True(symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda);
+            Assert.NotNull(symbol.DocumentPath);
+            Assert.NotNull(symbol.NormalizedSource);
+        });
+    }
+
+    [Fact]
+    public async Task ShowSource_ExtendedPatternReturnsOnlySourceBackedExecutables()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.ShowSourceAsync(
+            "Tokyo.Gamer::*",
+            fixture.PrimaryProfileName,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            [
+                "Tokyo.Gamer::Play()",
+                "Tokyo.Gamer::Play(System.String)",
+                "Tokyo.Gamer::PrintVar(System.String)",
+            ],
             result.MatchedSymbols.Select(symbol => symbol.DisplayName));
         Assert.All(result.MatchedSymbols, symbol => Assert.NotNull(symbol.NormalizedSource));
     }

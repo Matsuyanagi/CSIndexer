@@ -166,7 +166,9 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 All commands in this section accept `--db <path>` (default:
 `.csindex/index.sqlite` below the current directory) and `--profile <name>`.
 `--short-names` is presentation-only: it shortens displayed names and
-signatures, never canonical stored values or matching semantics.
+signatures, never canonical stored values or matching semantics. Every command
+accepts `--help`; command help lists the complete accepted grammar, all output
+values, and defaults.
 
 ### `symbol find`
 
@@ -226,6 +228,11 @@ prints `source: <normalized-source>` only when `--show-source` is set. JSON is
 `{ "profile": "...", "matched": [...] }`; each symbol object has the fields
 listed for `symbol list`, plus `normalizedSource` only when source presentation
 was requested.
+
+Local functions, lambdas, and static constructors do not display an
+accessibility modifier. Constructors do not display a return type; accessors,
+operators, and conversions display only the fields applicable to their
+declaration kind.
 
 ### Source commands
 
@@ -302,10 +309,15 @@ Depth cannot be negative.
 Maximum node count must be an integer.
 Maximum node count must be positive.
 Graph queries require an exact source-backed method query.
-Graph query must resolve exactly one source-backed method: <query>
+No source-backed method matches graph query: <query>
+Graph query is ambiguous for '<query>'. Candidates: <canonical candidates>
 Unknown async tree output: <value>. Use tree, line, json.
 Unknown callers tree output: <value>. Use tree, mermaid, json.
 ```
+
+Candidate order is deterministic. If two candidates have the same canonical
+display name, each is disambiguated as
+`<display-name> [document: <path>; symbol ID: <id>]`.
 
 Corrupt persisted async-path data is a database error rather than a silently
 reselected path; the message begins `Async path integrity failure:`.

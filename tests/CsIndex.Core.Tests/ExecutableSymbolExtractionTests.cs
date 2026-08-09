@@ -18,6 +18,7 @@ public sealed class ExecutableSymbolExtractionTests
 
             public sealed class A
             {
+                static A() { }
                 public A() { }
 
                 public async Task<int> ExecuteAsync()
@@ -38,7 +39,7 @@ public sealed class ExecutableSymbolExtractionTests
                 public void Host()
                 {
                     int Local() => 2;
-                    Func<int> callback = () => Local();
+                    Func<int> callback = static () => 2;
                     _ = callback();
                 }
             }
@@ -48,7 +49,12 @@ public sealed class ExecutableSymbolExtractionTests
 
         Assert.Equal("System.Threading.Tasks.Task<System.Int32>", Find(snapshot, "ExecuteAsync").ReturnTypeKey);
         Assert.Null(Find(snapshot, ".ctor").ReturnTypeKey);
+        Assert.Null(Find(snapshot, ".cctor").ReturnTypeKey);
+        Assert.Equal((int)IndexedAccessibility.NotApplicable, Find(snapshot, ".cctor").Accessibility);
+        Assert.True(Find(snapshot, ".cctor").IsStatic);
         Assert.Equal("System.Int32", FindLambda(snapshot).ReturnTypeKey);
+        Assert.Equal((int)IndexedAccessibility.NotApplicable, FindLambda(snapshot).Accessibility);
+        Assert.True(FindLambda(snapshot).IsStatic);
         Assert.Equal("System.Int32", Find(snapshot, "get_Value").ReturnTypeKey);
         Assert.NotNull(Find(snapshot, "ExecuteAsync").NormalizedSource);
         Assert.NotNull(FindLambda(snapshot).NormalizedSourceHash);
@@ -56,10 +62,20 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.NotNull(Find(snapshot, "op_Implicit").NormalizedSource);
         Assert.NotNull(Find(snapshot, "Local").NormalizedSource);
 
+        var local = Find(snapshot, "Local");
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.LocalFunction, local.MethodKind);
+        Assert.Equal((int)IndexedAccessibility.NotApplicable, local.Accessibility);
+        Assert.False(local.IsStatic);
+        Assert.Equal("System.Int32", local.ReturnTypeKey);
+
         var getter = Find(snapshot, "get_Value");
         var setter = Find(snapshot, "set_Value");
         Assert.Equal(IndexedSymbolKind.Method, getter.Kind);
         Assert.Equal(IndexedSymbolKind.Method, setter.Kind);
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.PropertyGet, getter.MethodKind);
+        Assert.Equal((int)IndexedAccessibility.Public, getter.Accessibility);
+        Assert.False(getter.IsStatic);
+        Assert.Equal("System.Int32", getter.ReturnTypeKey);
         Assert.Equal("get{return 7;}", getter.NormalizedSource);
         Assert.Equal("set{_=value;}", setter.NormalizedSource);
         Assert.NotNull(getter.SourceStart);
@@ -68,6 +84,18 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.NotNull(setter.SourceLength);
         Assert.Equal("get { return 7; }", source.Substring(getter.SourceStart.Value, getter.SourceLength.Value));
         Assert.Equal("set { _ = value; }", source.Substring(setter.SourceStart.Value, setter.SourceLength.Value));
+
+        var addition = Find(snapshot, "op_Addition");
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.UserDefinedOperator, addition.MethodKind);
+        Assert.Equal((int)IndexedAccessibility.Public, addition.Accessibility);
+        Assert.True(addition.IsStatic);
+        Assert.Equal("Test.A", addition.ReturnTypeKey);
+
+        var conversion = Find(snapshot, "op_Implicit");
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.Conversion, conversion.MethodKind);
+        Assert.Equal((int)IndexedAccessibility.Public, conversion.Accessibility);
+        Assert.True(conversion.IsStatic);
+        Assert.Equal("System.Int32", conversion.ReturnTypeKey);
     }
 
     [Fact]

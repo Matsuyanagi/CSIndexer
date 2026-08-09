@@ -18,6 +18,28 @@ internal static class Program
         "generated-source", "rebuild", "verbose", "diagnostics", "help",
     ];
 
+    private static readonly HelpOption DatabaseHelpOption = new(
+        "--db <path>", "SQLite index path (default: .csindex/index.sqlite)");
+    private static readonly HelpOption ProfileHelpOption = new(
+        "--profile <name>", "Analysis profile (default: most recently indexed profile)");
+    private static readonly HelpOption ShortNamesHelpOption = new(
+        "--short-names", "Shorten namespaces in displayed symbol names");
+    private static readonly HelpOption HelpHelpOption = new("--help", "Show this help text");
+    private static readonly HelpOption TableJsonOutputHelpOption = new(
+        "--output table|json", "Output format (default: table)");
+    private static readonly HelpOption AsyncOutputHelpOption = new(
+        "--output tree|line|json", "Output format (default: tree)");
+    private static readonly HelpOption CallerOutputHelpOption = new(
+        "--output tree|mermaid|json", "Output format (default: tree)");
+    private static readonly HelpOption IncludeHelpOption = new(
+        "--include <text>", "Require normalized source text (repeatable)");
+    private static readonly HelpOption ExcludeHelpOption = new(
+        "--exclude <text>", "Reject normalized source text (repeatable)");
+    private static readonly HelpOption IgnoreCaseNameAndSourceHelpOption = new(
+        "--ignore-case", "Compare name and source filters without case sensitivity");
+    private static readonly HelpOption IgnoreCaseSourceHelpOption = new(
+        "--ignore-case", "Compare source filters without case sensitivity");
+
     public static async Task<int> Main(string[] args)
     {
         using var cancellation = new CancellationTokenSource();
@@ -184,21 +206,27 @@ internal static class Program
             "method", "kind", "regex", "include", "exclude", "ignore-case", "show-source", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex symbol find [<pattern>] [options]
-
-                  --namespace <pattern>     Namespace component filter
-                  --type <pattern>          Type component filter
-                  --method <pattern>        Method component filter
-                  --kind method|lambda      Limit results to executable kind
-                  --regex                   Interpret name filters as regular expressions
-                  --include <text>          Require normalized source text (repeatable)
-                  --exclude <text>          Reject normalized source text (repeatable)
-                  --ignore-case             Compare name and source filters without case sensitivity
-                  --show-source             Include normalized source in output
-
-                  --include-overrides         Include descendant overrides and interface implementations
-                """);
+            WriteCommandHelp(
+                "csindex symbol find [<pattern>] [options]",
+                ["Provide <pattern> or at least one of --namespace, --type, or --method."],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                ShortNamesHelpOption,
+                new HelpOption("--namespace <pattern>", "Namespace component filter"),
+                new HelpOption("--type <pattern>", "Type component filter"),
+                new HelpOption("--method <pattern>", "Method component filter"),
+                new HelpOption("--kind method|lambda", "Limit results to executable kind"),
+                new HelpOption("--regex", "Interpret name filters as regular expressions"),
+                IncludeHelpOption,
+                ExcludeHelpOption,
+                IgnoreCaseNameAndSourceHelpOption,
+                new HelpOption("--show-source", "Include normalized source in output"),
+                new HelpOption(
+                    "--include-overrides",
+                    "Include descendant overrides and interface implementations (exact method pattern only)"),
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -241,7 +269,15 @@ internal static class Program
         var parsed = ParseQueryArguments(args, "db", "profile", "output", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex async tree <symbol> [--output tree|line|json] [--max-nodes 500]");
+            WriteCommandHelp(
+                "csindex async tree <symbol> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                AsyncOutputHelpOption,
+                new HelpOption("--max-nodes <count>", "Maximum path nodes (default: 500)"),
+                ShortNamesHelpOption,
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -260,7 +296,16 @@ internal static class Program
         var parsed = ParseQueryArguments(args, "db", "profile", "output", "depth", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex callers tree <symbol> [--depth 3] [--max-nodes 500] [--output tree|mermaid|json]");
+            WriteCommandHelp(
+                "csindex callers tree <symbol> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                CallerOutputHelpOption,
+                new HelpOption("--depth <count>", "Maximum caller depth; 0 is unlimited (default: 3)"),
+                new HelpOption("--max-nodes <count>", "Maximum graph nodes (default: 500)"),
+                ShortNamesHelpOption,
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -280,7 +325,14 @@ internal static class Program
         var parsed = ParseQueryArguments(args, "db", "profile", "output", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex source show <symbol> [--output table|json] [--short-names]");
+            WriteCommandHelp(
+                "csindex source show <symbol> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                TableJsonOutputHelpOption,
+                ShortNamesHelpOption,
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -298,14 +350,17 @@ internal static class Program
             args, "db", "profile", "output", "include", "exclude", "ignore-case", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex source search (--include <text> | --exclude <text>)... [options]
-
-                  --include <text>          Repeatable
-                  --exclude <text>          Repeatable
-                  --ignore-case
-                  --output table|json
-                """);
+            WriteCommandHelp(
+                "csindex source search (--include <text> | --exclude <text>)... [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                TableJsonOutputHelpOption,
+                IncludeHelpOption,
+                ExcludeHelpOption,
+                IgnoreCaseSourceHelpOption,
+                ShortNamesHelpOption,
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -796,7 +851,7 @@ internal static class Program
 
             Usage:
               csindex index <input> [options]
-              csindex symbol find <query> [options]
+              csindex symbol find [<pattern>] [options]
               csindex symbol list [options]
               csindex async tree <symbol> [options]
               csindex callers tree <symbol> [options]
@@ -854,6 +909,30 @@ internal static class Program
             Run 'csindex index --help' for indexing options.
             """);
     }
+
+    private static void WriteCommandHelp(
+        string usage,
+        IReadOnlyList<string> notes,
+        params HelpOption[] options)
+    {
+        Console.WriteLine($"Usage: {usage}");
+        if (notes.Count > 0)
+        {
+            Console.WriteLine();
+            foreach (var note in notes)
+            {
+                Console.WriteLine($"  {note}");
+            }
+        }
+
+        Console.WriteLine();
+        foreach (var option in options)
+        {
+            Console.WriteLine($"  {option.Syntax,-28}{option.Description}");
+        }
+    }
+
+    private sealed record HelpOption(string Syntax, string Description);
 
     private static void WriteIndexHelp()
     {

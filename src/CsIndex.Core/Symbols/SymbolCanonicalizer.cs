@@ -15,19 +15,20 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
     public IMethodSymbol NormalizeMethod(IMethodSymbol method) =>
         (method.ReducedFrom ?? method).OriginalDefinition;
 
-    public string GetDefinitionStableKey(ISymbol symbol)
+    public string GetDefinitionStableKey(ISymbol symbol, string? projectKey = null)
     {
         var normalized = symbol is IMethodSymbol method ? NormalizeMethod(method) : symbol.OriginalDefinition;
         var documentationId = normalized.GetDocumentationCommentId();
         var identity = documentationId ?? BuildFallbackIdentity(normalized);
         var assembly = normalized.ContainingAssembly?.Identity.Name ?? "source";
-        return $"profile:{profile.Name}|assembly:{assembly}|tfm:{profile.TargetFramework ?? "unknown"}|{identity}";
+        var projectScope = projectKey is null ? string.Empty : $"|project:{projectKey}";
+        return $"profile:{profile.Name}|assembly:{assembly}{projectScope}|tfm:{profile.TargetFramework ?? "unknown"}|{identity}";
     }
 
-    public string GetTargetStableKey(IMethodSymbol method)
+    public string GetTargetStableKey(IMethodSymbol method, string? projectKey = null)
     {
         var definition = NormalizeMethod(method);
-        var definitionKey = GetDefinitionStableKey(definition);
+        var definitionKey = GetDefinitionStableKey(definition, projectKey);
         if (SymbolEqualityComparer.Default.Equals(method, definition))
         {
             return definitionKey;
@@ -57,7 +58,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         var display = FormatType(type);
         return new SymbolData
         {
-            StableKey = GetDefinitionStableKey(type),
+            StableKey = GetDefinitionStableKey(type, projectKey),
             ProjectKey = projectKey,
             Kind = IndexedSymbolKind.Type,
             Name = type.Name,
@@ -66,7 +67,9 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             TypeMetadataName = type.MetadataName,
             FullyQualifiedName = display,
             DisplayName = display,
-            ContainingSymbolKey = type.ContainingType is null ? null : GetDefinitionStableKey(type.ContainingType),
+            ContainingSymbolKey = type.ContainingType is null
+                ? null
+                : GetDefinitionStableKey(type.ContainingType, projectKey),
             Arity = type.Arity,
             TypeKind = (int)type.TypeKind,
             Accessibility = (int)type.DeclaredAccessibility,
@@ -89,7 +92,9 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         bool isGenerated = false,
         string? containingSymbolKey = null)
     {
-        var stableKey = actualTarget ? GetTargetStableKey(method) : GetDefinitionStableKey(method);
+        var stableKey = actualTarget
+            ? GetTargetStableKey(method, projectKey)
+            : GetDefinitionStableKey(method, projectKey);
         var containingType = method.ContainingType;
         return new SymbolData
         {
@@ -103,14 +108,18 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             FullyQualifiedName = $"{FormatType(containingType)}.{FormatMethodName(method)}",
             DisplayName = FormatMethod(method),
             ContainingSymbolKey = containingSymbolKey ??
-                                  (containingType is null ? null : GetDefinitionStableKey(containingType)),
+                                  (containingType is null
+                                      ? null
+                                      : GetDefinitionStableKey(containingType, projectKey)),
             Arity = method.Arity,
             ParameterCount = method.Parameters.Length,
             MethodKind = (int)method.MethodKind,
             ReturnTypeKey = method.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor
                 ? null
                 : FormatType(method.ReturnType),
-            Accessibility = (int)method.DeclaredAccessibility,
+            Accessibility = method.MethodKind is MethodKind.LocalFunction or MethodKind.StaticConstructor
+                ? (int)Microsoft.CodeAnalysis.Accessibility.NotApplicable
+                : (int)method.DeclaredAccessibility,
             IsStatic = method.IsStatic,
             IsAbstract = method.IsAbstract,
             IsVirtual = method.IsVirtual,

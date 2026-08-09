@@ -207,8 +207,9 @@ from receiver-value/runtime flow.
 Consequences: Queries stay profile-scoped, deterministic, cycle-safe, and
 descendant-only. Concrete searches do not include base/interface contracts,
 sibling implementations, or interface-statically-typed call sites. The
-feature requires schema and request-hash version 3; version 2 databases must
-be rebuilt rather than migrated automatically.
+feature originally introduced schema and request-hash version 3. DEC-0022
+supersedes only that version number and its version-2 rebuild consequence;
+the query and binding decisions in this record remain accepted.
 
 Date: 2026-08-05
 
@@ -277,13 +278,22 @@ normalized source/hash, and a self-referencing async-next ID to `symbols`.
 Insert symbols first, then update containing and async-next IDs in the same
 transaction once numeric IDs are known. Reject version 3 and every other
 unsupported version without ALTER, deletion, WAL changes, or user-data
-mutation.
+mutation. Add profile-prefixed indexes for symbol kind, owner, async depth,
+async next hop, name/component lookups, and a partial source-backed executable
+lookup. Source-only repository paths use a direct
+`source_document_id IS NOT NULL` predicate so the partial index is usable.
+
+Supersedes: only DEC-0019's schema/request-hash version 3 and its version-2
+rebuild consequence. DEC-0019's branch-scoped binding and query-time override
+expansion decisions remain accepted.
 
 Alternatives: ALTER migration, automatic database recreation, or resolving
 async paths without a stored next hop.
 
 Consequences: Existing indexes must be rebuilt. A successful index replacement
-is atomic and DB-only queries can reconstruct the persisted fields.
+is atomic and DB-only queries can reconstruct the persisted fields. The
+profile-prefixed indexes are part of schema v4 itself; changing them before
+release does not introduce an in-place migration.
 
 Date: 2026-08-08
 
@@ -295,10 +305,16 @@ Context: A shortest distance alone cannot reproduce one chosen route when
 equal-length paths exist.
 
 Decision: Use deterministic reverse multi-source BFS over resolved invocation
-edges. Sort origins and adjacency deterministically, record `depth + 1` and
-the callee next hop on first or strictly shorter discovery, and never replace
-an equal-distance hop. Query-time display follows only the persisted chain
-and validates decreasing depth, profile membership, and cycles.
+edges whose caller and callee are both source-backed methods/lambdas with
+normalized source; metadata-only awaitable methods are not origins or path
+nodes. Sort origins and adjacency deterministically, record `depth + 1` and the
+callee next hop on first or strictly shorter discovery, and never replace an
+equal-distance hop. Query-time display follows only the persisted chain
+and validates decreasing depth, profile membership, cycles, source-backed
+method/lambda executability, normalized source availability, and coherent
+origin/non-origin state. Only a symbol with a direct async-origin role may end
+the path at depth zero, and every fetched hop is validated before truncation is
+reported.
 
 Alternatives: Re-run a graph search while rendering, persist every route, or
 choose a route from an unspecified SQL order.
@@ -321,7 +337,9 @@ breadth-first within one profile. Retain unique nodes and edges, apply depth
 and node limits, include only source-backed method/lambda callers, exclude
 `System` namespaces, and render graph IDs from symbol IDs. Do not synthesize
 lambda ownership edges or infer delegate `Invoke`, events, callbacks,
-reflection, or runtime dispatch.
+reflection, or runtime dispatch. At a finite depth boundary, still inspect the
+reverse edges of boundary nodes and retain an edge when both endpoints are
+already present; do not admit or enqueue a deeper node.
 
 Alternatives: Recursive unbounded traversal, display-name graph identifiers,
 or delegate/data-flow inference.
@@ -360,3 +378,29 @@ never changed by `--short-names`. Invalid or timed-out patterns fail as query
 errors instead of silently producing a partial result.
 
 Date: 2026-08-08
+
+## DEC-0026: Project-scoped identity for source definitions
+
+Status: Accepted
+
+Context: Two projects in the same analysis profile may intentionally use the
+same assembly name, target framework, fully qualified type, and method
+signature. Assembly identity alone would merge their source definitions and
+redirect calls or graph roots across project boundaries.
+
+Decision: Include the owning `ProjectData.Key` in every source-definition and
+source-target stable key, including types, methods, local functions, synthetic
+owners, calls, relations, interface bindings, and constructed source targets.
+Resolve source ownership from the current compilation, compilation references,
+or the syntax-tree-to-project map. Keep metadata-only symbol identity scoped by
+assembly identity and target framework rather than by the referencing project.
+
+Alternatives: Add a project column only at query time, merge equal source
+definitions by assembly/FQN, or duplicate every metadata symbol per project.
+
+Consequences: Same-profile duplicate source definitions persist with distinct
+symbol IDs and source text, while shared framework/library metadata stays
+deduplicated. Ambiguous graph-root diagnostics add document path and symbol ID
+when canonical display names alone cannot distinguish candidates.
+
+Date: 2026-08-09

@@ -68,6 +68,7 @@ public sealed class AsyncSemanticExtractorTests
             public void Passed() { Consume(LeafAsync()); }
             public void Discarded() { _ = LeafAsync(); }
             public void Unobserved() { LeafAsync(); }
+            public void MetadataAwaitableOnly() { Task.Delay(1); }
             public void NoneUsage() { if (Check()) { } }
             private static void Consume(Task task) { }
             private static bool Check() => true;
@@ -142,6 +143,24 @@ public sealed class AsyncSemanticExtractorTests
         Assert.Equal(1, stored.AsyncInvolvementDepth);
         Assert.Equal(leaf.StableKey, stored.AsyncNextSymbolKey);
         Assert.Null(leaf.AsyncNextSymbolKey);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DoesNotPersistAPathThroughMetadataAwaitableCallee()
+    {
+        var snapshot = await AnalyzeAsync(Source);
+        var caller = GetMethod(snapshot, "MetadataAwaitableOnly");
+        var delayCall = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == caller.StableKey &&
+            snapshot.Symbols[call.CalleeDefinitionKey!].Name == "Delay");
+        var metadataCallee = snapshot.Symbols[delayCall.CalleeDefinitionKey!];
+
+        Assert.Null(metadataCallee.SourceDocumentKey);
+        Assert.NotEqual(AsyncRole.None, metadataCallee.AsyncRole & AsyncRole.ReturnsAwaitable);
+        Assert.Null(caller.AsyncInvolvementDepth);
+        Assert.Null(caller.AsyncNextSymbolKey);
+        Assert.Null(metadataCallee.AsyncInvolvementDepth);
+        Assert.Null(metadataCallee.AsyncNextSymbolKey);
     }
 
     [Fact]

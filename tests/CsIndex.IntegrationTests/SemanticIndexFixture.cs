@@ -255,6 +255,19 @@ public sealed class SemanticIndexFixture : IDisposable
 
                 public void RecursiveLeft() => RecursiveRight();
 
+                public void BoundaryTarget() { }
+                public void BoundaryLeft()
+                {
+                    BoundaryTarget();
+                    BoundaryRight();
+                }
+
+                public void BoundaryRight()
+                {
+                    BoundaryTarget();
+                    BoundaryLeft();
+                }
+
                 public void LambdaTarget() { }
                 public void LambdaOwner()
                 {
@@ -279,6 +292,9 @@ public sealed class SemanticIndexFixture : IDisposable
                     object value = new object();
                     _ = value.ToString();
                 }
+
+                public static void FilterTarget() { }
+                public void AllowedFilterCaller() => FilterTarget();
 
                 public void ObjectCreator() => _ = new GraphCreated();
             }
@@ -443,6 +459,14 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void Pray() { }
             }
         }
+
+        namespace System
+        {
+            public static class SourceFilterCaller
+            {
+                public static void Call() => Alpha.CallerGraph.FilterTarget();
+            }
+        }
         """;
 
     private const string GeneratedSource = """
@@ -528,6 +552,139 @@ public sealed class SemanticIndexFixture : IDisposable
         {
             throw new InvalidOperationException(
                 $"Expected one symbol named '{displayName}' in profile '{profile.Name}', but updated {updated}.");
+        }
+    }
+
+    public async Task SetAsyncPathStateAsync(
+        long symbolId,
+        AsyncRole asyncRole,
+        int? asyncInvolvementDepth,
+        long? asyncNextSymbolId,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = DatabasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE symbols
+            SET async_role = $async_role,
+                async_involvement_depth = $async_involvement_depth,
+                async_next_symbol_id = $async_next_symbol_id
+            WHERE analysis_profile_id = $profile_id
+              AND id = $symbol_id;
+            """;
+        command.Parameters.AddWithValue("$async_role", (int)asyncRole);
+        command.Parameters.AddWithValue("$async_involvement_depth", (object?)asyncInvolvementDepth ?? DBNull.Value);
+        command.Parameters.AddWithValue("$async_next_symbol_id", (object?)asyncNextSymbolId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$profile_id", profile.Id);
+        command.Parameters.AddWithValue("$symbol_id", symbolId);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected one symbol ID '{symbolId}' in profile '{profile.Name}', but updated {updated}.");
+        }
+    }
+
+    public async Task SetSymbolSourceDefinitionAsync(
+        long symbolId,
+        string? normalizedSource,
+        string? documentPath,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = DatabasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE symbols
+            SET normalized_source = $normalized_source,
+                source_document_id = CASE
+                    WHEN $document_path IS NULL THEN NULL
+                    ELSE (
+                        SELECT id
+                        FROM documents
+                        WHERE analysis_profile_id = $profile_id
+                          AND normalized_path = $document_path)
+                END
+            WHERE analysis_profile_id = $profile_id
+              AND id = $symbol_id;
+            """;
+        command.Parameters.AddWithValue("$normalized_source", (object?)normalizedSource ?? DBNull.Value);
+        command.Parameters.AddWithValue("$document_path", (object?)documentPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("$profile_id", profile.Id);
+        command.Parameters.AddWithValue("$symbol_id", symbolId);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected one symbol ID '{symbolId}' in profile '{profile.Name}', but updated {updated}.");
+        }
+    }
+
+    public async Task AddResolvedCallAsync(
+        string callerDisplayName,
+        string calleeDisplayName,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = DatabasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO calls(
+                analysis_profile_id, caller_symbol_id, callee_symbol_id, callee_definition_id,
+                reference_kind, dispatch_kind, resolution_status, resolution_reason, async_usage_kind,
+                document_id, source_start, source_length, unresolved_name, receiver_type_key)
+            SELECT
+                $profile_id, caller.id, callee.id, callee.id,
+                $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason, $async_usage_kind,
+                callee.source_document_id, COALESCE(callee.source_start, 0), 1, NULL, NULL
+            FROM symbols AS caller
+            CROSS JOIN symbols AS callee
+            WHERE caller.analysis_profile_id = $profile_id
+              AND caller.display_name = $caller_display_name
+              AND callee.analysis_profile_id = $profile_id
+              AND callee.display_name = $callee_display_name;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profile.Id);
+        command.Parameters.AddWithValue("$caller_display_name", callerDisplayName);
+        command.Parameters.AddWithValue("$callee_display_name", calleeDisplayName);
+        command.Parameters.AddWithValue("$reference_kind", (int)ReferenceKind.Invocation);
+        command.Parameters.AddWithValue("$dispatch_kind", (int)DispatchKind.Static);
+        command.Parameters.AddWithValue("$resolution_status", (int)ResolutionStatus.Resolved);
+        command.Parameters.AddWithValue("$resolution_reason", (int)ResolutionReason.None);
+        command.Parameters.AddWithValue("$async_usage_kind", (int)AsyncUsageKind.None);
+        var inserted = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (inserted != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected one call from '{callerDisplayName}' to '{calleeDisplayName}' in profile '{profile.Name}', but inserted {inserted}.");
         }
     }
 

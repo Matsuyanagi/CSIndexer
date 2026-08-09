@@ -1,9 +1,13 @@
+using System.Text.Json;
+using CsIndex.Cli;
+using CsIndex.Core.Model;
 using CsIndex.Query;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
 
 namespace CsIndex.IntegrationTests;
 
+[Collection(ConsoleOutputCollection.Name)]
 public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     : IClassFixture<SemanticIndexFixture>
 {
@@ -157,6 +161,291 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         Assert.True(result.Found);
         Assert.True(result.Truncated);
         Assert.Equal(["Alpha.AsyncGraph::Start()"], result.Nodes.Select(node => node.DisplayName));
+    }
+
+    [Fact]
+    public async Task AsyncPath_RejectsASynchronousDepthZeroEndpoint()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        try
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                AsyncRole.None,
+                asyncInvolvementDepth: 0,
+                asyncNextSymbolId: null,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                root.DisplayName,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains("non-origin", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                root.AsyncRole,
+                root.AsyncInvolvementDepth,
+                root.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Theory]
+    [InlineData("origin-with-null-depth")]
+    [InlineData("origin-with-nonzero-depth")]
+    [InlineData("null-depth-with-next-hop")]
+    public async Task AsyncPath_RejectsIncoherentOriginAndNoPathState(string corruption)
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var symbol = await fixture.GetStoredSymbolAsync(
+            corruption.StartsWith("origin", StringComparison.Ordinal)
+                ? "Alpha.AsyncGraph::EndAsync()"
+                : "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var (depth, nextSymbolId, detail) = corruption switch
+        {
+            "origin-with-null-depth" => ((int?)null, (long?)null, "async origin"),
+            "origin-with-nonzero-depth" => ((int?)1, (long?)null, "async origin"),
+            "null-depth-with-next-hop" => ((int?)null, symbol.AsyncNextSymbolId, "null depth"),
+            _ => throw new InvalidOperationException($"Unknown corruption: {corruption}"),
+        };
+
+        try
+        {
+            await fixture.SetAsyncPathStateAsync(
+                symbol.Id,
+                symbol.AsyncRole,
+                depth,
+                nextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                symbol.DisplayName,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains(detail, exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await fixture.SetAsyncPathStateAsync(
+                symbol.Id,
+                symbol.AsyncRole,
+                symbol.AsyncInvolvementDepth,
+                symbol.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Theory]
+    [InlineData(IndexedSymbolKind.Type)]
+    [InlineData(IndexedSymbolKind.Initializer)]
+    public async Task AsyncPath_RejectsNonExecutableFetchedHopBeforeTruncation(IndexedSymbolKind kind)
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var profile = await fixture.Repository.GetProfileAsync(fixture.PrimaryProfileName, cancellationToken);
+        var root = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var candidates = await fixture.Repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            kind: kind,
+            sourceOnly: false,
+            cancellationToken: cancellationToken);
+        var target = Assert.Single(kind == IndexedSymbolKind.Type
+            ? candidates.Where(symbol => symbol.DisplayName == "Alpha.AsyncGraph")
+            : candidates.Take(1));
+
+        try
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                root.AsyncRole,
+                root.AsyncInvolvementDepth,
+                target.Id,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                root.DisplayName,
+                maxNodes: 1,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains("source-backed executable", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                root.AsyncRole,
+                root.AsyncInvolvementDepth,
+                root.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task AsyncPath_RejectsMetadataFetchedHopBeforeTruncation()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var profile = await fixture.Repository.GetProfileAsync(fixture.PrimaryProfileName, cancellationToken);
+        var root = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var metadata = (await fixture.Repository.FindExecutableSymbolsAsync(
+                profile.Id,
+                sourceOnly: false,
+                cancellationToken))
+            .First(symbol => symbol.DocumentPath is null);
+
+        try
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                root.AsyncRole,
+                root.AsyncInvolvementDepth,
+                metadata.Id,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var metadataException = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                root.DisplayName,
+                maxNodes: 1,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains("source-backed executable", metadataException.Message, StringComparison.OrdinalIgnoreCase);
+
+        }
+        finally
+        {
+            await fixture.SetAsyncPathStateAsync(
+                root.Id,
+                root.AsyncRole,
+                root.AsyncInvolvementDepth,
+                root.AsyncNextSymbolId,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task AsyncPath_RejectsSourceLessFetchedHopBeforeTruncation()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var middle = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Middle()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        try
+        {
+            await fixture.SetSymbolSourceDefinitionAsync(
+                middle.Id,
+                middle.NormalizedSource,
+                documentPath: null,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                root.DisplayName,
+                maxNodes: 1,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains("source-backed executable", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await fixture.SetSymbolSourceDefinitionAsync(
+                middle.Id,
+                middle.NormalizedSource,
+                middle.DocumentPath,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task AsyncPath_RejectsRootWithoutNormalizedSource()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = await fixture.GetStoredSymbolAsync(
+            "Alpha.AsyncGraph::Start()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        try
+        {
+            await fixture.SetSymbolSourceDefinitionAsync(
+                root.Id,
+                normalizedSource: null,
+                documentPath: root.DocumentPath,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+                root.DisplayName,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken));
+            Assert.Contains("source-backed executable", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await fixture.SetSymbolSourceDefinitionAsync(
+                root.Id,
+                root.NormalizedSource,
+                root.DocumentPath,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task GraphRootResolutionDistinguishesMissingAndAmbiguousMethodsWithCanonicalCandidates()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var ambiguous = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
+            "Alpha.AClass::Play",
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken));
+        var missing = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
+            "Alpha.AClass::Missing()",
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken));
+
+        Assert.Equal(
+            "Graph query is ambiguous for 'Alpha.AClass::Play'. Candidates: " +
+            "Alpha.AClass::Play(), Alpha.AClass::Play(System.String)",
+            ambiguous.Message);
+        Assert.Equal(
+            "No source-backed method matches graph query: Alpha.AClass::Missing()",
+            missing.Message);
     }
 
     [Fact]
@@ -509,6 +798,41 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task CallerTree_RetainsDepthBoundaryEdgesAcrossTreeMermaidAndJson()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var result = await fixture.Query.FindCallerTreeAsync(
+            "Alpha.CallerGraph::BoundaryTarget()",
+            depth: 1,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var root = result.Root;
+        var left = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::BoundaryLeft()").Symbol;
+        var right = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::BoundaryRight()").Symbol;
+        var expected = new[]
+        {
+            new CallerTreeEdge(left.Id, root.Id),
+            new CallerTreeEdge(right.Id, root.Id),
+            new CallerTreeEdge(left.Id, right.Id),
+            new CallerTreeEdge(right.Id, left.Id),
+        };
+        var symbolIds = result.Nodes.ToDictionary(node => node.Symbol.DisplayName, node => node.Symbol.Id, StringComparer.Ordinal);
+        var formatter = new GraphOutputFormatter(shortNames: false);
+
+        Assert.Equal(expected.OrderBy(EdgeKey), result.Edges.OrderBy(EdgeKey));
+
+        var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree", cancellationToken));
+        Assert.Equal(expected.OrderBy(EdgeKey), ParseTreeEdges(tree, symbolIds).OrderBy(EdgeKey));
+
+        var mermaid = CaptureText(() => formatter.WriteCallerTree(result, "mermaid", cancellationToken));
+        Assert.Equal(expected.OrderBy(EdgeKey), ParseMermaidEdges(mermaid).OrderBy(EdgeKey));
+
+        using var json = JsonDocument.Parse(CaptureText(() => formatter.WriteCallerTree(result, "json", cancellationToken)));
+        Assert.Equal(expected.OrderBy(EdgeKey), ParseJsonEdges(json).OrderBy(EdgeKey));
+    }
+
+    [Fact]
     public async Task CallerTree_KeepsLambdaCallersWithoutSynthesizingOwnershipEdges()
     {
         await fixture.BuildTask;
@@ -555,6 +879,37 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             Assert.False(node.Symbol.NamespaceName == "System" ||
                          node.Symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal));
             Assert.False(string.Equals(node.Symbol.AssemblyName, "System.Private.CoreLib", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public async Task CallerTree_ExcludesSystemAndSourceLessReverseCallers()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await fixture.AddResolvedCallAsync(
+            "System.Object::ToString()",
+            "Alpha.CallerGraph::FilterTarget()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        var result = await fixture.Query.FindCallerTreeAsync(
+            "Alpha.CallerGraph::FilterTarget()",
+            depth: 1,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(
+            [
+                "Alpha.CallerGraph::FilterTarget()",
+                "Alpha.CallerGraph::AllowedFilterCaller()",
+            ],
+            result.Nodes.Select(node => node.Symbol.DisplayName));
+        Assert.All(result.Nodes, node =>
+        {
+            Assert.NotNull(node.Symbol.DocumentPath);
+            Assert.False(node.Symbol.NamespaceName == "System" ||
+                         node.Symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal));
         });
     }
 
@@ -645,4 +1000,78 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellation.Token));
     }
+
+    private static string CaptureText(Action write)
+    {
+        var original = Console.Out;
+        using var output = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            write();
+            return output.ToString();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+    }
+
+    private static IReadOnlyList<CallerTreeEdge> ParseTreeEdges(
+        string text,
+        IReadOnlyDictionary<string, long> symbolIds)
+    {
+        var edges = new List<CallerTreeEdge>();
+        var nodeAtDepth = new Dictionary<int, long>();
+        var additionalEdges = false;
+        foreach (var line in text.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line == "Additional edges:")
+            {
+                additionalEdges = true;
+                continue;
+            }
+
+            if (additionalEdges)
+            {
+                var parts = line.Trim().Split(" -> ", StringSplitOptions.None);
+                edges.Add(new CallerTreeEdge(symbolIds[parts[0]], symbolIds[parts[1]]));
+                continue;
+            }
+
+            var marker = line.IndexOf("└─ ", StringComparison.Ordinal);
+            if (marker < 0)
+            {
+                nodeAtDepth[0] = symbolIds[line];
+                continue;
+            }
+
+            var depth = marker / 3 + 1;
+            var callerId = symbolIds[line[(marker + 3)..]];
+            edges.Add(new CallerTreeEdge(callerId, nodeAtDepth[depth - 1]));
+            nodeAtDepth[depth] = callerId;
+        }
+
+        return edges;
+    }
+
+    private static IReadOnlyList<CallerTreeEdge> ParseMermaidEdges(string text) => text
+        .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+        .Where(line => line.Contains(" --> ", StringComparison.Ordinal))
+        .Select(line => line.Trim().Split(" --> ", StringSplitOptions.None))
+        .Select(parts => new CallerTreeEdge(
+            long.Parse(parts[0][1..], System.Globalization.CultureInfo.InvariantCulture),
+            long.Parse(parts[1][1..], System.Globalization.CultureInfo.InvariantCulture)))
+        .ToArray();
+
+    private static IReadOnlyList<CallerTreeEdge> ParseJsonEdges(JsonDocument document) => document.RootElement
+        .GetProperty("edges")
+        .EnumerateArray()
+        .Select(edge => new CallerTreeEdge(
+            edge.GetProperty("callerSymbolId").GetInt64(),
+            edge.GetProperty("calleeSymbolId").GetInt64()))
+        .ToArray();
+
+    private static string EdgeKey(CallerTreeEdge edge) =>
+        $"{edge.CallerSymbolId:D20}->{edge.CalleeSymbolId:D20}";
 }

@@ -183,6 +183,79 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void WriteSymbolsFormatsLocalAccessorOperatorAndConversionApplicableFields()
+    {
+        var local = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 201,
+            displayName: "Test.A::Host()::Local()",
+            name: "Local",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.LocalFunction,
+            returnTypeKey: "System.Int32",
+            accessibility: (int)IndexedAccessibility.NotApplicable);
+        var getter = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 202,
+            displayName: "Test.A::get_Value()",
+            name: "get_Value",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.PropertyGet,
+            returnTypeKey: "System.Int32",
+            accessibility: (int)IndexedAccessibility.Public);
+        var addition = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 203,
+            displayName: "Test.A::op_Addition(Test.A,Test.A)",
+            name: "op_Addition",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.UserDefinedOperator,
+            isStatic: true,
+            returnTypeKey: "Test.A",
+            accessibility: (int)IndexedAccessibility.Public);
+        var conversion = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 204,
+            displayName: "Test.A::op_Implicit(Test.A)",
+            name: "op_Implicit",
+            methodKind: (int)Microsoft.CodeAnalysis.MethodKind.Conversion,
+            isStatic: true,
+            returnTypeKey: "System.Int32",
+            accessibility: (int)IndexedAccessibility.Public);
+        var context = new QueryContext(CreateProfile(), [local, getter, addition, conversion]);
+
+        var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
+        Assert.Equal(
+            "Query matched 4 symbol(s):" + Environment.NewLine +
+            "  System.Int32 Test.A::Host()::Local()" + Environment.NewLine +
+            "  public System.Int32 Test.A::get_Value()" + Environment.NewLine +
+            "  public static Test.A Test.A::op_Addition(Test.A,Test.A)" + Environment.NewLine +
+            "  public static System.Int32 Test.A::op_Implicit(Test.A)" + Environment.NewLine,
+            table);
+
+        using var json = CaptureJson(() => new OutputFormatter("json").WriteSymbols(context));
+        var symbols = json.RootElement.GetProperty("matched").EnumerateArray()
+            .ToDictionary(symbol => symbol.GetProperty("id").GetInt64());
+        Assert.Equal(JsonValueKind.Null, symbols[local.Id].GetProperty("accessibility").ValueKind);
+        Assert.False(symbols[local.Id].GetProperty("isStatic").GetBoolean());
+        Assert.Equal("System.Int32", symbols[local.Id].GetProperty("returnType").GetString());
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.LocalFunction, symbols[local.Id].GetProperty("methodKind").GetInt32());
+        Assert.Equal("public", symbols[getter.Id].GetProperty("accessibility").GetString());
+        Assert.False(symbols[getter.Id].GetProperty("isStatic").GetBoolean());
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.PropertyGet, symbols[getter.Id].GetProperty("methodKind").GetInt32());
+        Assert.All(new[] { addition, conversion }, symbol =>
+        {
+            Assert.Equal("public", symbols[symbol.Id].GetProperty("accessibility").GetString());
+            Assert.True(symbols[symbol.Id].GetProperty("isStatic").GetBoolean());
+        });
+        Assert.Equal("Test.A", symbols[addition.Id].GetProperty("returnType").GetString());
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.UserDefinedOperator, symbols[addition.Id].GetProperty("methodKind").GetInt32());
+        Assert.Equal("System.Int32", symbols[conversion.Id].GetProperty("returnType").GetString());
+        Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.Conversion, symbols[conversion.Id].GetProperty("methodKind").GetInt32());
+    }
+
+    [Fact]
     public void GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
@@ -351,6 +424,56 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void OrderNodes_ObservesCancellationDuringMaterialization()
+    {
+        using var cancellation = new CancellationTokenSource();
+
+        Assert.Throws<OperationCanceledException>(() => GraphOutputFormatter.OrderNodes(
+            CancelBeforeYieldingNode(cancellation),
+            cancellation.Token));
+    }
+
+    [Fact]
+    public void OrderNodes_ObservesCancellationDuringOrdering()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var comparisons = 0;
+
+        Assert.Throws<OperationCanceledException>(() => GraphOutputFormatter.OrderNodes(
+            [
+                new CallerTreeNode(CreateSymbol(AsyncRole.None, null, id: 3, displayName: "Example.C()"), 1),
+                new CallerTreeNode(CreateSymbol(AsyncRole.None, null, id: 2, displayName: "Example.B()"), 1),
+                new CallerTreeNode(CreateSymbol(AsyncRole.None, null, id: 1, displayName: "Example.A()"), 1),
+            ],
+            cancellation.Token,
+            () =>
+            {
+                comparisons++;
+                cancellation.Cancel();
+            }));
+
+        Assert.True(comparisons > 0);
+    }
+
+    [Fact]
+    public void OrderEdges_ObservesCancellationDuringOrdering()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var comparisons = 0;
+
+        Assert.Throws<OperationCanceledException>(() => GraphOutputFormatter.OrderEdges(
+            [new CallerTreeEdge(3, 1), new CallerTreeEdge(2, 1), new CallerTreeEdge(1, 1)],
+            cancellation.Token,
+            () =>
+            {
+                comparisons++;
+                cancellation.Cancel();
+            }));
+
+        Assert.True(comparisons > 0);
+    }
+
+    [Fact]
     public void OutputFormatterHonorsCancellationBeforeWritingJson()
     {
         var symbol = CreateSymbol(AsyncRole.None, null);
@@ -472,6 +595,12 @@ public sealed class OutputFormatterTests
     }
 
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
+
+    private static IEnumerable<CallerTreeNode> CancelBeforeYieldingNode(CancellationTokenSource cancellation)
+    {
+        cancellation.Cancel();
+        yield return new CallerTreeNode(CreateSymbol(AsyncRole.None, null), 0);
+    }
 
     private static string CaptureText(Action write)
     {

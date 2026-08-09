@@ -63,15 +63,28 @@ duplicated source-availability boolean is required in memory.
 
 Roslyn `IMethodSymbol.ReturnType` supplies return types for ordinary methods,
 local functions, lambdas, operators, conversions, and accessors. Constructors
-and static constructors store no return type. Accessibility continues to use
-Roslyn `DeclaredAccessibility`; not-applicable values remain explicit.
+and static constructors store no return type. Accessibility uses Roslyn
+`DeclaredAccessibility` where the C# declaration kind supports an access
+modifier. Local functions and lambdas store a not-applicable accessibility so
+the formatter never invents a `private` modifier that cannot be written there;
+static constructors likewise store not-applicable accessibility. Static lambda
+state is taken from its Roslyn method symbol.
 
 A focused source normalizer consumes Roslyn syntax tokens, not regular
 expressions. It excludes comments, documentation trivia, directives, and
 disabled text, preserves token text for literals and interpolated/raw strings,
 and inserts one space only when concatenating adjacent token texts would alter
-lexical tokenization. The normalizer stores one line and computes a SHA-256
-hash from that line.
+lexical tokenization. It removes layout line breaks outside literal token text;
+embedded newlines in a multiline raw literal remain part of that literal's
+exact `Text`. Tokens inside an interpolation expression use ordinary C# token
+boundary rules. The normalizer hashes the resulting layout-normalized text
+with SHA-256.
+
+Every source definition and source target is scoped by its owning project key
+before it enters the stable-key map. This applies to types, executable symbols,
+synthetic owners, calls, relations, and interface bindings. Metadata-only
+symbols retain assembly/TFM identity and are not duplicated per referencing
+project.
 
 Each field, property, or event initializer receives a display name of the
 form:
@@ -92,7 +105,10 @@ immediate lambda symbol.
 The existing reverse multi-source BFS remains the derivation mechanism.
 Resolved invocation calls are ordered deterministically by callee, source
 document, source start, caller, and stable call identity before adjacency is
-built. Async origins are enqueued in deterministic stable-key order.
+built. Origins and both call-edge endpoints are restricted to source-backed
+methods/lambdas with normalized source; metadata-only awaitable methods never
+become a persisted path node. Async origins are enqueued in deterministic
+stable-key order.
 
 For every first or strictly shorter visit to a caller, the propagator records:
 
@@ -102,7 +118,11 @@ For every first or strictly shorter visit to a caller, the propagator records:
 An equal-distance visit never replaces the stored next hop. Origins have
 depth zero and a null next hop. Query-time path reconstruction follows only
 the persisted next-hop IDs and validates that every next depth is exactly one
-less. A visited-ID set and `--max-nodes` guard corrupt or cyclic data.
+less. Every node must be a source-backed method/lambda with normalized source;
+only a direct async-origin role may terminate at depth zero, and non-origins
+must have coherent depth/next state. A fetched hop is validated before a
+`--max-nodes` truncation result is returned. A visited-ID set guards corrupt or
+cyclic data.
 
 ## Storage design
 
@@ -134,6 +154,13 @@ symbol ID as the final tie-breaker wherever it is currently absent. Version 3
 and all other unsupported versions are rejected before WAL or user data is
 modified.
 
+Schema v4 also uses profile-prefixed indexes for symbol kind, containing
+symbol, async depth/next, exact names, short method components, namespace/type
+components, and fully qualified names. A partial
+`(analysis_profile_id, kind) WHERE source_document_id IS NOT NULL` index serves
+source-backed executable reads. Representative repository predicates are
+locked with `EXPLAIN QUERY PLAN` tests that reject a full `symbols` scan.
+
 ## Symbol and source search
 
 The existing exact `SymbolQueryParser` remains the resolver for definition,
@@ -149,10 +176,13 @@ dedicated search request that can express:
 - repeatable source `--include` and `--exclude` filters;
 - `--ignore-case` and `--show-source`.
 
-A positional value without `*` and without `--regex` first preserves existing
-exact-query semantics. Lambda suffix forms are additionally matched against
-`DisplayName` suffixes. A method pattern without a parameter list matches all
-overloads; a pattern with parameters matches the complete display name.
+A positional value without `*`, without a `::<lambda#` marker, and without a
+matching modifier (`--regex`, `--ignore-case`, components, kind, or source
+conditions) preserves existing exact-query semantics. `--show-source` remains
+presentation-only and does not disqualify that route. Lambda suffix forms are
+matched against `DisplayName` suffixes. A method pattern without a parameter
+list matches all overloads; a pattern with parameters matches the complete
+display name.
 
 For wildcard and regular-expression searches, matches are evaluated against
 canonical stored name components and the canonical `DisplayName`; output-only
@@ -170,7 +200,8 @@ signature, location, and normalized source. `source search` requires at least
 one include or exclude term and scans source-backed executable symbols using
 the same filtering semantics. The repository may use SQL filtering or bounded
 application evaluation, but it must preserve ordinal case-sensitive matching
-by default and profile isolation.
+by default and profile isolation. Both exact and extended `source show` routes
+push source-only scope into their initial repository read.
 
 ## Query results and presentation
 
@@ -196,7 +227,9 @@ Caller-tree output is a graph result with unique nodes and unique directed
 caller-to-callee edges. The service performs breadth-first expansion from the
 resolved root. `--depth 0` removes the depth bound but never the node bound.
 New nodes stop at `--max-nodes`; edges between already included nodes are
-retained so recursive and mutual-recursive cycles remain visible.
+retained so recursive and mutual-recursive cycles remain visible. At a finite
+depth boundary the service still reads reverse calls and retains only edges
+whose two endpoints are already in the result; it never admits a deeper node.
 
 Traversal includes only symbols with indexed source definitions and excludes
 the `System` namespace and its descendants. Calls written inside a lambda are
@@ -227,11 +260,14 @@ Existing exit-code categories remain unchanged.
 - Missing profiles and unsupported schemas use existing storage exceptions.
 - Invalid patterns, regex failures, invalid numeric limits, and ambiguous
   graph roots use existing invalid-argument/query paths.
+- A missing graph root names the query. An ambiguous graph root lists every
+  canonical candidate in repository order; duplicate display names add their
+  document path and symbol ID.
 - No reachable async origin is a successful empty-path result.
 - Corrupt async next-hop data produces a focused database/query failure rather
   than looping or silently selecting a different route.
-- Cancellation is checked during extraction, filtering, BFS traversal, and
-  output construction.
+- Cancellation is checked during extraction, token/lambda/call ordering,
+  filtering, BFS traversal, collection materialization, and output ordering.
 
 ## Testing strategy
 
@@ -264,7 +300,9 @@ check.
 Implementation updates `docs/SPEC.md`, `docs/CLI.md`, `docs/DB_SCHEMA.md`,
 `docs/DECISIONS.md`, `docs/TEST_PLAN.md`, `docs/IMPLEMENTATION_STATUS.md`, and
 `docs/KNOWN_LIMITATIONS.md` where applicable. The Japanese authoritative
-requirements document remains unchanged.
+requirements document is amended only to record the approved normalization
+clarification: layout newlines outside literal-token text are removed, while
+newlines contained in literal-token text remain unchanged.
 
 ## Acceptance
 

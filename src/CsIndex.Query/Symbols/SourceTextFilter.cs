@@ -7,21 +7,41 @@ public static class SourceTextFilter
         IReadOnlyList<string> includes,
         IReadOnlyList<string> excludes,
         StringComparison comparison,
+        CancellationToken cancellationToken,
         Func<string, string, StringComparison, bool>? contains = null)
     {
         ArgumentNullException.ThrowIfNull(includes);
         ArgumentNullException.ThrowIfNull(excludes);
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (source is null)
         {
             return false;
         }
 
         contains ??= static (text, term, stringComparison) => text.Contains(term, stringComparison);
-        if (excludes.Any(exclude => contains(source, exclude, comparison)))
+        foreach (var exclude in excludes)
         {
-            return false;
+            cancellationToken.ThrowIfCancellationRequested();
+            var isExcluded = contains(source, exclude, comparison);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (isExcluded)
+            {
+                return false;
+            }
         }
 
-        return includes.All(include => contains(source, include, comparison));
+        foreach (var include in includes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var isIncluded = contains(source, include, comparison);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!isIncluded)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

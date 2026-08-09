@@ -1,5 +1,8 @@
+using System.Runtime.CompilerServices;
 using CsIndex.Core.Model;
 using CsIndex.Storage;
+
+[assembly: InternalsVisibleTo("CsIndex.Query.Tests")]
 
 namespace CsIndex.Query;
 
@@ -15,6 +18,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         int maxNodes,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var rootNode = new CallerTreeNode(root, Depth: 0);
         var nodes = new List<CallerTreeNode> { rootNode };
         var nodesById = new Dictionary<long, CallerTreeNode> { [root.Id] = rootNode };
@@ -26,10 +30,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         while (currentFrontier.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (depth != 0 && currentFrontier[0].Depth >= depth)
-            {
-                break;
-            }
+            var atDepthBoundary = depth != 0 && currentFrontier[0].Depth >= depth;
 
             var candidateEdges = new List<CallerTreeEdge>();
             var candidateEdgeSet = new HashSet<CallerTreeEdge>();
@@ -63,18 +64,44 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                 break;
             }
 
-            var callersById = (await repository.GetSymbolsByIdsAsync(
+            if (atDepthBoundary)
+            {
+                foreach (var candidateEdge in candidateEdges)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (nodesById.ContainsKey(candidateEdge.CallerSymbolId) &&
+                        nodesById.ContainsKey(candidateEdge.CalleeSymbolId) &&
+                        edgeSet.Add(candidateEdge))
+                    {
+                        edges.Add(candidateEdge);
+                    }
+                }
+
+                break;
+            }
+
+            var callerIds = new List<long>(candidateEdges.Count);
+            foreach (var candidateEdge in candidateEdges)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                callerIds.Add(candidateEdge.CallerSymbolId);
+            }
+
+            var callerCandidates = await repository.GetSymbolsByIdsAsync(
                 profile.Id,
-                candidateEdges.Select(edge => edge.CallerSymbolId),
-                cancellationToken))
-                .Where(IsSourceBackedNonSystemExecutable)
-                .ToDictionary(symbol => symbol.Id);
-            var sortedCallers = callersById.Values
-                         .OrderBy(symbol => symbol.DisplayName, StringComparer.Ordinal)
-                         .ThenBy(symbol => symbol.DocumentPath ?? string.Empty, StringComparer.Ordinal)
-                         .ThenBy(symbol => symbol.SourceStart ?? -1)
-                         .ThenBy(symbol => symbol.Id)
-                         .ToArray();
+                callerIds,
+                cancellationToken);
+            var callersById = new Dictionary<long, StoredSymbol>();
+            foreach (var caller in callerCandidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsSourceBackedNonSystemExecutable(caller))
+                {
+                    callersById.Add(caller.Id, caller);
+                }
+            }
+
+            var sortedCallers = OrderCallers(callersById.Values, cancellationToken);
             var nextFrontier = new List<CallerTreeNode>();
             foreach (var caller in sortedCallers)
             {
@@ -96,11 +123,28 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                 nextFrontier.Add(callerNode);
             }
 
-            var candidateEdgesByCaller = candidateEdges.ToLookup(edge => edge.CallerSymbolId);
+            var candidateEdgesByCaller = new Dictionary<long, List<CallerTreeEdge>>();
+            foreach (var candidateEdge in candidateEdges)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!candidateEdgesByCaller.TryGetValue(candidateEdge.CallerSymbolId, out var callerEdges))
+                {
+                    callerEdges = [];
+                    candidateEdgesByCaller.Add(candidateEdge.CallerSymbolId, callerEdges);
+                }
+
+                callerEdges.Add(candidateEdge);
+            }
+
             foreach (var caller in sortedCallers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (var candidateEdge in candidateEdgesByCaller[caller.Id])
+                if (!candidateEdgesByCaller.TryGetValue(caller.Id, out var callerEdges))
+                {
+                    continue;
+                }
+
+                foreach (var candidateEdge in callerEdges)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (nodesById.ContainsKey(candidateEdge.CallerSymbolId) &&
@@ -116,6 +160,61 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         }
 
         return new CallerTreeResult(profile, root, nodes, edges, truncated);
+    }
+
+    internal static IReadOnlyList<StoredSymbol> OrderCallers(
+        IEnumerable<StoredSymbol> callers,
+        CancellationToken cancellationToken,
+        Action? afterOrderingComparison = null)
+    {
+        ArgumentNullException.ThrowIfNull(callers);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var ordered = new List<StoredSymbol>();
+        foreach (var caller in callers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ordered.Add(caller);
+        }
+
+        try
+        {
+            ordered.Sort((left, right) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = CompareCallers(left, right);
+                afterOrderingComparison?.Invoke();
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            });
+        }
+        catch (InvalidOperationException exception) when (
+            exception.InnerException is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return ordered;
+    }
+
+    private static int CompareCallers(StoredSymbol left, StoredSymbol right)
+    {
+        var result = StringComparer.Ordinal.Compare(left.DisplayName, right.DisplayName);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = StringComparer.Ordinal.Compare(left.DocumentPath ?? string.Empty, right.DocumentPath ?? string.Empty);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = (left.SourceStart ?? -1).CompareTo(right.SourceStart ?? -1);
+        return result != 0 ? result : left.Id.CompareTo(right.Id);
     }
 
     private static bool TargetsCallee(StoredCall call, long calleeId) =>

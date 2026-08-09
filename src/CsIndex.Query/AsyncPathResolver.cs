@@ -1,9 +1,21 @@
+using CsIndex.Core.Model;
 using CsIndex.Storage;
 
 namespace CsIndex.Query;
 
 internal sealed class AsyncPathResolver(QueryRepository repository)
 {
+    private const AsyncRole AsyncOriginRoles =
+        AsyncRole.DeclaredAsync |
+        AsyncRole.ReturnsAwaitable |
+        AsyncRole.ContainsAwait |
+        AsyncRole.AsyncIterator |
+        AsyncRole.ReturnsAsyncEnumerable |
+        AsyncRole.AsyncVoid |
+        AsyncRole.UniTaskVoid |
+        AsyncRole.UsesAwaitForEach |
+        AsyncRole.UsesAwaitUsing;
+
     public async Task<AsyncPathResult> ResolveAsync(
         StoredProfile profile,
         StoredSymbol root,
@@ -11,43 +23,32 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (root.AsyncInvolvementDepth is null)
-        {
-            return new AsyncPathResult(profile, root, [], Found: false, Truncated: false);
-        }
-
         var nodes = new List<StoredSymbol>();
         var visitedIds = new HashSet<long>();
         var current = root;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ValidateNode(current);
+            if (current.AsyncInvolvementDepth is null)
+            {
+                return new AsyncPathResult(profile, root, [], Found: false, Truncated: false);
+            }
+
             if (!visitedIds.Add(current.Id))
             {
                 throw IntegrityFailure($"a cycle was encountered at symbol ID {current.Id}");
             }
 
-            var currentDepth = current.AsyncInvolvementDepth;
-            if (currentDepth is null || currentDepth < 0)
-            {
-                throw IntegrityFailure($"symbol ID {current.Id} has an invalid async involvement depth");
-            }
+            var currentDepth = current.AsyncInvolvementDepth.Value;
 
             nodes.Add(current);
             if (currentDepth == 0)
             {
-                if (current.AsyncNextSymbolId is not null)
-                {
-                    throw IntegrityFailure($"async origin symbol ID {current.Id} has a next-hop ID");
-                }
-
                 return new AsyncPathResult(profile, root, nodes, Found: true, Truncated: false);
             }
 
-            if (current.AsyncNextSymbolId is not long nextSymbolId)
-            {
-                throw IntegrityFailure($"non-origin symbol ID {current.Id} has no next-hop ID");
-            }
+            var nextSymbolId = current.AsyncNextSymbolId!.Value;
 
             var next = await GetNextSymbolAsync(profile.Id, nextSymbolId, cancellationToken);
             if (visitedIds.Contains(next.Id))
@@ -55,20 +56,11 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
                 throw IntegrityFailure($"a cycle was encountered through symbol ID {next.Id}");
             }
 
+            ValidateNode(next);
             if (next.AsyncInvolvementDepth is not int nextDepth || nextDepth != currentDepth - 1)
             {
                 throw IntegrityFailure(
                     $"next-hop symbol ID {nextSymbolId} does not decrease depth from {currentDepth} by exactly one");
-            }
-
-            if (nextDepth == 0 && next.AsyncNextSymbolId is not null)
-            {
-                throw IntegrityFailure($"async origin symbol ID {next.Id} has a next-hop ID");
-            }
-
-            if (nextDepth > 0 && next.AsyncNextSymbolId is null)
-            {
-                throw IntegrityFailure($"non-origin symbol ID {next.Id} has no next-hop ID");
             }
 
             if (nodes.Count == maxNodes)
@@ -97,4 +89,71 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
 
     private static IndexDatabaseException IntegrityFailure(string detail) =>
         new($"Async path integrity failure: {detail}.");
+
+    private static void ValidateNode(StoredSymbol symbol)
+    {
+        if (!IsSourceBackedExecutable(symbol))
+        {
+            throw IntegrityFailure(
+                $"symbol ID {symbol.Id} is not a source-backed executable " +
+                $"(kind {symbol.Kind}, document path {(symbol.DocumentPath is null ? "missing" : "present")}, " +
+                $"normalized source {(symbol.NormalizedSource is null ? "missing" : "present")})");
+        }
+
+        var isAsyncOrigin = IsAsyncOrigin(symbol);
+        var depth = symbol.AsyncInvolvementDepth;
+        var nextSymbolId = symbol.AsyncNextSymbolId;
+        if (depth is null)
+        {
+            if (isAsyncOrigin)
+            {
+                throw IntegrityFailure($"async origin symbol ID {symbol.Id} has null depth");
+            }
+
+            if (nextSymbolId is not null)
+            {
+                throw IntegrityFailure($"symbol ID {symbol.Id} has null depth with a next-hop ID");
+            }
+
+            return;
+        }
+
+        if (depth < 0)
+        {
+            throw IntegrityFailure($"symbol ID {symbol.Id} has a negative async involvement depth");
+        }
+
+        if (isAsyncOrigin)
+        {
+            if (depth != 0)
+            {
+                throw IntegrityFailure($"async origin symbol ID {symbol.Id} has nonzero depth {depth}");
+            }
+
+            if (nextSymbolId is not null)
+            {
+                throw IntegrityFailure($"async origin symbol ID {symbol.Id} has a next-hop ID");
+            }
+
+            return;
+        }
+
+        if (depth == 0)
+        {
+            throw IntegrityFailure($"non-origin symbol ID {symbol.Id} has depth zero");
+        }
+
+        if (nextSymbolId is null)
+        {
+            throw IntegrityFailure($"non-origin symbol ID {symbol.Id} has no next-hop ID");
+        }
+    }
+
+    private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
+        (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda) &&
+        symbol.DocumentPath is not null &&
+        symbol.NormalizedSource is not null;
+
+    private static bool IsAsyncOrigin(StoredSymbol symbol) =>
+        (symbol.AsyncRole & AsyncOriginRoles) != 0;
 }

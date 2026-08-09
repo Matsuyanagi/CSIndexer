@@ -24,7 +24,12 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Added function-scoped source-order lambda numbering, initializer owners for fields/properties/events, and preserved immediate lambda containment for call ownership.
 - Added `async_next_symbol_id` and deterministic reverse-BFS path selection; `async tree` reconstructs and validates one persisted path.
 - Added exact/wildcard/component/regex `symbol find`, normalized-source show/search and source predicates, and bounded caller-tree output in text, Mermaid, and JSON.
-- Added focused acceptance coverage for owner-local lambda renumbering after insertion, constructor/lambda formatter fields and source gating, persisted equal-route selection after reindexing, and lambda source-show output.
+- Source-definition stable keys now include the owning project key, so same-profile projects with identical assembly/TFM/FQN remain separate while metadata-only symbols stay assembly-scoped.
+- Long-running normalization, extraction ordering, async propagation, source filtering, caller traversal, and output ordering observe in-flight cancellation.
+- Async propagation and reconstruction share source-backed method/lambda eligibility, validate executable/origin state before truncation, and exclude metadata-only awaitable hops; finite caller-tree boundaries retain internal cycle/cross edges.
+- Schema v4 includes profile-prefixed symbol indexes and a partial source-executable index, with PRAGMA and `EXPLAIN QUERY PLAN` regression tests.
+- Graph-root ambiguity reports deterministic canonical candidates, duplicate names include document path and ID, and global/command help is snapshot-tested against the accepted grammar.
+- Added direct acceptance coverage for nested/all-same-ordinal lambda search, reverse insertion ties, final numeric-ID ordering, duplicate projects, excluded reverse callers, all executable declaration signature kinds, literal variants, corruption, and in-flight cancellation.
 
 ## Currently Implementing
 
@@ -37,20 +42,20 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Build Status
 
-- Command: `rtk dotnet build CsIndex.sln --configuration Release`
+- Command: `rtk dotnet build CsIndex.sln --configuration Release --no-restore`
 - Result: 9 projects; 0 warnings, 0 errors
-- Date: 2026-08-08
+- Date: 2026-08-09
 
 ## Test Status
 
-- Command: `rtk dotnet test CsIndex.sln --configuration Release`
-- Passed: 226
+- Command: `rtk dotnet test CsIndex.sln --configuration Release --no-restore`
+- Passed: 267
 - Failed: 0
 - Skipped: 0
 - Warnings: 0
-- Date: 2026-08-08
-- Focused Release projects: Core 46 passed; Storage 24 passed; Query 27
-  passed; Integration 129 passed. Every project reported 0 warnings.
+- Date: 2026-08-09
+- Focused Release projects: Core 57 passed; Storage 26 passed; Query 30
+  passed; Integration 154 passed. Every project reported 0 warnings.
 
 ## Known Broken Areas
 
@@ -78,12 +83,16 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - tests/CsIndex.Core.Tests/AsyncInvolvementPropagatorTests.cs
 - tests/CsIndex.Core.Tests/ExecutableSymbolExtractionTests.cs
 - tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
+- tests/CsIndex.Core.Tests/ProjectScopedSourceSymbolIdentityTests.cs
+- tests/CsIndex.Core.Tests/SemanticExtractorCancellationTests.cs
 - tests/CsIndex.IntegrationTests/CliCommandTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
 - tests/CsIndex.IntegrationTests/PhaseOneAcceptanceTests.cs
 - tests/CsIndex.IntegrationTests/SymbolSourceQueryTests.cs
 - tests/CsIndex.IntegrationTests/GraphQueryTests.cs
 - tests/CsIndex.IntegrationTests/SemanticIndexFixture.cs
+- tests/CsIndex.IntegrationTests/ProjectScopedSourceSymbolPersistenceTests.cs
+- tests/CsIndex.Query.Tests/CallerTreeBuilderTests.cs
 
 ## Database Schema Version
 

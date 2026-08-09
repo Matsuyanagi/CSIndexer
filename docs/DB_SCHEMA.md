@@ -14,7 +14,7 @@
 - `index_runs`: input root、input fingerprint、request hash、最終更新時刻。変更なしキャッシュの判定に使用します。
 - `projects`: profile/run、assembly、project path、target framework、project fingerprint。
 - `documents`: 絶対正規化path、content hash、予約済みsemantic hash、生成コード情報。
-- `symbols`: stable key、型/メソッド/ラムダ/initializer、表示・検索名、source span、nullable `type_kind INTEGER`（型symbolのRoslyn type kind、非型symbolはNULL）、`method_kind`、`accessibility`、`is_static`、direct async role `async_role INTEGER NOT NULL DEFAULT 0`、async-origin distance `async_involvement_depth INTEGER`、persisted next-hop ID `async_next_symbol_id INTEGER`、`return_type_key TEXT`、`normalized_source TEXT`、and `normalized_source_hash BLOB`。
+- `symbols`: project-scoped source stable key、型/メソッド/ラムダ/initializer、表示・検索名、source span、nullable `type_kind INTEGER`（型symbolのRoslyn type kind、非型symbolはNULL）、`method_kind`、`accessibility`、`is_static`、direct async role `async_role INTEGER NOT NULL DEFAULT 0`、async-origin distance `async_involvement_depth INTEGER`、persisted next-hop ID `async_next_symbol_id INTEGER`、`return_type_key TEXT`、`normalized_source TEXT`、and `normalized_source_hash BLOB`。source定義は所属project keyをstable keyへ含め、metadata-only symbolはassembly/TFM identityを共有します。
 - `method_parameters`: ordinal、正規化type key、ref kind、optional。
 - `calls`: invocation/reference分類、static/virtual/interface/dynamic dispatch、resolution status/reason、呼び出し結果の利用方法`async_usage_kind INTEGER NOT NULL DEFAULT 0`、source span。
 - `call_candidates`: 曖昧呼び出しの全候補。
@@ -49,19 +49,50 @@ normalized source. `async_next_symbol_id` is null for async origins (depth
 zero) and points to the one selected next symbol for a non-origin. It is not a
 set of alternate routes.
 
-The version 4 schema adds this index:
+Version 4 defines the following `symbols` indexes:
 
 ```sql
+CREATE INDEX ix_symbols_profile_kind
+ON symbols(analysis_profile_id, kind);
+
+CREATE INDEX ix_symbols_profile_containing
+ON symbols(analysis_profile_id, containing_symbol_id);
+
+CREATE INDEX ix_symbols_profile_async_depth
+ON symbols(analysis_profile_id, async_involvement_depth);
+
+CREATE INDEX ix_symbols_profile_name
+ON symbols(analysis_profile_id, name);
+
+CREATE INDEX ix_symbols_profile_short_method
+ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_namespace_type_method
+ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_fully_qualified
+ON symbols(analysis_profile_id, fully_qualified_name);
+
+CREATE INDEX ix_symbols_location
+ON symbols(source_document_id, source_start);
+
 CREATE INDEX ix_symbols_profile_async_next
 ON symbols(analysis_profile_id, async_next_symbol_id);
+
+CREATE INDEX ix_symbols_profile_source_executable
+ON symbols(analysis_profile_id, kind)
+WHERE source_document_id IS NOT NULL;
 ```
 
-The existing indexes remain: `ix_index_runs_cache`, `ix_symbols_name`,
-`ix_symbols_short_method`, `ix_symbols_namespace_type_method`,
-`ix_symbols_fully_qualified`, `ix_symbols_location`, `ix_calls_callee`,
+The other indexes remain: `ix_index_runs_cache`, `ix_calls_callee`,
 `ix_calls_caller`, `ix_calls_location`, `ix_relations_target`,
 `ix_interface_method_bindings_contract`, and
-`ix_interface_method_bindings_type`. Arbitrary substring matching against
+`ix_interface_method_bindings_type`. The previous non-profile-prefixed symbol
+name/component indexes are not created by schema v4. Source-only repository
+queries use a direct `source_document_id IS NOT NULL` predicate so SQLite can
+use the partial executable index. PRAGMA tests lock the exact columns and
+partial flag; representative `EXPLAIN QUERY PLAN` tests require the intended
+index and reject a full `symbols` scan. Arbitrary substring matching against
 `normalized_source` deliberately has no B-tree index or FTS table.
 
 ## Override-aware method-search storage
@@ -124,5 +155,11 @@ callers, and is NULL for a non-involved symbol. `async_next_symbol_id` records
 the one deterministic next hop toward that origin. Every symbol/call reader in
 `QueryRepository` reconstructs these fields, return type, method kind, and
 normalized source for DB-only queries; Roslyn is not loaded while querying.
+Query-time reconstruction rejects a depth-zero row without a direct async
+origin role, non-executable or source-less hops, missing normalized source,
+incoherent depth/next state, cross-profile hops, and cycles.
+Index-time propagation uses the same source-backed method/lambda eligibility
+for origins and both call endpoints, so normal metadata awaitable calls cannot
+create a chain that query-time reconstruction would reject.
 
 空の新規DBと対応済みversion 4 DBにだけWALを設定します。version 3を含むversion不一致時と`schema_info`のない非空DBでは例外を返し、テーブル、行、journal modeを変更しません。connection-localな`PRAGMA foreign_keys=ON`だけはschema検査前に設定します。

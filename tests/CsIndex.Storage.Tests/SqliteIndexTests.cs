@@ -80,17 +80,184 @@ public sealed class SqliteIndexTests
 
         Assert.True(hasAsyncNextForeignKey);
 
-        command.CommandText = "PRAGMA index_info(ix_symbols_profile_async_next);";
-        var asyncNextIndexColumns = new List<string>();
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        var symbolIndexes = await ReadSymbolIndexesAsync(connection, cancellationToken);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_kind",
+            ["analysis_profile_id", "kind"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_containing",
+            ["analysis_profile_id", "containing_symbol_id"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_async_depth",
+            ["analysis_profile_id", "async_involvement_depth"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_async_next",
+            ["analysis_profile_id", "async_next_symbol_id"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_source_executable",
+            ["analysis_profile_id", "kind"],
+            isPartial: true);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_name",
+            ["analysis_profile_id", "name"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_short_method",
+            ["analysis_profile_id", "type_simple_name", "name", "parameter_count"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_namespace_type_method",
+            ["analysis_profile_id", "namespace_name", "type_simple_name", "name", "parameter_count"],
+            isPartial: false);
+        AssertSymbolIndex(
+            symbolIndexes,
+            "ix_symbols_profile_fully_qualified",
+            ["analysis_profile_id", "fully_qualified_name"],
+            isPartial: false);
+        Assert.DoesNotContain("ix_symbols_name", symbolIndexes.Keys);
+        Assert.DoesNotContain("ix_symbols_short_method", symbolIndexes.Keys);
+        Assert.DoesNotContain("ix_symbols_namespace_type_method", symbolIndexes.Keys);
+        Assert.DoesNotContain("ix_symbols_fully_qualified", symbolIndexes.Keys);
+    }
+
+    [Fact]
+    public async Task SymbolsIndexes_UseProfilePrefixedIndexesForRepresentativeRepositoryPredicates()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+
+        await index.SaveAsync(CreateIndexPlanSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync("query-plan", cancellationToken);
+        var owner = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "IndexOwner",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var asyncTarget = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "AsyncTarget",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "IndexOwner");
+
+        var connectionString = new SqliteConnectionStringBuilder
         {
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                asyncNextIndexColumns.Add(reader.GetString(2));
-            }
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using (var analyze = connection.CreateCommand())
+        {
+            analyze.CommandText = "ANALYZE;";
+            await analyze.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        Assert.Equal(["analysis_profile_id", "async_next_symbol_id"], asyncNextIndexColumns);
+        var sourceExecutablePlan = await ExplainQueryPlanAsync(
+            connection,
+            """
+            SELECT s.id
+            FROM symbols AS s
+            WHERE s.analysis_profile_id = $profile_id
+              AND s.kind IN ($method_kind, $lambda_kind)
+              AND s.source_document_id IS NOT NULL;
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$profile_id", profile.Id);
+                command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
+                command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+            },
+            cancellationToken);
+        AssertPlanUsesSymbolIndex(sourceExecutablePlan, "ix_symbols_profile_source_executable", "s");
+
+        var ownerPlan = await ExplainQueryPlanAsync(
+            connection,
+            """
+            SELECT child.id
+            FROM symbols AS child
+            WHERE child.analysis_profile_id = $profile_id
+              AND child.containing_symbol_id = $containing_symbol_id;
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$profile_id", profile.Id);
+                command.Parameters.AddWithValue("$containing_symbol_id", owner.Id);
+            },
+            cancellationToken);
+        AssertPlanUsesSymbolIndex(ownerPlan, "ix_symbols_profile_containing", "child");
+
+        var asyncDepthPlan = await ExplainQueryPlanAsync(
+            connection,
+            """
+            SELECT s.id
+            FROM symbols AS s
+            WHERE s.analysis_profile_id = $profile_id
+              AND s.async_involvement_depth IS NOT NULL;
+            """,
+            command => command.Parameters.AddWithValue("$profile_id", profile.Id),
+            cancellationToken);
+        AssertPlanUsesSymbolIndex(asyncDepthPlan, "ix_symbols_profile_async_depth", "s");
+
+        var componentNamePlan = await ExplainQueryPlanAsync(
+            connection,
+            """
+            SELECT s.id
+            FROM symbols AS s
+            WHERE s.analysis_profile_id = $profile_id
+              AND s.namespace_name = $namespace_name
+              AND s.type_simple_name = $type_simple_name
+              AND s.name = $name
+              AND s.parameter_count = $parameter_count;
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$profile_id", profile.Id);
+                command.Parameters.AddWithValue("$namespace_name", "Plans");
+                command.Parameters.AddWithValue("$type_simple_name", "Component");
+                command.Parameters.AddWithValue("$name", "Lookup");
+                command.Parameters.AddWithValue("$parameter_count", 2);
+            },
+            cancellationToken);
+        AssertPlanUsesSymbolIndex(
+            componentNamePlan,
+            "ix_symbols_profile_namespace_type_method",
+            "s");
+
+        var asyncNextPlan = await ExplainQueryPlanAsync(
+            connection,
+            """
+            SELECT s.id
+            FROM symbols AS s
+            WHERE s.analysis_profile_id = $profile_id
+              AND s.async_next_symbol_id = $async_next_symbol_id;
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$profile_id", profile.Id);
+                command.Parameters.AddWithValue("$async_next_symbol_id", asyncTarget.Id);
+            },
+            cancellationToken);
+        AssertPlanUsesSymbolIndex(asyncNextPlan, "ix_symbols_profile_async_next", "s");
     }
 
     [Fact]
@@ -750,6 +917,42 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task FindSymbolCandidatesAsync_UsesIdAsTheFinalOrderingTieBreaker()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var snapshot = CreateLambdaCallSnapshot(temporary.Path);
+        AddFinalTieSymbol(snapshot, "final-z");
+        AddFinalTieSymbol(snapshot, "final-a");
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(snapshot, cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var first = await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "FinalTie",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken);
+        var second = await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "FinalTie",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(2, first.Count);
+        Assert.All(first, symbol =>
+        {
+            Assert.Equal(first[0].DisplayName, symbol.DisplayName);
+            Assert.Equal(first[0].DocumentPath, symbol.DocumentPath);
+            Assert.Equal(first[0].SourceStart, symbol.SourceStart);
+        });
+        Assert.Equal(first.Select(symbol => symbol.Id).Order(), first.Select(symbol => symbol.Id));
+        Assert.Equal(["final-a", "final-z"], first.Select(symbol => symbol.StableKey));
+        Assert.Equal(first.Select(symbol => symbol.Id), second.Select(symbol => symbol.Id));
+    }
+
+    [Fact]
     public async Task GetCallsByCallerIncludingLambdaDescendantsAsync_ReturnsRootsAndNestedLambdaCallers()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -1156,6 +1359,82 @@ public sealed class SqliteIndexTests
         Assert.Equal(expectedNormalizedSourceHash, symbol.NormalizedSourceHash);
     }
 
+    private sealed record SymbolIndexInfo(string[] Columns, bool IsPartial);
+
+    private static void AssertSymbolIndex(
+        IReadOnlyDictionary<string, SymbolIndexInfo> indexes,
+        string indexName,
+        string[] expectedColumns,
+        bool isPartial)
+    {
+        Assert.True(indexes.ContainsKey(indexName), $"Missing symbols index '{indexName}'.");
+        var index = indexes[indexName];
+        Assert.Equal(expectedColumns, index.Columns);
+        Assert.Equal(isPartial, index.IsPartial);
+    }
+
+    private static void AssertPlanUsesSymbolIndex(
+        IReadOnlyList<string> plan,
+        string indexName,
+        string tableAlias)
+    {
+        Assert.Contains(plan, detail => detail.Contains(indexName, StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            plan,
+            detail => detail.StartsWith($"SCAN {tableAlias}", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<IReadOnlyList<string>> ExplainQueryPlanAsync(
+        SqliteConnection connection,
+        string sql,
+        Action<SqliteCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"EXPLAIN QUERY PLAN {sql}";
+        configure(command);
+        var plan = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            plan.Add(reader.GetString(3));
+        }
+
+        return plan;
+    }
+
+    private static async Task<IReadOnlyDictionary<string, SymbolIndexInfo>> ReadSymbolIndexesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var partialByName = new Dictionary<string, bool>(StringComparer.Ordinal);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA index_list(symbols);";
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                partialByName.Add(reader.GetString(1), reader.GetInt32(4) == 1);
+            }
+        }
+
+        var indexes = new Dictionary<string, SymbolIndexInfo>(StringComparer.Ordinal);
+        foreach (var (name, isPartial) in partialByName)
+        {
+            command.CommandText = $"PRAGMA index_info([{name}]);";
+            var columns = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                columns.Add(reader.GetString(2));
+            }
+
+            indexes.Add(name, new SymbolIndexInfo(columns.ToArray(), isPartial));
+        }
+
+        return indexes;
+    }
+
     private static async Task<StoredSymbol> GetSymbolAsync(
         QueryRepository repository,
         long profileId,
@@ -1270,6 +1549,106 @@ public sealed class SqliteIndexTests
             SourceLength = 6,
         });
         return snapshot;
+    }
+
+    private static IndexSnapshot CreateIndexPlanSnapshot(string root)
+    {
+        var snapshot = CreateSnapshot(root, "query-plan");
+        snapshot.Symbols.Clear();
+        snapshot.Calls.Clear();
+
+        snapshot.Symbols["index-owner"] = CreateSymbol(
+            "index-owner",
+            IndexedSymbolKind.Type,
+            "IndexOwner",
+            typeSimpleName: "IndexOwner",
+            containingSymbolKey: null,
+            sourceBacked: true);
+        snapshot.Symbols["source-method"] = CreateSymbol(
+            "source-method",
+            IndexedSymbolKind.Method,
+            "SourceMethod",
+            typeSimpleName: "IndexOwner",
+            sourceBacked: true);
+        snapshot.Symbols["source-lambda"] = CreateSymbol(
+            "source-lambda",
+            IndexedSymbolKind.Lambda,
+            "SourceLambda",
+            typeSimpleName: "IndexOwner",
+            sourceBacked: true);
+        snapshot.Symbols["async-depth"] = CreateSymbol(
+            "async-depth",
+            IndexedSymbolKind.Method,
+            "AsyncDepth",
+            typeSimpleName: "IndexOwner",
+            sourceBacked: true,
+            asyncInvolvementDepth: 2);
+        snapshot.Symbols["async-next"] = CreateSymbol(
+            "async-next",
+            IndexedSymbolKind.Method,
+            "AsyncNext",
+            typeSimpleName: "IndexOwner",
+            sourceBacked: true,
+            asyncInvolvementDepth: 1,
+            asyncNextSymbolKey: "async-target");
+        snapshot.Symbols["async-target"] = CreateSymbol(
+            "async-target",
+            IndexedSymbolKind.Method,
+            "AsyncTarget",
+            typeSimpleName: "IndexOwner",
+            sourceBacked: true,
+            asyncInvolvementDepth: 0);
+        snapshot.Symbols["component-lookup"] = CreateSymbol(
+            "component-lookup",
+            IndexedSymbolKind.Method,
+            "Lookup",
+            typeSimpleName: "Component",
+            sourceBacked: true,
+            parameterCount: 2);
+
+        for (var i = 0; i < 128; i++)
+        {
+            var stableKey = $"metadata-{i:D3}";
+            snapshot.Symbols[stableKey] = CreateSymbol(
+                stableKey,
+                IndexedSymbolKind.Method,
+                $"Metadata{i:D3}",
+                typeSimpleName: "Metadata",
+                sourceBacked: false);
+        }
+
+        return snapshot;
+
+        static SymbolData CreateSymbol(
+            string stableKey,
+            IndexedSymbolKind kind,
+            string name,
+            string typeSimpleName,
+            string? containingSymbolKey = "index-owner",
+            bool sourceBacked = false,
+            int? asyncInvolvementDepth = null,
+            string? asyncNextSymbolKey = null,
+            int? parameterCount = null)
+        {
+            return new SymbolData
+            {
+                StableKey = stableKey,
+                ProjectKey = "project",
+                Kind = kind,
+                Name = name,
+                NamespaceName = "Plans",
+                TypeSimpleName = typeSimpleName,
+                FullyQualifiedName = $"Plans.{typeSimpleName}.{name}",
+                DisplayName = $"Plans.{typeSimpleName}.{name}",
+                ContainingSymbolKey = containingSymbolKey,
+                ParameterCount = parameterCount,
+                AsyncInvolvementDepth = asyncInvolvementDepth,
+                AsyncNextSymbolKey = asyncNextSymbolKey,
+                SourceDocumentKey = sourceBacked ? "project|source" : null,
+                SourceStart = sourceBacked ? 0 : null,
+                SourceLength = sourceBacked ? 1 : null,
+            };
+        }
     }
 
     private static IndexSnapshot CreateOverrideSearchSnapshot(
@@ -1519,6 +1898,23 @@ public sealed class SqliteIndexTests
             InterfaceMethodKey = interfaceMethodKey,
             ImplementationMethodKey = implementationMethodKey,
         });
+    }
+
+    private static void AddFinalTieSymbol(IndexSnapshot snapshot, string stableKey)
+    {
+        snapshot.Symbols[stableKey] = new SymbolData
+        {
+            StableKey = stableKey,
+            ProjectKey = "project",
+            Kind = IndexedSymbolKind.Method,
+            Name = "FinalTie",
+            NamespaceName = string.Empty,
+            FullyQualifiedName = "FinalTie",
+            DisplayName = "FinalTie",
+            SourceDocumentKey = "project|source",
+            SourceStart = 120,
+            SourceLength = 5,
+        };
     }
 
     private static IndexSnapshot CreateLambdaCallSnapshot(string root)

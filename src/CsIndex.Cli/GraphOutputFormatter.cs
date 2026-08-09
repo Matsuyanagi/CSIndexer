@@ -122,28 +122,52 @@ internal sealed class GraphOutputFormatter(bool shortNames)
     private void WriteCallerTextTree(CallerTreeResult result, CancellationToken cancellationToken)
     {
         var nodesById = new Dictionary<long, CallerTreeNode>();
-        foreach (var node in OrderNodes(result.Nodes))
+        foreach (var node in OrderNodes(result.Nodes, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             nodesById.TryAdd(node.Symbol.Id, node);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         nodesById.TryAdd(result.Root.Id, new CallerTreeNode(result.Root, 0));
-        var nodes = OrderNodes(nodesById.Values);
-        var nodeOrder = nodes
-            .Select((node, index) => (node.Symbol.Id, index))
-            .ToDictionary(entry => entry.Id, entry => entry.index);
-        var edges = OrderEdges(result.Edges);
+        var nodes = OrderNodes(nodesById.Values, cancellationToken);
+        var nodeOrder = new Dictionary<long, int>(nodes.Count);
+        for (var index = 0; index < nodes.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            nodeOrder.Add(nodes[index].Symbol.Id, index);
+        }
+
+        var edges = OrderEdges(result.Edges, cancellationToken);
         var spanningEdges = SelectSpanningEdges(result.Root.Id, nodes, nodesById, nodeOrder, edges, cancellationToken);
-        var childrenByParent = spanningEdges
-            .GroupBy(edge => edge.CalleeSymbolId)
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .Select(edge => nodesById[edge.CallerSymbolId])
-                    .OrderBy(node => nodeOrder[node.Symbol.Id])
-                    .ToArray());
-        var spanningEdgeSet = spanningEdges.ToHashSet();
+        var childrenByParent = new Dictionary<long, List<CallerTreeNode>>();
+        foreach (var spanningEdge in spanningEdges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!childrenByParent.TryGetValue(spanningEdge.CalleeSymbolId, out var children))
+            {
+                children = [];
+                childrenByParent.Add(spanningEdge.CalleeSymbolId, children);
+            }
+
+            children.Add(nodesById[spanningEdge.CallerSymbolId]);
+        }
+
+        foreach (var children in childrenByParent.Values)
+        {
+            SortWithCancellation(
+                children,
+                (left, right) => nodeOrder[left.Symbol.Id].CompareTo(nodeOrder[right.Symbol.Id]),
+                cancellationToken,
+                afterOrderingComparison: null);
+        }
+
+        var spanningEdgeSet = new HashSet<CallerTreeEdge>();
+        foreach (var spanningEdge in spanningEdges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            spanningEdgeSet.Add(spanningEdge);
+        }
 
         var visited = new HashSet<long>();
         var stack = new Stack<(CallerTreeNode Node, int Indent)>();
@@ -167,8 +191,9 @@ internal sealed class GraphOutputFormatter(bool shortNames)
                 continue;
             }
 
-            for (var index = children.Length - 1; index >= 0; index--)
+            for (var index = children.Count - 1; index >= 0; index--)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 stack.Push((children[index], indent + 1));
             }
         }
@@ -178,8 +203,17 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             Console.WriteLine("└─ <truncated>");
         }
 
-        var additionalEdges = edges.Where(edge => !spanningEdgeSet.Contains(edge)).ToArray();
-        if (additionalEdges.Length == 0)
+        var additionalEdges = new List<CallerTreeEdge>();
+        foreach (var edge in edges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!spanningEdgeSet.Contains(edge))
+            {
+                additionalEdges.Add(edge);
+            }
+        }
+
+        if (additionalEdges.Count == 0)
         {
             return;
         }
@@ -196,13 +230,13 @@ internal sealed class GraphOutputFormatter(bool shortNames)
     private void WriteMermaid(CallerTreeResult result, CancellationToken cancellationToken)
     {
         Console.WriteLine("flowchart TD");
-        foreach (var node in result.Nodes.OrderBy(node => node.Symbol.Id))
+        foreach (var node in OrderNodesById(result.Nodes, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             Console.WriteLine($"    n{node.Symbol.Id}[\"{EscapeMermaidLabel(RawDisplayName(node.Symbol))}\"]");
         }
 
-        foreach (var edge in OrderEdges(result.Edges))
+        foreach (var edge in OrderEdges(result.Edges, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             Console.WriteLine($"    n{edge.CallerSymbolId} --> n{edge.CalleeSymbolId}");
@@ -217,7 +251,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
     private void WriteCallerJson(CallerTreeResult result, CancellationToken cancellationToken)
     {
         var nodes = new List<object>();
-        foreach (var node in OrderNodes(result.Nodes))
+        foreach (var node in OrderNodes(result.Nodes, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             nodes.Add(new
@@ -228,7 +262,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
         }
 
         var edges = new List<CallerTreeEdge>();
-        foreach (var edge in OrderEdges(result.Edges))
+        foreach (var edge in OrderEdges(result.Edges, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             edges.Add(edge);
@@ -269,14 +303,23 @@ internal sealed class GraphOutputFormatter(bool shortNames)
                 continue;
             }
 
-            var parentEdge = edges
-                .Where(edge =>
-                    edge.CallerSymbolId == node.Symbol.Id &&
-                    nodesById.TryGetValue(edge.CalleeSymbolId, out var parent) &&
-                    parent.Depth == node.Depth - 1)
-                .OrderBy(edge => nodeOrder[edge.CalleeSymbolId])
-                .ThenBy(edge => edge.CalleeSymbolId)
-                .FirstOrDefault();
+            CallerTreeEdge? parentEdge = null;
+            foreach (var edge in edges)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (edge.CallerSymbolId != node.Symbol.Id ||
+                    !nodesById.TryGetValue(edge.CalleeSymbolId, out var parent) ||
+                    parent.Depth != node.Depth - 1)
+                {
+                    continue;
+                }
+
+                if (parentEdge is null || CompareParentEdges(edge, parentEdge, nodeOrder) < 0)
+                {
+                    parentEdge = edge;
+                }
+            }
+
             if (parentEdge is not null)
             {
                 spanningEdges.Add(parentEdge);
@@ -291,19 +334,132 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             ? DisplayName(node.Symbol)
             : $"<unknown:{symbolId}>";
 
-    private static IReadOnlyList<CallerTreeNode> OrderNodes(IEnumerable<CallerTreeNode> nodes) => nodes
-        .OrderBy(node => node.Depth)
-        .ThenBy(node => node.Symbol.DisplayName, StringComparer.Ordinal)
-        .ThenBy(node => node.Symbol.DocumentPath ?? string.Empty, StringComparer.Ordinal)
-        .ThenBy(node => node.Symbol.SourceStart ?? -1)
-        .ThenBy(node => node.Symbol.Id)
-        .ToArray();
+    internal static IReadOnlyList<CallerTreeNode> OrderNodes(
+        IEnumerable<CallerTreeNode> nodes,
+        CancellationToken cancellationToken,
+        Action? afterOrderingComparison = null)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        var ordered = new List<CallerTreeNode>();
+        foreach (var node in nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ordered.Add(node);
+        }
 
-    private static IReadOnlyList<CallerTreeEdge> OrderEdges(IEnumerable<CallerTreeEdge> edges) => edges
-        .Distinct()
-        .OrderBy(edge => edge.CallerSymbolId)
-        .ThenBy(edge => edge.CalleeSymbolId)
-        .ToArray();
+        SortWithCancellation(ordered, CompareNodes, cancellationToken, afterOrderingComparison);
+        return ordered;
+    }
+
+    internal static IReadOnlyList<CallerTreeEdge> OrderEdges(
+        IEnumerable<CallerTreeEdge> edges,
+        CancellationToken cancellationToken,
+        Action? afterOrderingComparison = null)
+    {
+        ArgumentNullException.ThrowIfNull(edges);
+        var ordered = new List<CallerTreeEdge>();
+        var seen = new HashSet<CallerTreeEdge>();
+        foreach (var edge in edges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (seen.Add(edge))
+            {
+                ordered.Add(edge);
+            }
+        }
+
+        SortWithCancellation(ordered, CompareEdges, cancellationToken, afterOrderingComparison);
+        return ordered;
+    }
+
+    private static IReadOnlyList<CallerTreeNode> OrderNodesById(
+        IEnumerable<CallerTreeNode> nodes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        var ordered = new List<CallerTreeNode>();
+        foreach (var node in nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ordered.Add(node);
+        }
+
+        SortWithCancellation(
+            ordered,
+            static (left, right) => left.Symbol.Id.CompareTo(right.Symbol.Id),
+            cancellationToken,
+            afterOrderingComparison: null);
+        return ordered;
+    }
+
+    private static int CompareNodes(CallerTreeNode left, CallerTreeNode right)
+    {
+        var result = left.Depth.CompareTo(right.Depth);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = StringComparer.Ordinal.Compare(left.Symbol.DisplayName, right.Symbol.DisplayName);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = StringComparer.Ordinal.Compare(
+            left.Symbol.DocumentPath ?? string.Empty,
+            right.Symbol.DocumentPath ?? string.Empty);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = (left.Symbol.SourceStart ?? -1).CompareTo(right.Symbol.SourceStart ?? -1);
+        return result != 0 ? result : left.Symbol.Id.CompareTo(right.Symbol.Id);
+    }
+
+    private static int CompareEdges(CallerTreeEdge left, CallerTreeEdge right)
+    {
+        var result = left.CallerSymbolId.CompareTo(right.CallerSymbolId);
+        return result != 0 ? result : left.CalleeSymbolId.CompareTo(right.CalleeSymbolId);
+    }
+
+    private static int CompareParentEdges(
+        CallerTreeEdge left,
+        CallerTreeEdge right,
+        IReadOnlyDictionary<long, int> nodeOrder)
+    {
+        var result = nodeOrder[left.CalleeSymbolId].CompareTo(nodeOrder[right.CalleeSymbolId]);
+        return result != 0 ? result : left.CalleeSymbolId.CompareTo(right.CalleeSymbolId);
+    }
+
+    private static void SortWithCancellation<T>(
+        List<T> values,
+        Comparison<T> comparison,
+        CancellationToken cancellationToken,
+        Action? afterOrderingComparison)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            values.Sort((left, right) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = comparison(left, right);
+                afterOrderingComparison?.Invoke();
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            });
+        }
+        catch (InvalidOperationException exception) when (
+            exception.InnerException is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
 
     private static string EscapeMermaidLabel(string value) => value
         .Replace("&", "&amp;", StringComparison.Ordinal)

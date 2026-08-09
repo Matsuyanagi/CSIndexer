@@ -68,9 +68,14 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(ExitCodes.InvalidArguments, invalidCallerOutput.ExitCode);
         Assert.Contains("Unknown callers tree output: line", invalidCallerOutput.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, ambiguousRoot.ExitCode);
-        Assert.Contains("Graph query must resolve exactly one source-backed method", ambiguousRoot.StandardError);
+        Assert.Equal(
+            "Query error: Graph query is ambiguous for 'Alpha.AClass::Play'. Candidates: " +
+            "Alpha.AClass::Play(), Alpha.AClass::Play(System.String)" + Environment.NewLine,
+            ambiguousRoot.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, missingRoot.ExitCode);
-        Assert.Contains("Graph query must resolve exactly one source-backed method", missingRoot.StandardError);
+        Assert.Equal(
+            "Query error: No source-backed method matches graph query: Alpha.Missing::Run()" + Environment.NewLine,
+            missingRoot.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, unsupportedOption.ExitCode);
         Assert.Contains("Unknown option(s): --include", unsupportedOption.StandardError);
     }
@@ -272,19 +277,127 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task GlobalHelpDescribesTheNewNestedCommandsAndOptions()
+    public async Task GlobalHelpMatchesTheNewCommandUsageGrammar()
     {
         var result = await RunAsync("--help");
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains("csindex async tree <symbol>", result.StandardOutput);
-        Assert.Contains("csindex callers tree <symbol>", result.StandardOutput);
-        Assert.Contains("csindex source show <symbol>", result.StandardOutput);
-        Assert.Contains("csindex source search", result.StandardOutput);
-        Assert.Contains("--show-source", result.StandardOutput);
-        Assert.Contains("--include <text>", result.StandardOutput);
-        Assert.Contains("--exclude <text>", result.StandardOutput);
+        var help = result.StandardOutput.ReplaceLineEndings("\n");
+        var usageStart = help.IndexOf("Usage:\n", StringComparison.Ordinal) + "Usage:\n".Length;
+        var usageEnd = help.IndexOf("\n\nCommon query options:", usageStart, StringComparison.Ordinal);
+
+        Assert.Equal(
+            """
+              csindex index <input> [options]
+              csindex symbol find [<pattern>] [options]
+              csindex symbol list [options]
+              csindex async tree <symbol> [options]
+              csindex callers tree <symbol> [options]
+              csindex source show <symbol> [options]
+              csindex source search (--include <text> | --exclude <text>)... [options]
+              csindex definition <query> [options]
+              csindex definition --at <path:line:column> [options]
+              csindex references <query> [options]
+              csindex callers <query> [options]
+              csindex callees <query> [options]
+              csindex overrides <query> [options]
+              csindex conditions [options]
+            """,
+            help[usageStart..usageEnd]);
     }
+
+    [Theory]
+    [MemberData(nameof(NewCommandHelpGrammarCases))]
+    public async Task NewCommandHelpMatchesAcceptedGrammar(string[] args, string expectedHelp)
+    {
+        var result = await RunAsync(args);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Equal(FormatExpectedCommandHelp(expectedHelp) + "\n", result.StandardOutput.ReplaceLineEndings("\n"));
+    }
+
+    public static TheoryData<string[], string> NewCommandHelpGrammarCases { get; } = new()
+    {
+        {
+            ["symbol", "find", "--help"],
+            """
+            Usage: csindex symbol find [<pattern>] [options]
+
+              Provide <pattern> or at least one of --namespace, --type, or --method.
+
+              --db <path>  SQLite index path (default: .csindex/index.sqlite)
+              --profile <name>  Analysis profile (default: most recently indexed profile)
+              --output table|json  Output format (default: table)
+              --require-single  Fail unless the search matches exactly one symbol
+              --short-names  Shorten namespaces in displayed symbol names
+              --namespace <pattern>  Namespace component filter
+              --type <pattern>  Type component filter
+              --method <pattern>  Method component filter
+              --kind method|lambda  Limit results to executable kind
+              --regex  Interpret name filters as regular expressions
+              --include <text>  Require normalized source text (repeatable)
+              --exclude <text>  Reject normalized source text (repeatable)
+              --ignore-case  Compare name and source filters without case sensitivity
+              --show-source  Include normalized source in output
+              --include-overrides  Include descendant overrides and interface implementations (exact method pattern only)
+              --help  Show this help text
+            """
+        },
+        {
+            ["async", "tree", "--help"],
+            """
+            Usage: csindex async tree <symbol> [options]
+
+              --db <path>  SQLite index path (default: .csindex/index.sqlite)
+              --profile <name>  Analysis profile (default: most recently indexed profile)
+              --output tree|line|json  Output format (default: tree)
+              --max-nodes <count>  Maximum path nodes (default: 500)
+              --short-names  Shorten namespaces in displayed symbol names
+              --help  Show this help text
+            """
+        },
+        {
+            ["callers", "tree", "--help"],
+            """
+            Usage: csindex callers tree <symbol> [options]
+
+              --db <path>  SQLite index path (default: .csindex/index.sqlite)
+              --profile <name>  Analysis profile (default: most recently indexed profile)
+              --output tree|mermaid|json  Output format (default: tree)
+              --depth <count>  Maximum caller depth; 0 is unlimited (default: 3)
+              --max-nodes <count>  Maximum graph nodes (default: 500)
+              --short-names  Shorten namespaces in displayed symbol names
+              --help  Show this help text
+            """
+        },
+        {
+            ["source", "show", "--help"],
+            """
+            Usage: csindex source show <symbol> [options]
+
+              --db <path>  SQLite index path (default: .csindex/index.sqlite)
+              --profile <name>  Analysis profile (default: most recently indexed profile)
+              --output table|json  Output format (default: table)
+              --short-names  Shorten namespaces in displayed symbol names
+              --help  Show this help text
+            """
+        },
+        {
+            ["source", "search", "--help"],
+            """
+            Usage: csindex source search (--include <text> | --exclude <text>)... [options]
+
+              --db <path>  SQLite index path (default: .csindex/index.sqlite)
+              --profile <name>  Analysis profile (default: most recently indexed profile)
+              --output table|json  Output format (default: table)
+              --include <text>  Require normalized source text (repeatable)
+              --exclude <text>  Reject normalized source text (repeatable)
+              --ignore-case  Compare source filters without case sensitivity
+              --short-names  Shorten namespaces in displayed symbol names
+              --help  Show this help text
+            """
+        },
+    };
 
     [Fact]
     public async Task SymbolListDefaultsToMethodsAndLambdasWithLocationsAndAsyncAnnotations()
@@ -642,6 +755,20 @@ public sealed class CliCommandTests : IDisposable
     }
 
     public void Dispose() => _fixture.Dispose();
+
+    private static string FormatExpectedCommandHelp(string expectedHelp) =>
+        string.Join("\n", expectedHelp.Split('\n').Select(line =>
+        {
+            if (!line.StartsWith("  --", StringComparison.Ordinal))
+            {
+                return line;
+            }
+
+            var optionEnd = line.IndexOf("  ", 2, StringComparison.Ordinal);
+            return optionEnd < 0
+                ? line
+                : $"  {line[2..optionEnd].PadRight(28)}{line[(optionEnd + 2)..]}";
+        }));
 
     private static async Task<CommandResult> RunAsync(params string[] args)
     {

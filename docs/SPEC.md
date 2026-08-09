@@ -1769,23 +1769,36 @@ CREATE TABLE conditional_symbols_used (
 ## 19.2 必須インデックス
 
 ```sql
-CREATE INDEX ix_symbols_name
-ON symbols(name);
+CREATE INDEX ix_symbols_profile_kind
+ON symbols(analysis_profile_id, kind);
 
-CREATE INDEX ix_symbols_short_method
-ON symbols(type_simple_name, name, parameter_count);
+CREATE INDEX ix_symbols_profile_containing
+ON symbols(analysis_profile_id, containing_symbol_id);
 
-CREATE INDEX ix_symbols_namespace_type_method
-ON symbols(namespace_name, type_simple_name, name, parameter_count);
+CREATE INDEX ix_symbols_profile_async_depth
+ON symbols(analysis_profile_id, async_involvement_depth);
 
-CREATE INDEX ix_symbols_fully_qualified
-ON symbols(fully_qualified_name);
+CREATE INDEX ix_symbols_profile_name
+ON symbols(analysis_profile_id, name);
+
+CREATE INDEX ix_symbols_profile_short_method
+ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_namespace_type_method
+ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_fully_qualified
+ON symbols(analysis_profile_id, fully_qualified_name);
 
 CREATE INDEX ix_symbols_location
 ON symbols(source_document_id, source_start);
 
 CREATE INDEX ix_symbols_profile_async_next
 ON symbols(analysis_profile_id, async_next_symbol_id);
+
+CREATE INDEX ix_symbols_profile_source_executable
+ON symbols(analysis_profile_id, kind)
+WHERE source_document_id IS NOT NULL;
 
 CREATE INDEX ix_calls_callee
 ON calls(callee_definition_id);
@@ -2694,7 +2707,10 @@ not replace the authoritative acceptance requirements in
 Source-defined methods, constructors, local functions, lambdas, accessors,
 operators, and conversions persist their executable metadata. Constructors
 and static constructors have no return type; non-applicable accessibility is
-not rendered as a C# modifier. Text signatures are ordered as:
+not rendered as a C# modifier. Local functions and lambdas have
+not-applicable accessibility even when Roslyn exposes a private-like effective
+accessibility; static constructors are also not-applicable. Static lambda state
+is persisted from its Roslyn method symbol. Text signatures are ordered as:
 
 ```text
 accessibility static async return-type display-name
@@ -2712,6 +2728,12 @@ when joining adjacent token text would change lexical tokenization.
 Normalization removes layout outside literal tokens, but preserves each
 literal token `Text`; therefore a multiline raw literal may retain embedded
 newlines. The layout-normalized text and SHA-256 hash are stored on `symbols`.
+
+Source-definition stable keys include the owning project key. Equal assembly,
+TFM, namespace, type, and method signatures in two projects of the same profile
+therefore remain distinct rows and symbol IDs. Source calls, relations,
+interface bindings, and constructed targets use the same project scope.
+Metadata-only symbols continue to use assembly/TFM identity and remain shared.
 
 ## 33.2 Symbol and source search
 
@@ -2738,12 +2760,20 @@ candidate. Source predicates exclude source-less candidates. `--show-source`
 does not filter candidates; it adds the normalized text to table/JSON output.
 Standalone `source search` requires at least one include or exclude predicate,
 while `symbol find` does not. `source show` and `source search` return only
-source-backed executable symbols.
+source-backed executable symbols. Their initial repository reads use a direct
+source-only predicate rather than loading source-less rows for later removal.
+
+Graph commands require exactly one source-backed method root. A missing root
+reports the original query. An ambiguous root lists canonical candidate names
+in repository order; when display names repeat, the document path and symbol ID
+are appended so the candidates remain distinguishable.
 
 ## 33.3 Persisted async path
 
 At index time, deterministic reverse multi-source BFS runs over resolved
-invocation edges. Async origins are depth zero with a null next hop. A caller
+invocation edges whose caller and callee are both source-backed methods or
+lambdas with normalized source. Metadata-only awaitable methods are not origins
+or path nodes. Async origins are depth zero with a null next hop. A caller
 receives the callee as its `async_next_symbol_id` only on first discovery or a
 strictly shorter path; an equal-distance discovery never replaces it. The
 stored next ID must point to the selected profile and reduce
@@ -2755,6 +2785,12 @@ guarded, and node-bounded. Missing, cross-profile, cyclic, or non-decreasing
 next-hop data is a database integrity error. A no-path result is successful
 and reported explicitly.
 
+Every returned path node must be a source-backed method or lambda with
+normalized source. Only a direct async-origin role may have depth zero and a
+null next hop. A participating non-origin must have positive depth and a next
+hop; a non-participant has both values null. The fetched node is validated
+before a node-limit truncation result is returned.
+
 ## 33.4 Bounded caller graph
 
 `csindex callers tree <symbol>` is a profile-scoped breadth-first traversal of
@@ -2762,7 +2798,9 @@ resolved invocation and object-creation edges. It begins at depth zero,
 defaults to depth three and 500 nodes, and interprets depth zero as unbounded
 depth while retaining the node limit. Nodes are unique and sorted by display
 name, source path, source position, and ID. Edges between already included
-nodes are retained, so cycles remain visible.
+nodes are retained, so cycles remain visible. A finite depth boundary still
+reads reverse edges for boundary nodes and retains an edge when both endpoints
+are already in the result; it never adds or queues a deeper node.
 
 Traversal includes source-backed methods/lambdas and excludes `System` and
 `System.*`. It does not use a namespace string alone to decide whether a
@@ -2785,6 +2823,16 @@ is a self foreign key with `ON DELETE SET NULL` and has the
 `ix_symbols_profile_async_next (analysis_profile_id, async_next_symbol_id)`
 index. `containing_symbol_id` is also a self foreign key with `ON DELETE SET
 NULL`.
+
+All symbol lookup indexes begin with `analysis_profile_id` except the physical
+source-location index. Schema v4 includes profile+kind, profile+owner,
+profile+async-depth, profile+async-next, profile+name, profile+short-method,
+profile+namespace/type/method, and profile+fully-qualified indexes. It also
+includes the partial index
+`ix_symbols_profile_source_executable (analysis_profile_id, kind) WHERE
+source_document_id IS NOT NULL`. Source-only repository SQL uses the direct
+non-null predicate, and representative `EXPLAIN QUERY PLAN` tests require these
+indexes without a full `symbols` table scan.
 
 An index replacement creates all symbol rows before resolving either self
 reference. It then updates containing and async-next IDs in the same save

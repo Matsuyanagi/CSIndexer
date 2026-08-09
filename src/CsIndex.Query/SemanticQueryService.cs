@@ -46,7 +46,18 @@ public sealed class SemanticQueryService(QueryRepository repository)
             query.IsMethodQuery ? IndexedSymbolKind.Method : IndexedSymbolKind.Type,
             sourceOnly,
             cancellationToken);
-        var matches = candidates.Where(symbol => SymbolMatcher.IsMatch(query, symbol)).ToArray();
+        var matches = new List<StoredSymbol>(candidates.Count);
+        foreach (var symbol in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var isMatch = SymbolMatcher.IsMatch(query, symbol);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (isMatch)
+            {
+                matches.Add(symbol);
+            }
+        }
+
         return new QueryContext(profile, matches);
     }
 
@@ -79,27 +90,38 @@ public sealed class SemanticQueryService(QueryRepository repository)
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var context = await SearchSymbolsAsync(
-            new SymbolSearchRequest(
-                queryText,
-                NamespacePattern: null,
-                TypePattern: null,
-                MethodPattern: null,
-                Kind: null,
-                UseRegex: false,
-                IgnoreCase: false,
-                Includes: [],
-                Excludes: [],
-                ShowSource: true),
-            profileName,
-            cancellationToken);
-        return context with
+        cancellationToken.ThrowIfCancellationRequested();
+        var request = new SymbolSearchRequest(
+            queryText,
+            NamespacePattern: null,
+            TypePattern: null,
+            MethodPattern: null,
+            Kind: null,
+            UseRegex: false,
+            IgnoreCase: false,
+            Includes: [],
+            Excludes: [],
+            ShowSource: true);
+        if (CanUseExactSearch(request) && _parser.Parse(queryText).IsMethodQuery)
         {
-            MatchedSymbols = context.MatchedSymbols
-                .Where(IsSourceBackedExecutable)
-                .ToArray(),
-            ShowSource = true,
-        };
+            var exact = await FindSymbolsAsync(
+                queryText,
+                profileName,
+                sourceOnly: true,
+                includeOverrides: false,
+                cancellationToken);
+            return exact with
+            {
+                MatchedSymbols = FilterSourceBackedExecutables(exact.MatchedSymbols, cancellationToken),
+                ShowSource = true,
+            };
+        }
+
+        return await SearchStoredExecutableSymbolsAsync(
+            request,
+            profileName,
+            sourceOnly: true,
+            cancellationToken);
     }
 
     public Task<QueryContext> SearchSourceAsync(
@@ -411,7 +433,9 @@ public sealed class SemanticQueryService(QueryRepository repository)
         foreach (var symbol in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!matcher.IsMatch(symbol))
+            var isMatch = matcher.IsMatch(symbol);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!isMatch)
             {
                 continue;
             }
@@ -420,7 +444,8 @@ public sealed class SemanticQueryService(QueryRepository repository)
                     symbol.NormalizedSource,
                     request.Includes,
                     request.Excludes,
-                    comparison))
+                    comparison,
+                    cancellationToken))
             {
                 continue;
             }
@@ -430,9 +455,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 continue;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             matches.Add(symbol);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return new QueryContext(profile, matches, request.ShowSource);
     }
 
@@ -453,6 +480,25 @@ public sealed class SemanticQueryService(QueryRepository repository)
         symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
         symbol.DocumentPath is not null &&
         symbol.NormalizedSource is not null;
+
+    private static IReadOnlyList<StoredSymbol> FilterSourceBackedExecutables(
+        IEnumerable<StoredSymbol> candidates,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var matches = new List<StoredSymbol>();
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsSourceBackedExecutable(candidate))
+            {
+                matches.Add(candidate);
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return matches;
+    }
 
     private static void ValidateSearchRequest(SymbolSearchRequest request)
     {
@@ -479,13 +525,45 @@ public sealed class SemanticQueryService(QueryRepository repository)
             sourceOnly: true,
             includeOverrides: false,
             cancellationToken);
-        if (context.MatchedSymbols.Count != 1)
+        if (context.MatchedSymbols.Count == 0)
         {
             throw new SymbolQueryParseException(
-                $"Graph query must resolve exactly one source-backed method: {queryText}");
+                $"No source-backed method matches graph query: {queryText}");
+        }
+
+        if (context.MatchedSymbols.Count > 1)
+        {
+            throw new SymbolQueryParseException(
+                $"Graph query is ambiguous for '{queryText}'. Candidates: " +
+                DescribeAmbiguousGraphRootCandidates(context.MatchedSymbols, cancellationToken));
         }
 
         return (context.Profile, context.MatchedSymbols[0]);
+    }
+
+    private static string DescribeAmbiguousGraphRootCandidates(
+        IReadOnlyList<StoredSymbol> candidates,
+        CancellationToken cancellationToken)
+    {
+        var displayNameCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            displayNameCounts.TryGetValue(candidate.DisplayName, out var count);
+            displayNameCounts[candidate.DisplayName] = count + 1;
+        }
+
+        var descriptions = new List<string>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            descriptions.Add(displayNameCounts[candidate.DisplayName] == 1
+                ? candidate.DisplayName
+                : $"{candidate.DisplayName} [document: {candidate.DocumentPath ?? "<missing>"}; symbol ID: {candidate.Id}]");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return string.Join(", ", descriptions);
     }
 
     private static void ValidateDepth(int depth)
@@ -527,12 +605,20 @@ public sealed class SemanticQueryService(QueryRepository repository)
             sourceOnly: false,
             includeOverrides,
             cancellationToken);
-        return metadataContext with
+        var matches = new List<StoredSymbol>(metadataContext.MatchedSymbols.Count);
+        foreach (var symbol in metadataContext.MatchedSymbols)
         {
-            MatchedSymbols = metadataContext.MatchedSymbols
-                .Where(symbol => !symbol.StableKey.Contains("|constructed:", StringComparison.Ordinal) &&
-                                 !symbol.StableKey.Contains("|reduced:", StringComparison.Ordinal))
-                .ToArray(),
-        };
+            cancellationToken.ThrowIfCancellationRequested();
+            var isConstructedOrReduced =
+                symbol.StableKey.Contains("|constructed:", StringComparison.Ordinal) ||
+                symbol.StableKey.Contains("|reduced:", StringComparison.Ordinal);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!isConstructedOrReduced)
+            {
+                matches.Add(symbol);
+            }
+        }
+
+        return metadataContext with { MatchedSymbols = matches };
     }
 }

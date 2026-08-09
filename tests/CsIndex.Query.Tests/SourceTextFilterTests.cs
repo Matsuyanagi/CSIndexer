@@ -5,6 +5,30 @@ namespace CsIndex.Query.Tests;
 public sealed class SourceTextFilterTests
 {
     [Fact]
+    public void IsMatch_ObservesCancellationBetweenExcludeAndIncludeProbes()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var evaluatedTerms = new List<string>();
+
+        bool ProbeContains(string source, string term, StringComparison comparison)
+        {
+            evaluatedTerms.Add(term);
+            cancellation.Cancel();
+            return false;
+        }
+
+        Assert.Throws<OperationCanceledException>(() => SourceTextFilter.IsMatch(
+            "source",
+            includes: ["required"],
+            excludes: ["blocked"],
+            comparison: StringComparison.Ordinal,
+            cancellationToken: cancellation.Token,
+            contains: ProbeContains));
+
+        Assert.Equal(["blocked"], evaluatedTerms);
+    }
+
+    [Fact]
     public void ExcludeMatch_ShortCircuitsBeforeAnyIncludePredicate()
     {
         var evaluatedTerms = new List<string>();
@@ -19,6 +43,7 @@ public sealed class SourceTextFilterTests
             includes: ["required"],
             excludes: ["blocked"],
             comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken,
             contains: ProbeContains);
 
         Assert.False(matched);
@@ -32,14 +57,16 @@ public sealed class SourceTextFilterTests
             "public void Play(){PrintVar(value);return;}",
             includes: ["PrintVar(", "return;"],
             excludes: [],
-            comparison: StringComparison.Ordinal);
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(matched);
         Assert.False(SourceTextFilter.IsMatch(
             "public void Play(){PrintVar(value);}",
             includes: ["PrintVar(", "return;"],
             excludes: [],
-            comparison: StringComparison.Ordinal));
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -49,7 +76,8 @@ public sealed class SourceTextFilterTests
             "public void Play(){ObsoleteApi();}",
             includes: [],
             excludes: ["Debug.", "ObsoleteApi("],
-            comparison: StringComparison.Ordinal);
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.False(matched);
     }
@@ -61,7 +89,8 @@ public sealed class SourceTextFilterTests
             "public void Play(){PrintVar(value);}",
             includes: ["PrintVar("],
             excludes: [],
-            comparison: StringComparison.Ordinal);
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(matched);
     }
@@ -73,7 +102,8 @@ public sealed class SourceTextFilterTests
             "public void Play(){PrintVar(value);}",
             includes: [],
             excludes: ["Debug.", "ObsoleteApi("],
-            comparison: StringComparison.Ordinal);
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(matched);
     }
@@ -87,11 +117,13 @@ public sealed class SourceTextFilterTests
             source,
             includes: ["printvar("],
             excludes: [],
-            comparison: StringComparison.Ordinal));
+            comparison: StringComparison.Ordinal,
+            cancellationToken: TestContext.Current.CancellationToken));
         Assert.True(SourceTextFilter.IsMatch(
             source,
             includes: ["printvar("],
             excludes: [],
-            comparison: StringComparison.OrdinalIgnoreCase));
+            comparison: StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken));
     }
 }
