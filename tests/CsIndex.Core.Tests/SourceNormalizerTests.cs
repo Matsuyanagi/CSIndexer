@@ -62,10 +62,13 @@ class C
             .DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
 
         var result = SourceNormalizer.Normalize(node, TestContext.Current.CancellationToken);
+        var rawLiteralText = node.DescendantTokens()
+            .Single(token => token.RawKind == (int)SyntaxKind.MultiLineRawStringLiteralToken)
+            .Text;
 
         Assert.Contains("Windows();", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("Other();", result.Text, StringComparison.Ordinal);
-        Assert.Contains("\"\"\"\n/*keep*/\n//keep\n\"\"\"", result.Text, StringComparison.Ordinal);
+        Assert.Contains(rawLiteralText, result.Text, StringComparison.Ordinal);
     }
 
     [Fact]

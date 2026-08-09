@@ -302,7 +302,7 @@ public sealed class CliCommandTests : IDisposable
               csindex callees <query> [options]
               csindex overrides <query> [options]
               csindex conditions [options]
-            """,
+            """.ReplaceLineEndings("\n"),
             help[usageStart..usageEnd]);
     }
 
@@ -757,7 +757,7 @@ public sealed class CliCommandTests : IDisposable
     public void Dispose() => _fixture.Dispose();
 
     private static string FormatExpectedCommandHelp(string expectedHelp) =>
-        string.Join("\n", expectedHelp.Split('\n').Select(line =>
+        string.Join("\n", expectedHelp.ReplaceLineEndings("\n").Split('\n').Select(line =>
         {
             if (!line.StartsWith("  --", StringComparison.Ordinal))
             {
