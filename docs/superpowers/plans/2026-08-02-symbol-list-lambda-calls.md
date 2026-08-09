@@ -1,5 +1,9 @@
 # Symbol Listing, Lambda Calls, and Short Names Implementation Plan
 
+> Historical implementation plan. The current lambda display-numbering rule is
+> `docs/SPEC.md` section 33.2 and DEC-0020: nested lambdas share the nearest
+> non-lambda executable owner's source-order counter.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add namespace-shortened presentation, recursive lambda-call inclusion, per-owner lambda naming coverage, and the `symbol list` CLI command without changing canonical indexed identities.
@@ -15,7 +19,7 @@
 - `symbol list` defaults to `Method` and `Lambda`; accepted `--kind` values are only `method` and `lambda`.
 - `--async-involved` means `async_involvement_depth IS NOT NULL`, including depth `0` roots.
 - `callees` includes descendant lambda calls by default; `--exclude-lambda-calls` restores direct-caller-only behavior.
-- Nested lambda ownership must be recursive and lambda numbering is per containing owner, starting at `<lambda#1>`.
+- Nested lambda ownership remains immediate and recursive, while display numbering is per nearest non-lambda executable owner, starting at `<lambda#1>`.
 - `Invoke()` execution sites do not affect lambda ownership or call extraction.
 - Preserve `net10.0-windows`, nullable enabled, implicit usings, latest C# language version, deterministic builds, and warnings-as-errors.
 
@@ -31,7 +35,7 @@
 - Consumes: `AnalysisCoordinator` test helper and `IndexSnapshot.Symbols`.
 - Produces: regression tests proving the existing owner map gives each method and lambda an independent counter and that nested lambda calls use the innermost lambda as caller.
 
-- [ ] **Step 1: Write characterization tests for per-method and nested-lambda numbering.** Add a test source with `Update` containing two lambdas, `Do` containing two lambdas, and the first `Update` lambda containing a nested lambda. Assert display names are exactly `Player::Update()::<lambda#1>`, `Player::Update()::<lambda#2>`, `Player::Do()::<lambda#1>`, `Player::Do()::<lambda#2>`, and `Player::Update()::<lambda#1>::<lambda#1>`. Assert the nested lambda's `ContainingSymbolKey` points to the outer lambda stable key.
+- [ ] **Step 1: Write characterization tests for per-function and nested-lambda numbering.** Add a test source with `Update` containing two direct lambdas plus one nested lambda, and `Do` containing two lambdas. Assert display names are exactly `Player::Update()::<lambda#1>`, `Player::Update()::<lambda#2>`, `Player::Update()::<lambda#3>`, `Player::Do()::<lambda#1>`, and `Player::Do()::<lambda#2>`. Assert the nested lambda's `ContainingSymbolKey` still points to the outer lambda stable key.
 - [ ] **Step 2: Write a characterization test for calls in nested lambdas.** In the same source, invoke `Play`, `CreateCallbackInnerObj`, and `Calc` at the three nesting levels. Assert each invocation has a caller symbol of the expected lambda kind and that the `Calc` call caller is the nested lambda, not the enclosing method or outer lambda.
 - [ ] **Step 3: Run the focused core tests and record the baseline.** Run `dotnet test tests/CsIndex.Core.Tests/CsIndex.Core.Tests.csproj --filter FullyQualifiedName~AsyncSemanticExtractorTests`. If the characterization tests fail, continue with Step 4; if they pass, keep extraction unchanged and use them as regression coverage.
 - [ ] **Step 4: Correct extraction only when the baseline exposes a regression.** Ensure `CreateLambdaOwners` traverses outer lambdas before nested lambdas, uses a counter keyed by `outerOwner`, and `DocumentAnalysisState.FindOwner` checks `LambdaOwners` before enclosing methods. Do not alter stable-key construction or persisted display names when the baseline already satisfies the tests.
@@ -122,7 +126,7 @@
 - Produces: user-facing command documentation and a verified build/test result.
 
 - [ ] **Step 1: Update CLI documentation.** Document the exact defaults and examples for `--short-names`, `symbol list`, `--kind`, `--async-involved`, and `callees --exclude-lambda-calls`; show that JSON `fullyQualifiedName` stays canonical while display names can be shortened.
-- [ ] **Step 2: Update decisions/status documentation.** Record that namespace shortening is presentation-only, lambda numbering is per owner, recursive lambda descendant calls are default for `callees`, and list defaults to method plus lambda.
+- [ ] **Step 2: Update decisions/status documentation.** Record that namespace shortening is presentation-only, lambda display numbering is per nearest non-lambda executable owner, recursive lambda descendant calls are default for `callees`, and list defaults to method plus lambda.
 - [ ] **Step 3: Run focused tests for each changed area.** Run:
 
   ```powershell

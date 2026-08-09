@@ -161,14 +161,9 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 - `4`: SQLite/schema failure
 - `5`: `--require-single` failure
 
-## Symbol, source, and graph commands (schema v4)
+## シンボル、ソース、グラフコマンド（schema v4）
 
-All commands in this section accept `--db <path>` (default:
-`.csindex/index.sqlite` below the current directory) and `--profile <name>`.
-`--short-names` is presentation-only: it shortens displayed names and
-signatures, never canonical stored values or matching semantics. Every command
-accepts `--help`; command help lists the complete accepted grammar, all output
-values, and defaults.
+本節のコマンドは`--db <path>`（既定: current directory配下の`.csindex/index.sqlite`）と`--profile <name>`を受け付けます。`--short-names`は表示専用で、表示名、戻り値型、引数型だけを短縮し、保存済みcanonical値や検索意味を変更しません。各コマンドの`--help`は、受理する完全な構文、output値、既定値を表示します。
 
 ### `symbol find`
 
@@ -176,40 +171,19 @@ values, and defaults.
 csindex symbol find [<pattern>] [options]
 ```
 
-`<pattern>` is optional only when at least one of `--namespace`, `--type`, or
-`--method` is present. It accepts at most one positional value. The supported
-options are:
+`<pattern>`は位置引数を最大1つ受け付けます。省略する場合は、`--namespace`、`--type`、`--method`の少なくとも1つが必要です。
 
-- `--namespace <pattern>`, `--type <pattern>`, and `--method <pattern>`;
-  supplied name filters are combined with AND semantics.
+- `--namespace <pattern>`、`--type <pattern>`、`--method <pattern>`はANDで結合します。
 - `--kind method|lambda`.
-- `--regex`, which makes every supplied name pattern a culture-invariant .NET
-  regular expression with a two-second timeout. Matching is case-sensitive by
-  default; `--ignore-case` adds culture-invariant .NET regex ignore-case for
-  name filters and ordinal ignore-case for source filters. In regex mode `*`
-  remains regex syntax; it is not a wildcard option applied in addition to
-  regex.
-- Without `--regex`, `*` matches zero or more characters and all other
-  characters are literals. The existing exact resolver is used only for a
-  positional pattern with neither `*` nor `::<lambda#`, and no matching
-  modifier (`--regex`, `--ignore-case`, component filters, `--kind`,
-  `--include`, or `--exclude`). `--show-source` is presentation-only and does
-  not disqualify that exact path. A method pattern without a parameter list
-  matches its overloads; a parameter list matches the full signature. Lambda
-  suffix forms (`::<lambda#N>`, owner suffixes, and full lambda names) match
-  canonical lambda display names.
-- Repeatable `--include <text>` and `--exclude <text>`. Excludes are ORed and
-  evaluated before ANDed includes. A source condition limits candidates to
-  source-backed executable symbols. `--show-source` only controls
-  presentation; it does not add a filter.
+- `--regex`は、すべての名前patternをculture-invariantな.NET正規表現として2秒のtimeout付きで評価します。既定はcase-sensitiveです。`--ignore-case`指定時、名前条件はculture-invariant ignore-case、ソース条件はordinal ignore-caseになります。regex modeの`*`は正規表現の一部であり、wildcardとして重ねて解釈しません。
+- `--regex`がなければ`*`だけが0文字以上に一致し、それ以外はliteralです。例: `*.Gamer::Play`、`Tokyo.*::Play`、`Tokyo.Gamer::P*l*y`。
+- 既存のexact resolverを使うのは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component条件、`--kind`、`--include`、`--exclude`を持たない場合だけです。`--show-source`は表示専用なのでexact pathを妨げません。引数リストを省略したmethod patternはoverloadを列挙し、引数リストを指定したpatternは完全signatureを照合します。
+- ラムダは`::<lambda#1>`、`Function()::<lambda#2>`、完全表示名、`::<lambda#*>`で検索できます。suffix、owner suffix、完全名のいずれもcanonical lambda display nameへ照合します。
+- `--include <text>`と`--exclude <text>`は複数回指定できます。excludeはORで先に短絡評価し、それを通過した候補にincludeをANDで評価します。ソース条件がある場合はsource-backed実行可能シンボルだけが候補です。`--show-source`は表示だけを変更し、filterを追加しません。
 - `--output table|json` (default `table`), `--require-single`, and
   `--short-names`.
 
-`--include-overrides` remains available only for its legacy exact method-query
-mode. It cannot be combined with component, kind, regex, case, or source
-search options; `--show-source` is allowed. An invalid request reports one of
-the following command errors (with the standard `Argument error:` prefix and
-usage hint):
+`--include-overrides`はlegacy exact method-query modeだけで使用できます。component、kind、regex、case、source検索optionとは併用できませんが、`--show-source`は併用できます。不正な指定は`Argument error:` prefixとusage hintを伴って、次のエラーを返します。
 
 ```text
 symbol find accepts at most one positional pattern.
@@ -218,21 +192,11 @@ Unknown symbol kind: <value>. Use method or lambda.
 --include-overrides cannot be combined with component, kind, regex, case, or source search options.
 ```
 
-Invalid regular expressions and regex timeouts use the `Query error:` path and
-identify the affected pattern. Unknown or unsupported options use
-`Unknown option(s): ...`.
+無効な正規表現とtimeoutは、対象patternを示す`Query error:`になります。未知または非対応optionは`Unknown option(s): ...`になります。
 
-Table output starts with `Query matched <count> symbol(s):`, uses C#-like
-declaration ordering (`accessibility static async return-type name`), and
-prints `source: <normalized-source>` only when `--show-source` is set. JSON is
-`{ "profile": "...", "matched": [...] }`; each symbol object has the fields
-listed for `symbol list`, plus `normalizedSource` only when source presentation
-was requested.
+table出力は`Query matched <count> symbol(s):`で始まり、`accessibility static async return-type name(parameters)`の順でC#宣言に近い署名を表示します。`source: <normalized-source>`は`--show-source`指定時だけ出力します。JSONは`{ "profile": "...", "matched": [...] }`で、各symbol objectは`symbol list`と同じcanonical fieldを持ち、ソース表示を要求した場合だけ`normalizedSource`を追加します。
 
-Local functions, lambdas, and static constructors do not display an
-accessibility modifier. Constructors do not display a return type; accessors,
-operators, and conversions display only the fields applicable to their
-declaration kind.
+ローカル関数、ラムダ、static constructorはaccessibilityを表示しません。コンストラクターは戻り値を表示せず、アクセサー、演算子、変換演算子も宣言kindに適用できるfieldだけを表示します。
 
 ### Source commands
 
@@ -242,24 +206,14 @@ csindex source search (--include <text> | --exclude <text>)...
     [--ignore-case] [--output table|json] [--short-names]
 ```
 
-`source show` returns all source-backed executable matches (including matching
-overloads) and always presents their normalized source. Metadata-only symbols
-and non-executable matches are not returned. `source search` accepts no
-positionals and requires at least one include or exclude term. Its error text
-is exactly:
+`source show`は一致するすべてのsource-backed実行可能シンボルとoverloadを返し、常に正規化ソースを表示します。対象はメソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子です。metadata-onlyまたは非実行可能symbolは返しません。`source search`は位置引数を受け付けず、少なくとも1つのincludeまたはexcludeを必須とします。
 
 ```text
 source search does not accept positional arguments.
 source search requires at least one include or exclude condition.
 ```
 
-Both commands use table output by default. Their JSON shape is the same as
-`symbol find` and contains `normalizedSource`; table rows include a signature,
-location, and an indented `source:` line. Source matching is ordinal and
-case-sensitive by default, or ordinal case-insensitive with `--ignore-case`.
-Normalized source removes layout outside literal-token text while preserving
-each literal token's `Text`; a multiline raw literal can therefore retain
-embedded newlines in the presented source.
+両コマンドの既定出力はtableです。JSON shapeは`symbol find`と同じで`normalizedSource`を含みます。tableは署名、位置、indentした`source:`行を表示します。ソース照合は既定でordinal case-sensitive、`--ignore-case`指定時はordinal ignore-caseです。正規化ではliteral token外のlayout、コメント、directive、inactive branchを除きますが、各literal tokenの`Text`は保持するため、複数行raw literalの内部改行は表示結果に残り得ます。
 
 ### Async shortest path
 
@@ -268,14 +222,9 @@ csindex async tree <symbol> [--output tree|line|json] [--max-nodes 500]
     [--short-names]
 ```
 
-The root must resolve to exactly one source-backed method through the exact
-query parser. `tree` is the default output; `line` uses exactly ` -> ` between
-path nodes; `json` emits `profile`, `found`, `truncated`, `root`, and `nodes`.
-An async origin prints as `async <name>`. If no origin is reachable, tree and
-line output are exactly `No reachable asynchronous function: <root>` and JSON
-has `found: false` with an empty `nodes` array. The root counts toward the
-positive `--max-nodes` limit (default `500`); a cut path appends
-`<truncated>` in tree/line and has `truncated: true` in JSON.
+rootはexact query parserによってsource-backed method 1件へ解決される必要があります。既定出力は`tree`です。`line`はnode間を厳密に` -> `で接続し、`json`は`profile`、`found`、`truncated`、`root`、`nodes`を出力します。非同期起点は`async <name>`と表示します。到達可能な起点がなければ、tree/lineは`No reachable asynchronous function: <root>`、JSONは`found: false`と空の`nodes`を返します。正の`--max-nodes`は既定500でrootを含み、打ち切り時はtree/lineへ`<truncated>`、JSONへ`truncated: true`を出力します。
+
+表示経路はindex時に決定した1つの最短next-hop chainであり、query時に別経路を再選択しません。同距離の候補が複数あっても最初に決定的順序で記録した1経路だけを返します。root自身が非同期起点なら1nodeです。宣言`async`、Task/ValueTask/UniTask系、非同期streamなどのRoslyn direct roleで起点を判定し、名前の`Async` suffixだけでは判定しません。
 
 ### Caller tree
 
@@ -284,21 +233,9 @@ csindex callers tree <symbol> [--depth 3] [--max-nodes 500]
     [--output tree|mermaid|json] [--short-names]
 ```
 
-The root has depth zero. `--depth 0` removes the depth bound; otherwise the
-default is `3`. The positive `--max-nodes` default is `500` and includes the
-root. `tree` is the default and can include an `Additional edges:` section for
-non-spanning/cycle edges. `mermaid` emits `flowchart TD`, `n<symbol-id>` node
-IDs, escaped displayed-name labels (canonical by default and shortened by
-`--short-names`), caller-to-callee arrows, and `%% truncated` when cut. JSON
-emits `profile`, `truncated`, a `root` symbol object, `nodes` with `depth`, and
-`edges` with caller/callee symbol IDs.
+rootのdepthは0です。`--depth 0`は深度制限なし、それ以外の既定は3です。正の`--max-nodes`は既定500でrootを含みます。既定の`tree`はspanning treeを表示し、non-spanning/cycle edgeがあれば`Additional edges:`を追加します。`mermaid`は`flowchart TD`、`n<symbol-id>`のnode ID、escape済み表示名label（既定canonical、`--short-names`で短縮）、callerからcalleeへの矢印、打ち切り時の`%% truncated`を出力します。JSONは`profile`、`truncated`、`root` symbol、`depth`付き`nodes`、caller/callee symbol IDを持つ`edges`を出力します。
 
-Caller traversal is breadth-first, profile-scoped, and ordered by display
-name, source path, source offset, and ID. It uses resolved invocation and
-object-creation edges, includes only source-backed methods/lambdas, and
-excludes `System` and `System.*` symbols. It does not invent a call edge from
-a lambda owner and does not infer delegate `Invoke`, event, callback, or
-runtime dispatch execution.
+caller探索はprofile内のBFSで、同じdepthではdisplay name、source path、source offset、ID順です。解決済みinvocation/object-creation edgeを使用し、source-backed method/lambdaだけを含め、metadata-only・外部libraryと`System`/`System.*`を除外します。cycleでもnodeを重複させず、両端が含まれるedgeを保持します。ラムダownerからcall edgeを合成せず、delegate `Invoke`、event、callback、reflection、runtime dispatchの実行を推論しません。
 
 Graph validation errors include:
 
@@ -315,9 +252,6 @@ Unknown async tree output: <value>. Use tree, line, json.
 Unknown callers tree output: <value>. Use tree, mermaid, json.
 ```
 
-Candidate order is deterministic. If two candidates have the same canonical
-display name, each is disambiguated as
-`<display-name> [document: <path>; symbol ID: <id>]`.
+候補順は決定的です。2件以上の候補が同じcanonical display nameなら、`<display-name> [document: <path>; symbol ID: <id>]`として区別します。
 
-Corrupt persisted async-path data is a database error rather than a silently
-reselected path; the message begins `Async path integrity failure:`.
+保存済みasync pathが破損している場合は、黙って別経路を選ばずdatabase errorにし、messageは`Async path integrity failure:`で始めます。profile不存在、非対応schema、破損DBも明示的なerrorとし、終了コードは本書の「Exit codes」に従います。

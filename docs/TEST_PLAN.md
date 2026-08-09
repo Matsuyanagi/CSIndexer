@@ -56,10 +56,11 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
 
 ## Symbol, source, and graph expansion acceptance matrix
 
-The following map covers every bullet in section 17 of
-`docs/2026-08-08.revised2.md`. Test names are xUnit method names. Every row
-cites a focused assertion that directly exercises its condition; a generic
-Release run is not used as a substitute for a missing assertion.
+The following map is the normative acceptance matrix referenced by
+`docs/SPEC.md` section 33.10. The `17.x` identifiers are retained as stable
+requirement IDs. Test names are xUnit method names. Every row cites a focused
+assertion that directly exercises its condition; a generic Release run is not
+used as a substitute for a missing assertion.
 
 ### 17.1 Lambda search
 

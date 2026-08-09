@@ -1,5 +1,9 @@
 # Override-Aware Method Search Implementation Plan
 
+> Historical implementation plan. Its schema-version-3 steps describe the
+> intermediate implementation at that date; the current formal schema is
+> version 4 in `docs/DB_SCHEMA.md` and DEC-0022.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** Add an opt-in descendant override/interface-implementation search mode, including real inherited-method alias resolution, across all five method-query commands.

@@ -49,6 +49,10 @@ normalized source. `async_next_symbol_id` is null for async origins (depth
 zero) and points to the one selected next symbol for a non-origin. It is not a
 set of alternate routes.
 
+Version 4の実行可能シンボルは、メソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子を含みます。`method_kind`、`accessibility`、`is_static`、`return_type_key`、`containing_symbol_id`、`source_document_id`、`source_start`、`source_length`により、宣言kind、適用可能な属性、owner、元ファイル・範囲を復元します。field/property/event initializerは`Namespace.Type::<initializer:memberName>`形式のsource-backed合成ownerとして`symbols`へ保存し、そのIDをラムダの所有関係に使用します。表示名だけをforeign keyの代わりに使用しません。
+
+`normalized_source`はRoslynのactive tokenから生成し、コメント、documentation trivia、directive、inactive branch、literal外のlayoutを除きます。literal tokenの`Text`はそのまま保持し、隣接tokenの再字句解析結果が変わる場合だけ1空白を補います。したがって複数行raw literalの内部改行は保存される場合があります。任意substring検索にはB-tree/FTS indexを設けず、source-backed executable候補へ絞った後に評価します。
+
 Version 4 defines the following `symbols` indexes:
 
 ```sql

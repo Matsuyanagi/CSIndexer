@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the approved lambda naming/search, executable metadata, normalized-source search, persisted async shortest path, and bounded caller-tree features in `docs/2026-08-08.revised2.md`.
+**Goal:** Implement the approved lambda naming/search, executable metadata, normalized-source search, persisted async shortest path, and bounded caller-tree features formalized in `docs/SPEC.md` section 33.
 
 **Architecture:** Extend Core extraction with token-safe normalized source, return types, stable initializer/lambda ownership, and a deterministic async next hop. Persist those facts in SQLite schema version 4, then add focused Query request/result types for pattern/source search and bounded graph traversal. Keep canonical storage separate from short-name presentation and expose the features through small CLI command handlers and output formatters.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `docs/2026-08-08.revised2.md` is authoritative; the approved design is `docs/superpowers/specs/2026-08-08-symbol-source-graph-expansion-design.md`.
+- `docs/SPEC.md` section 33 and its linked durable command/schema/acceptance documents are authoritative; the approved design is `docs/superpowers/specs/2026-08-08-symbol-source-graph-expansion-design.md`.
 - Backward database compatibility is not required. Increase schema and request-hash versions from 3 to 4 and reject every unsupported version without modifying it.
 - Do not add external dependencies.
 - Use Roslyn symbols/tokens for extraction and normalization; do not strip comments or whitespace with regular expressions.
@@ -763,7 +763,7 @@ rtk git commit -m "feat(cli): expose source and graph queries"
 - Modify: `docs/TEST_PLAN.md`
 - Modify: `docs/IMPLEMENTATION_STATUS.md`
 - Modify: `docs/KNOWN_LIMITATIONS.md` only for limitations changed or introduced by this feature
-- Do not modify: `docs/2026-08-08.revised2.md`
+- Do not change the formal requirements in `docs/SPEC.md` without an explicit product decision.
 
 **Interfaces:**
 - Consumes: the actual implemented CLI, schema, and verified behavior from Tasks 1-6.

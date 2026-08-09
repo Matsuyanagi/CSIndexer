@@ -1,3 +1,7 @@
+# Architecture Decisions
+
+本書は設計判断とその履歴を記録する。現在の正式仕様は`docs/SPEC.md`、CLI契約は`docs/CLI.md`、DB定義は`docs/DB_SCHEMA.md`を参照する。古いdecisionの一部だけが後続decisionで置き換えられた場合は、後続decisionの`Supersedes`と現在の正式仕様を優先する。
+
 ## DEC-0001: SQLite provider
 
 Status: Accepted
@@ -40,12 +44,12 @@ Date: 2026-07-20
 
 ## DEC-0005: Default caller scope
 
-Status: Accepted
+Status: Accepted (legacy `callers` command only)
 
 Context: ラムダとローカル関数を独立callerにした場合の既定表示は未確定だった。
 Decision: 既定を`direct`とし、直接のラムダ/ローカル関数を返す。`containing`と`both`を明示指定できる。
 Alternatives: `containing`、`both`。
-Consequences: DBの直接edgeと既定表示が一致する。外側methodが必要な利用者はoptionを指定する。
+Consequences: DBの直接edgeと既定表示が一致する。外側methodが必要な利用者はoptionを指定する。この決定は既存の`callers`コマンドにだけ適用する。`callers tree`では、ラムダ内の呼び出しはラムダ自身からの辺とし、所有関係から外側methodへの辺を合成しない。
 Date: 2026-07-20
 
 ## DEC-0006: Multiple project ordering
@@ -150,12 +154,12 @@ Date: 2026-07-20
 
 ## DEC-0016: Async involvement propagation timing and direction
 
-Status: Accepted
+Status: Accepted (path persistence extended by DEC-0023)
 
 Context: 非同期起点へ到達する呼び出し元を検索時に毎回再帰CTEで求めるか、index作成時に導出して保存するかを決める必要がある。呼び出しグラフには自己再帰・相互再帰・複数起点があり、循環停止と決定的な最短距離が必要である。
 Decision: 全Roslyn fact抽出後、解決済み`ReferenceKind.Invocation`の逆辺を作り、全非同期起点をdepth 0とするindex-timeの複数始点BFSを1回実行する。calleeからcallerの方向だけに進み、既訪問距離以下の候補は再展開せず、`AsyncInvolvementDepth`へ最短距離を保存する。query-time再帰CTEは採用しない。
 Alternatives: query-time recursive CTE、起点ごとのDFS、呼び出し先方向への伝播。
-Consequences: すべてのqueryで同じ結果をDB-onlyで返せ、自己再帰・相互再帰でも停止する。index時間と整数1列を使用し、呼び出しグラフ変更時は再indexが必要になる。保存するのは最短距離だけで、全経路や到達した全起点は保持しない。非同期関数から呼ばれる同期関数には伝播しない。
+Consequences: すべてのqueryで同じ結果をDB-onlyで返せ、自己再帰・相互再帰でも停止する。呼び出しグラフ変更時は再indexが必要になる。DEC-0023により最短距離に加えて選択した1つのnext hopを保存するが、全経路や到達した全起点は保持しない。非同期関数から呼ばれる同期関数には伝播しない。
 Date: 2026-07-22
 
 ## DEC-0017: Separate direct async roles from derived involvement
@@ -170,15 +174,15 @@ Date: 2026-07-22
 
 ## DEC-0018: Function listing and lambda call presentation
 
-Status: Accepted
+Status: Accepted (lambda numbering superseded by DEC-0020)
 
 Context: 関数一覧、ラムダの識別子、callee検索の既定範囲、namespaceを含む名前の表示規則を一貫して定める必要がある。
 
-Decision: `symbol list`の既定結果は`method`と`lambda`にする。`--kind method|lambda`と`--async-involved`で絞り込み、namespace短縮は`--short-names`によるpresentation-onlyの変換にする。JSONの`fullyQualifiedName`、stable key、namespace、parameter typeなどのcanonical fieldは短縮しない。ラムダ名は直接ownerごとに`<lambda#1>`から採番し、ネストしたラムダはその直近のラムダownerごとに再び採番する。`callees`は指定symbol配下のラムダdescendantによる呼び出しを再帰的に含め、`--exclude-lambda-calls`指定時だけmethod本体の直接呼び出しに限定する。
+Decision: `symbol list`の既定結果は`method`と`lambda`にする。`--kind method|lambda`と`--async-involved`で絞り込み、namespace短縮は`--short-names`によるpresentation-onlyの変換にする。JSONの`fullyQualifiedName`、stable key、namespace、parameter typeなどのcanonical fieldは短縮しない。ラムダの正式な表示採番はDEC-0020に従う。既存の`callees`は表示上の集約機能として、指定symbol配下のラムダdescendantによる呼び出しを再帰的に含め、`--exclude-lambda-calls`指定時だけmethod本体の直接呼び出しに限定する。この集約はラムダ所有関係を永続的なcall edgeへ変換しない。
 
 Alternatives: `symbol list`をmethodだけにする、document全体でラムダを連番にする、短縮名をJSON canonical fieldにも保存する、calleeを常に直接呼び出しだけにする。
 
-Consequences: 一覧とcallee検索はラムダ本体の実行可能な呼び出しを既定で見落とさない。表示を短縮しても機械処理用の識別子は安定する。ラムダ番号はownerの構造を表すため、別owner間で番号を比較する意味はない。
+Consequences: 一覧とcallee検索はラムダ本体の実行可能な呼び出しを既定で見落とさない。表示を短縮しても機械処理用の識別子は安定する。ラムダ番号は最寄りの非ラムダ実行可能owner内のソース順を表すため、別owner間で番号を比較する意味はない。
 
 Date: 2026-08-02
 

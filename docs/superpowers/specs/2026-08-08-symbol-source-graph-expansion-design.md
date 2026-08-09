@@ -4,10 +4,11 @@ Date: 2026-08-08
 
 ## Authoritative requirements
 
-`docs/2026-08-08.revised2.md` is the authoritative Japanese requirements
-document for this implementation. This design maps those approved requirements
-onto the existing CSIndexer architecture. When wording differs, the
-authoritative requirements win.
+`docs/SPEC.md` section 33 is the authoritative Japanese requirements section
+for this implementation, with command, schema, decision, and acceptance details
+in the other durable documents linked from that section. This design maps those
+approved requirements onto the existing CSIndexer architecture. When wording
+differs, the authoritative requirements win.
 
 ## Context
 
@@ -299,15 +300,18 @@ check.
 
 Implementation updates `docs/SPEC.md`, `docs/CLI.md`, `docs/DB_SCHEMA.md`,
 `docs/DECISIONS.md`, `docs/TEST_PLAN.md`, `docs/IMPLEMENTATION_STATUS.md`, and
-`docs/KNOWN_LIMITATIONS.md` where applicable. The Japanese authoritative
-requirements document is amended only to record the approved normalization
-clarification: layout newlines outside literal-token text are removed, while
-newlines contained in literal-token text remain unchanged.
+`docs/KNOWN_LIMITATIONS.md` where applicable. `docs/SPEC.md` section 33 keeps
+the integrated Japanese formal requirements; the role-specific documents add
+command, schema, decision, status, limitation, and acceptance detail without
+creating a second competing requirements source. Layout newlines outside
+literal-token text are removed, while newlines contained in literal-token text
+remain unchanged.
 
 ## Acceptance
 
-The implementation is complete only when every acceptance condition in
-`docs/2026-08-08.revised2.md` is represented by a focused automated test or an
-explicitly documented non-automated verification, all existing behavior not
-superseded by that document remains green, and schema version 4 can reconstruct
-every new query result without loading a Roslyn workspace.
+The implementation is complete only when every acceptance condition in the
+normative matrix in `docs/TEST_PLAN.md` is represented by a focused automated
+test or an explicitly documented non-automated verification, all existing
+behavior not superseded by the formal requirements remains green, and schema
+version 4 can reconstruct every new query result without loading a Roslyn
+workspace.

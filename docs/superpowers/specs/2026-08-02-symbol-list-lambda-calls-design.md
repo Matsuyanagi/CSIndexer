@@ -1,7 +1,11 @@
 # Symbol List, Lambda Call Inclusion, and Short Names Design
 
 Date: 2026-08-02
-Status: Accepted
+Status: Accepted with lambda-numbering revision
+
+Current authority: `docs/SPEC.md` sections 16 and 33.2. DEC-0020 supersedes
+the original nested-lambda counter reset described by the first version of
+this design; the corrected rule is recorded below.
 
 ## Goal
 
@@ -28,11 +32,12 @@ nullable suffixes without requiring a Roslyn compilation at query time.
 ### Lambda ownership and numbering
 
 Every `AnonymousFunctionExpressionSyntax` is indexed as an `IndexedSymbolKind.Lambda`.
-The synthetic name is `<lambda#N>`, where `N` is counted from one for each
-containing owner. Nested lambdas use the containing lambda as their owner and
-therefore have an independent counter. The source traversal order is used
-within each owner. `Invoke()` or delegate execution sites are not used to
-change ownership or call classification.
+The synthetic name is `<lambda#N>`, where `N` is counted from one in source
+order for the nearest non-lambda executable owner. Nested lambdas share that
+display counter instead of restarting it. Their stored containing-symbol ID
+still points to the immediate lexical lambda, so calls remain attributed to
+the lambda in which they are written. `Invoke()` or delegate execution sites
+are not used to change ownership or call classification.
 
 ### Calls inside lambdas
 
@@ -84,7 +89,8 @@ human-facing `displayName` values but does not alter canonical identity fields.
 ## Testing
 
 - Unit tests cover namespace/type shortening, generic parameter formatting,
-  lambda numbering per owner, and nested lambda ownership.
+  lambda display numbering per nearest non-lambda executable owner, and nested
+  lambda ownership.
 - Query tests cover method/lambda listing, async-depth filtering, and recursive
   descendant lambda call retrieval.
 - CLI/output tests cover `--short-names`, both `symbol list` formats, and

@@ -1,5 +1,10 @@
 # 非同期関与情報の設計
 
+> Historical design for distance propagation. DEC-0023 and `docs/SPEC.md`
+> section 33.5 extend it by persisting one deterministic next hop; references
+> below to distance-only storage describe the earlier stage, not the current
+> schema-v4 contract.
+
 ## 目的
 
 Roslynの意味解析結果と呼び出しグラフを使用し、各関数について次を区別して保存・検索可能にする。

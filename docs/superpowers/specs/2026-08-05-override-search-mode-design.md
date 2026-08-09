@@ -2,6 +2,10 @@
 
 Date: 2026-08-05
 
+Status: Historical accepted design. Its query semantics remain current, but
+its schema-version-3 passages are superseded by DEC-0022 and
+`docs/DB_SCHEMA.md` schema version 4.
+
 ## Context
 
 CSIndexer already persists direct method relationships for overrides and

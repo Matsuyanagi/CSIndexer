@@ -48,12 +48,18 @@
   not expose or match those removed characters. Normalization removes layout
   outside literal tokens but preserves each literal token `Text`, so a
   multiline raw literal can retain embedded newlines.
-- `source show`/`source search` are limited to indexed source-backed methods
-  and lambdas. Metadata-only symbols, external decompilation, and Source Link
-  retrieval are not provided.
+- `source show`/`source search` are limited to indexed source-backed executable
+  symbols: methods, constructors, local functions, lambdas, accessors,
+  operators, and conversions. Metadata-only symbols, external decompilation,
+  and Source Link retrieval are not provided.
 - `async tree` accepts an exact source-backed method root and follows the one
   persisted async next-hop chain. It does not enumerate alternate equal paths
   or dynamically infer another route.
+- Awaitable classification recognizes the built-in Task/ValueTask families,
+  UniTask families, and async-stream roles recorded by the indexer. An `Async`
+  name suffix alone is never sufficient. A user-facing registry for additional
+  awaitable types is reserved for future extension and is not currently a CLI
+  option.
 - `callers tree` follows only resolved static invocation and object-creation
   facts. It does not infer delegate `Invoke` targets, events, callbacks,
   reflection, receiver-value/data flow, or runtime virtual/interface dispatch.

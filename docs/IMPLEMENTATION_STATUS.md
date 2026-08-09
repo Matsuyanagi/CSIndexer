@@ -30,6 +30,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Schema v4 includes profile-prefixed symbol indexes and a partial source-executable index, with PRAGMA and `EXPLAIN QUERY PLAN` regression tests.
 - Graph-root ambiguity reports deterministic canonical candidates, duplicate names include document path and ID, and global/command help is snapshot-tested against the accepted grammar.
 - Added direct acceptance coverage for nested/all-same-ordinal lambda search, reverse insertion ties, final numeric-ID ordering, duplicate projects, excluded reverse callers, all executable declaration signature kinds, literal variants, corruption, and in-flight cancellation.
+- 承認済みのsymbol/source/graph要件を役割別の永続文書へ統合した。`SPEC.md`第33章を正式仕様、`CLI.md`をコマンド契約、`DB_SCHEMA.md`をDB契約、`DECISIONS.md`を判断履歴、`TEST_PLAN.md`を正式な受け入れmatrixとし、独立していた旧要求仕様ファイルを廃止した。
 
 ## Currently Implementing
 
@@ -93,6 +94,12 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - tests/CsIndex.IntegrationTests/SemanticIndexFixture.cs
 - tests/CsIndex.IntegrationTests/ProjectScopedSourceSymbolPersistenceTests.cs
 - tests/CsIndex.Query.Tests/CallerTreeBuilderTests.cs
+- docs/SPEC.md
+- docs/CLI.md
+- docs/DB_SCHEMA.md
+- docs/DECISIONS.md
+- docs/TEST_PLAN.md
+- docs/KNOWN_LIMITATIONS.md
 
 ## Database Schema Version
 

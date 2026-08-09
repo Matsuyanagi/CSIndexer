@@ -1023,7 +1023,7 @@ enum ReferenceKind
 
 呼び出し式と`await`が別文のときはデータフローを遡らないため、生成元の呼び出し辺を`Awaited`へ変更しない。ただし実際の`await`は所有関数の`ContainsAwait`として記録する。
 
-非同期関与はnullable整数`AsyncInvolvementDepth`で表す。ソース情報を優先して統合済みのシンボルのうち、`None`以外の直接ロールを1つ以上持つものを起点（depth 0）とする。全ドキュメント抽出後、解決済みの通常呼び出し（`ReferenceKind.Invocation`）から`callee_definition_key -> caller_symbol_key`の逆辺を作り、全起点を同時にキューへ入れる複数始点BFSを1回実行する。呼び出し元はcalleeの距離+1とし、最初または厳密に短い候補だけを更新する。各非起点には選択されたcalleeの`AsyncNextSymbolKey`も保存し、同距離の後続候補で上書きしない。この停止条件により自己再帰・相互再帰・複数循環でも有限に停止し、複数経路がある場合は最短距離と1つの決定的next hopだけを保持する。
+非同期関与はnullable整数`AsyncInvolvementDepth`で表す。正規化ソースを持つsource-backed method/lambdaのうち、`None`以外の直接ロールを1つ以上持つものだけを起点（depth 0）とする。全ドキュメント抽出後、callerとcalleeの両方が同じeligible集合に含まれる解決済み通常呼び出し（`ReferenceKind.Invocation`）から`callee_definition_key -> caller_symbol_key`の逆辺を作り、全起点を同時にキューへ入れる複数始点BFSを1回実行する。metadata-only awaitableは起点にも中継nodeにも含めない。呼び出し元はcalleeの距離+1とし、最初または厳密に短い候補だけを更新する。各非起点には選択されたcalleeの`AsyncNextSymbolKey`も保存し、同距離の後続候補で上書きしない。この停止条件により自己再帰・相互再帰・複数循環でも有限に停止し、複数経路がある場合は最短距離と1つの決定的next hopだけを保持する。
 
 伝播方向は「非同期関数へ到達する呼び出し元方向」のみである。非同期起点から呼ばれる同期関数へは伝播せず、非同期起点へ到達しない循環のdepthはnullのままとする。
 
@@ -1167,12 +1167,9 @@ version: sha256:...
 
 表示用番号と永続識別子を分離する。
 
-### 16.1.1 Shipped owner-scoped numbering
+### 16.1.1 関数単位の表示用採番
 
-Every lambda is numbered in source order within its nearest non-lambda
-executable owner. Nested lambdas therefore share the surrounding method,
-local function, accessor, or synthetic initializer counter rather than
-restarting at the immediately enclosing lambda:
+各ラムダは、最寄りの非ラムダ実行可能owner内でソース順に採番する。ネストしたラムダでも直近のラムダで番号をリセットせず、外側のメソッド、ローカル関数、アクセサー、または合成初期化子のカウンターを共有する。
 
 ```text
 Game.Player::Update()::<lambda#1>
@@ -1180,14 +1177,11 @@ Game.Player::Update()::<lambda#2>
 Game.Player::Update()::<lambda#3>
 ```
 
-The stored `containing_symbol_id` remains the immediate lexical owner. This is
-intentional: calls written in a nested lambda remain calls from that nested
-lambda, even though its display counter is scoped to the non-lambda owner.
-Ownership is not a call edge.
+保存する`containing_symbol_id`は直近の字句上のownerを示す。表示番号が非ラムダowner単位であっても、ネストしたラムダ内の呼び出しはそのラムダ自身からの呼び出しとする。所有関係はcall edgeではない。
 
-### 16.1.2 Shipped member initializer owners
+### 16.1.2 メンバー初期化子owner
 
-Field, property, and event initializers receive distinct synthetic owners:
+フィールド、プロパティ、イベントの各初期化子には、互いに異なる合成ownerを割り当てる。
 
 ```text
 Namespace.Type::<initializer:fieldName>
@@ -1195,10 +1189,7 @@ Namespace.Type::<initializer:PropertyName>
 Namespace.Type::<initializer:EventName>
 ```
 
-The synthetic owner has a source-backed stable key incorporating its
-containing type, document, display, source span, and document content hash;
-its lambdas are numbered in that initializer's source order. This also keeps
-different members of a partial type distinct.
+合成ownerは、包含型、文書、表示名、ソース範囲、文書内容ハッシュを含むsource-backed stable keyを持つ。ラムダはその初期化子内のソース順に`<lambda#1>`から採番する。partial型の別ファイルにある同名でないメンバーも、文書とowner IDにより区別する。
 
 ## 16.2 ローカル関数
 
@@ -1243,9 +1234,7 @@ Execute::<lambda#1>
 Execute
 ```
 
-クエリで両方扱えるようにする。
-
-推奨オプション:
+既存の`callers`コマンドは表示範囲として次のオプションを持つ。
 
 ```text
 --caller-scope direct
@@ -1253,18 +1242,19 @@ Execute
 --caller-scope both
 ```
 
-正確な既定値は未確定。候補と影響を `docs/DECISIONS.md` に記録する。
+既定は`direct`である。ただし、これは既存の`callers`コマンドの表示上の規則であり、call edgeの所有者は常に直接のラムダである。`callers tree`は所有関係から外側メソッドへの辺を合成せず、delegateの`Invoke()`、イベント、コールバックの実行位置も推論しない。
 
 ## 16.4 初期化子
 
-名前付きメソッド外の実行コードに仮想所有者を与える。
+フィールド、プロパティ、イベントの初期値に含まれる実行コードには、メンバー単位の仮想所有者を与える。
 
 ```text
-XClass::<instance-initializer>
-XClass::<static-initializer>
-PropertyName::<initializer>
-Program::<top-level-statements>
+XClass::<initializer:fieldName>
+XClass::<initializer:PropertyName>
+XClass::<initializer:EventName>
 ```
+
+初期化子内に複数のラムダがある場合は、その合成owner内でソース順に採番する。表示名だけを所有関係のキーにせず、stable keyとsymbol IDで関連付ける。top-level statementsなど、ここに列挙していない名前付きメソッド外の実行コードは別仕様として扱う。
 
 ---
 
@@ -1979,7 +1969,7 @@ Undefined in current profile:
 
 ## 21.9 出力形式
 
-予約する。
+現在の正式な出力形式は、通常のシンボル・ソース検索が`table|json`、`async tree`が`tree|line|json`、`callers tree`が`tree|mermaid|json`である。次のうち未実装の形式は将来拡張用に予約する。
 
 ```text
 --output table
@@ -1991,7 +1981,7 @@ Undefined in current profile:
 
 主DBはSQLiteのままにし、JSON、JSONL、YAML、DOTは出力形式として実装する。
 
-初期段階では `table` と `json` を優先してよい。
+JSONL、YAML、Graphviz DOTは未実装であり、対応commandで明示されるまで受理しない。
 
 Schema version 4 retains the existing async-analysis fields and adds persisted
 async next-hop, executable metadata, normalized-source, and graph-query
@@ -2131,7 +2121,7 @@ Phase 1では `content_hash` が変われば再解析する。
 
 CLI引数不正、致命的解析失敗、DB失敗は非ゼロ。
 
-具体的な終了コード番号は未確定なので、名前付き定数として分離し、`docs/DECISIONS.md` に記録する。
+終了コードは`Success=0`、`InvalidArguments=2`、`AnalysisFailure=3`、`DatabaseFailure=4`、`RequireSingleFailure=5`とし、名前付き定数へ集約する。詳細は`docs/CLI.md`とDEC-0003を参照する。
 
 ---
 
@@ -2276,7 +2266,9 @@ Phase 1であっても、次をDBから削除しない。
 
 ## Phase 4: 高度な解析と最適化
 
-実装候補:
+シンボル・ソース検索、実行可能シンボル属性、非同期最短経路、caller graph、演算子・変換・アクセサーのソース抽出は実装済みであり、正式仕様は第33章に定める。
+
+残る実装候補:
 
 * 複数解析プロファイルの完全対応
 * Source Generatorの非物理生成ソース
@@ -2289,15 +2281,11 @@ Phase 1であっても、次をDBから削除しない。
 * 仮想呼び出し候補の精密化
 * インターフェイス実装候補
 * `dynamic`
-* 演算子
-* 暗黙変換
-* 明示変換
-* プロパティgetter/setter
-* イベントadd/remove
+* プロパティ・イベントアクセスを含む呼び出し関係の精密化
 * 関数ポインター
 * リフレクションの限定解析
 * Source Link
-* 呼び出しツリー
+* caller graph以外のgeneral call-tree view
 * Graphviz DOT
 * YAML / JSONL出力
 * 常駐デーモン
@@ -2585,36 +2573,21 @@ Cache reused / rebuilt
 
 # 29. 未確定事項
 
-次は確定仕様ではない。
+次は現在も確定していない。実装時に調査し、`docs/DECISIONS.md`へ記録する。これ以外の過去の未確定事項はDEC-0001からDEC-0026で決定済みであり、この一覧へ戻さない。
 
-実装時に調査し、`docs/DECISIONS.md` に記録する。
-
-1. SQLiteライブラリの正式採用
-2. CLI引数解析ライブラリ
-3. 正確な終了コード番号
-4. `--caller-scope` の既定値
-5. 複数 `.csproj` の表示順
-6. SQLiteのWALモード採用
-7. FTS5の利用有無
-8. Symbol stable keyの最終フォーマット
-9. Documentation Comment IDを取得できないシンボルの形式
-10. 匿名型をどこまで保存するか
-11. Unityの古い特殊フォルダー規則
-12. Unity Hub探索方法
-13. UnityのVersion Definesの完全復元方法
-14. `.asmdef` のDefine Constraintsの厳密な評価
-15. Source GeneratorをMSBuildWorkspace経由でどこまで取得できるか
-16. 外部シンボルをsymbolsテーブルへ保存する範囲
-17. 同一シンボルが複数Project、TFM、Profileに存在する場合の表示
-18. ネスト型やジェネリック型を含む検索構文
-19. `nameof` を既定references結果へ含めるか
-20. プロパティ、イベント、演算子をPhase 1へ含めるか
-21. コンパイルエラー数が多い場合の中断基準
-22. Source Link対応
-23. 解析DBを入力ディレクトリ内に作るか、ユーザーデータ領域に作るか
-24. パスの正規化形式
-25. シンボリックリンクとジャンクションの扱い
-26. DirectoryModeで同一 `.cs` が複数参照された場合の扱い
+1. 匿名型をどこまで保存するか
+2. Unityの古い特殊フォルダー規則
+3. Unity Hub探索方法
+4. UnityのVersion Definesの完全復元方法
+5. `.asmdef` のDefine Constraintsの厳密な評価
+6. Source GeneratorをMSBuildWorkspace経由でどこまで取得できるか
+7. 外部シンボルを`symbols`テーブルへ保存する範囲
+8. 同一論理シンボルを複数TFM/Profileにまたがって表示・集約する規則
+9. ネスト型やジェネリック型を含む検索構文
+10. コンパイルエラー数が多い場合の中断基準
+11. Source Link対応
+12. シンボリックリンクとジャンクションの扱い
+13. DirectoryModeで同一`.cs`が複数参照された場合の扱い
 
 未確定事項を推測で最終仕様にしないこと。
 
@@ -2696,147 +2669,178 @@ Cache reused / rebuilt
 
 ---
 
-# 33. Shipped symbol, source, and graph expansion
+# 33. シンボル・ソース・グラフ拡張の正式仕様
 
-This section records the schema-v4 behavior that is implemented now. It does
-not replace the authoritative acceptance requirements in
-`docs/2026-08-08.revised2.md`.
+本章は、ラムダ検索、実行可能シンボル属性、正規化ソース、非同期最短経路、caller graphに関する正式な最新仕様である。CLIの完全な構文と出力例は`docs/CLI.md`、SQLiteのDDLと更新順は`docs/DB_SCHEMA.md`、決定理由は`docs/DECISIONS.md`、受け入れ条件と自動テストの対応は`docs/TEST_PLAN.md`に分離する。これらの文書と過去の記述が競合する場合は本章を優先する。
 
-## 33.1 Executable metadata and normalized source
+## 33.1 共通要件
 
-Source-defined methods, constructors, local functions, lambdas, accessors,
-operators, and conversions persist their executable metadata. Constructors
-and static constructors have no return type; non-applicable accessibility is
-not rendered as a C# modifier. Local functions and lambdas have
-not-applicable accessibility even when Roslyn exposes a private-like effective
-accessibility; static constructors are also not-applicable. Static lambda state
-is persisted from its Roslyn method symbol. Text signatures are ordered as:
+* 後方互換のための旧DB migrationは行わない。現在のschema version 4以外は、既存DBを一切変更せずに拒否して再indexを要求する。
+* 構造解析にはRoslynの構文木、`SemanticModel`、シンボルを使用する。呼び出し、所有、最短経路、継承などの関係は表示名ではなくstable keyとDB上のsymbol IDで保持する。
+* 再帰構造はvisited IDで循環を防止する。深いグラフは再帰呼び出しではなく反復処理で探索する。
+* 解析、正規化、並べ替え、検索、グラフ構築、出力は処理途中でも`CancellationToken`を確認する。
+* 結果順、同距離の経路選択、SQLの最終tie-breakerを決定的にする。同じ入力とprofileの再indexは同じ表示番号と同じ非同期next hopを選ぶ。
+* すべての検索とグラフは選択したanalysis profile内に閉じる。同じprofileに同一assembly/TFM/完全修飾名を持つ別projectがあっても、source definitionはproject keyとsymbol IDで独立させる。
+* JSONは表示済み文字列だけに依存せず、kind、accessibility、static、async、return type、source、node、edge、truncationなどを独立したfieldで表現する。
+* 上限による打ち切りは全出力形式で明示し、黙って省略しない。
+
+## 33.2 ラムダの検索、採番、所有関係
+
+`symbol find`は次のいずれでもラムダを検索できる。
 
 ```text
-accessibility static async return-type display-name
+::<lambda#1>
+Function()::<lambda#2>
+Namespace.Type::Function()::<lambda#2>
+::<lambda#*>
 ```
 
-`--short-names` shortens the displayed return/parameter types and name only.
-The JSON fields `fullyQualifiedName`, `parameters`, and `returnType` stay
-canonical.
+検索はラムダsuffix、owner付きsuffix、正式な完全表示名に対応し、`--kind lambda`と組み合わせられる。同じ番号を持つ別ownerのラムダが複数一致した場合は、すべてを決定的な順序で列挙する。
 
-Normalized source is built from active Roslyn syntax tokens, not by regular
-expression. Comments, documentation trivia, directives, inactive conditional
-text, indentation, and ordinary line breaks are omitted. Literal token text
-(including interpolated and raw strings) is retained. A space is inserted only
-when joining adjacent token text would change lexical tokenization.
-Normalization removes layout outside literal tokens, but preserves each
-literal token `Text`; therefore a multiline raw literal may retain embedded
-newlines. The layout-normalized text and SHA-256 hash are stored on `symbols`.
+ラムダの表示番号は、最寄りの非ラムダ実行可能ownerごとにソース順で`<lambda#1>`から開始する。ネストしたラムダも同じ非ラムダownerの連番を使用し、内側のラムダで番号をリセットしない。ラムダを追加または削除したときに番号が変わり得るのは、同じowner内でその位置より後ろにあるラムダだけである。
 
-Source-definition stable keys include the owning project key. Equal assembly,
-TFM, namespace, type, and method signatures in two projects of the same profile
-therefore remain distinct rows and symbol IDs. Source calls, relations,
-interface bindings, and constructed targets use the same project scope.
-Metadata-only symbols continue to use assembly/TFM identity and remain shared.
+フィールド、プロパティ、イベントの初期化子は次の合成ownerを持つ。
 
-## 33.2 Symbol and source search
+```text
+Namespace.Type::<initializer:memberName>
+```
 
-`symbol find` accepts a positional canonical-name pattern or component
-filters. Exact resolver compatibility applies only to a positional pattern
-with neither `*` nor `::<lambda#` and no matching modifier (`--regex`,
-`--ignore-case`, component, kind, include, or exclude filters); `--show-source`
-is presentation-only and does not disqualify that path. Otherwise, wildcard
-matching treats only `*` as zero-or-more characters; all other non-regex
-characters are literal.
-`--regex` instead uses a culture-invariant .NET regular expression with a
-two-second timeout. `--ignore-case` enables culture-invariant regex ignore-case
-for names and ordinal ignore-case for source comparisons. Results are ordered
-by canonical display name, source path, source position, and numeric symbol ID.
+初期化子ごとに独立して採番し、partial型の別文書にある初期化子も文書、ソース範囲、stable key、symbol IDで区別する。`containing_symbol_id`は直近の字句上のownerを指すため、ネストしたラムダ内のcall edgeはそのラムダからの辺になる。所有関係そのものをcall edgeへ変換してはならない。
 
-Lambda suffix, owner-suffix, and full lambda patterns match canonical lambda
-display names. A method pattern without parameters matches all overloads; a
-complete parameter list selects the complete signature. `--kind method|lambda`
-is a filter, not a separate identity scheme.
+## 33.3 実行可能シンボルの属性と表示
 
-Source predicates run after name/metadata predicates. Multiple excludes are
-ORed and short-circuit rejection; every include must match a surviving
-candidate. Source predicates exclude source-less candidates. `--show-source`
-does not filter candidates; it adds the normalized text to table/JSON output.
-Standalone `source search` requires at least one include or exclude predicate,
-while `symbol find` does not. `source show` and `source search` return only
-source-backed executable symbols. Their initial repository reads use a direct
-source-only predicate rather than loading source-less rows for later removal.
+source-definedのメソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子について、少なくとも次を保存する。
 
-Graph commands require exactly one source-backed method root. A missing root
-reports the original query. An ambiguous root lists canonical candidate names
-in repository order; when display names repeat, the document path and symbol ID
-are appended so the candidates remain distinguishable.
+* `public`、`protected`、`internal`、`private`、複合accessibility、または非適用
+* `static`かどうか
+* canonical return type key。戻り値が存在しない宣言ではnull
+* method kindとowner symbol ID
+* 既存のdirect async roleとderived async involvement
+* source-backedかどうか、原文書とソース範囲、正規化ソースとそのhash
 
-## 33.3 Persisted async path
+テキスト署名はC#宣言に近い次の順で組み立て、適用できない要素は表示しない。
 
-At index time, deterministic reverse multi-source BFS runs over resolved
-invocation edges whose caller and callee are both source-backed methods or
-lambdas with normalized source. Metadata-only awaitable methods are not origins
-or path nodes. Async origins are depth zero with a null next hop. A caller
-receives the callee as its `async_next_symbol_id` only on first discovery or a
-strictly shorter path; an equal-distance discovery never replaces it. The
-stored next ID must point to the selected profile and reduce
-`async_involvement_depth` by exactly one.
+```text
+accessibility static async return-type display-name(parameters)
+```
 
-`csindex async tree <symbol>` follows this stored chain without recomputing or
-reselecting a route. Traversal is iterative, cancellation-aware, visited-ID
-guarded, and node-bounded. Missing, cross-profile, cyclic, or non-decreasing
-next-hop data is a database integrity error. A no-path result is successful
-and reported explicitly.
+コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`は表示名、戻り値型、引数型だけを短縮し、canonical fieldや検索意味を変更しない。JSONでは`displayName`、`kind`、`accessibility`、`isStatic`、`isAsync`、`returnType`などを独立して出力する。
 
-Every returned path node must be a source-backed method or lambda with
-normalized source. Only a direct async-origin role may have depth zero and a
-null next hop. A participating non-origin must have positive depth and a next
-hop; a non-participant has both values null. The fetched node is validated
-before a node-limit truncation result is returned.
+## 33.4 シンボル検索と正規化ソース
 
-## 33.4 Bounded caller graph
+### 33.4.1 名前検索
 
-`csindex callers tree <symbol>` is a profile-scoped breadth-first traversal of
-resolved invocation and object-creation edges. It begins at depth zero,
-defaults to depth three and 500 nodes, and interprets depth zero as unbounded
-depth while retaining the node limit. Nodes are unique and sorted by display
-name, source path, source position, and ID. Edges between already included
-nodes are retained, so cycles remain visible. A finite depth boundary still
-reads reverse edges for boundary nodes and retains an edge when both endpoints
-are already in the result; it never adds or queues a deeper node.
+`symbol find`は省略可能な位置引数と、`--namespace`、`--type`、`--method`のcomponent条件を受け付ける。位置引数を省略する場合は少なくとも1つのcomponent条件が必要であり、複数条件はANDで結合する。
 
-Traversal includes source-backed methods/lambdas and excludes `System` and
-`System.*`. It does not use a namespace string alone to decide whether a
-symbol has source. Calls inside a lambda remain owned by that lambda; the
-containing owner is never synthesized as a caller. No delegate `Invoke`,
-event, callback, reflection, receiver-data-flow, or runtime dispatch
-inference is performed.
+非regex modeでは`*`だけを0文字以上のwildcardとして扱い、それ以外の文字はliteralとする。例:
 
-Text output forms a spanning tree plus `Additional edges:` where needed.
-Mermaid uses safe `n<symbol-id>` IDs and escaped displayed-name labels
-(canonical by default and shortened under `--short-names`) with caller-to-callee
-arrows. JSON provides root, node depths, unique edges, profile, and truncation
-state. All output modes expose truncation rather than silently omitting it.
+```text
+*.Gamer::Play
+Tokyo.*::Play
+Tokyo.Gamer::P*l*y
+```
 
-## 33.5 Schema v4 and update order
+`--regex`では各名前条件をculture-invariantな.NET正規表現として評価し、有限のtimeoutを設定する。`*`は正規表現の一部でありwildcard modeと重ねて解釈しない。既定はcase-sensitiveで、`--ignore-case`指定時だけ名前はculture-invariant ignore-case、ソースはordinal ignore-caseにする。無効な正規表現またはtimeoutは部分結果ではなくquery errorにする。
 
-Schema v4 adds `return_type_key`, `normalized_source`,
-`normalized_source_hash`, and `async_next_symbol_id` to `symbols`. The latter
-is a self foreign key with `ON DELETE SET NULL` and has the
-`ix_symbols_profile_async_next (analysis_profile_id, async_next_symbol_id)`
-index. `containing_symbol_id` is also a self foreign key with `ON DELETE SET
-NULL`.
+既存のexact resolverを使うのは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component、kind、include、excludeの各検索modifierを持たない場合だけである。`--show-source`は表示専用なのでexact pathを妨げない。引数リストを省略したメソッドpatternはoverloadを列挙し、完全な引数リストを指定したpatternは完全signatureを照合する。`--include-overrides`との併用範囲は第18.7節と`docs/CLI.md`に従う。
 
-All symbol lookup indexes begin with `analysis_profile_id` except the physical
-source-location index. Schema v4 includes profile+kind, profile+owner,
-profile+async-depth, profile+async-next, profile+name, profile+short-method,
-profile+namespace/type/method, and profile+fully-qualified indexes. It also
-includes the partial index
-`ix_symbols_profile_source_executable (analysis_profile_id, kind) WHERE
-source_document_id IS NOT NULL`. Source-only repository SQL uses the direct
-non-null predicate, and representative `EXPLAIN QUERY PLAN` tests require these
-indexes without a full `symbols` table scan.
+結果はcanonical display name、source path、source start、numeric symbol IDの順で安定化する。
 
-An index replacement creates all symbol rows before resolving either self
-reference. It then updates containing and async-next IDs in the same save
-transaction, inserts dependent rows, runs `PRAGMA foreign_key_check`, and
-commits only on success. Version 3 and every unsupported schema are rejected
-before WAL or DDL mutation; rebuilding is required.
+### 33.4.2 ソースの正規化と保存
 
+正規化対象はsource-backedのメソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子である。Roslynのactive syntax tokenから構築し、行コメント、ブロックコメント、XML document trivia、directive、inactive conditional branch、literal外のindentと改行を除く。文字列、文字、補間文字列、raw stringを含むliteral tokenの`Text`は変更しないため、複数行raw literalの内部改行は残り得る。
+
+隣接tokenを連結すると別のtoken列へ変化する場合だけ、1個の空白を入れる。したがって次のように正規化し、識別子を連結してはならない。
+
+```csharp
+public static int Func(){var a=1;PrintVar(a);return a;}
+```
+
+`publicstaticintFunc(){vara=1;...}`のような文字列は生成しない。補間式の内部でもtoken境界を維持する。DBにはprofile、symbol ID、正規化文字列、SHA-256 hash、元ファイルとソース範囲を保持する。metadata-only symbolには正規化ソースを持たせない。
+
+### 33.4.3 ソース表示と検索
+
+`symbol find`は反復可能な`--include`と`--exclude`を名前条件と組み合わせられ、これらを1つも指定しなくてもよい。名前・属性で候補を絞った後、source-less候補を除き、excludeをORで先に短絡評価し、それを通過した候補にincludeをANDで短絡評価する。includeがなければexcludeを通過した候補を採用する。`--show-source`は表示だけを変更し、候補集合を変更しない。
+
+`source show <symbol>`は一致するsource-backed実行可能シンボルとoverloadの正規化ソースを表示する。`source search`は位置引数を受け付けず、少なくとも1つの`--include`または`--exclude`を必須とする。両コマンドはtableとJSONを提供し、正式名、適用可能な属性、ファイル、位置、正規化ソースを返す。実装上、DB optimizerが述語順を変更しても意味を変えてはならず、アプリケーション層ではexcludeによる早期除外を維持する。
+
+## 33.5 非同期関数までの最短経路
+
+`csindex async tree <symbol>`は指定したsource-backed methodから呼び出し先方向へ進み、到達可能な非同期起点までの最短経路を1つ表示する。既定のtree出力に加えて`line`と`json`を提供する。lineは厳密に` -> `で接続する。root自身が非同期起点なら1nodeで終了し、到達不能なら成功結果として明示する。
+
+非同期起点は、宣言`async`、`Task`/`Task<T>`、`ValueTask`/`ValueTask<T>`、`UniTask`/`UniTask<T>`、`UniTaskVoid`、非同期stream、または登録済みawaitable型など、Roslynで得たdirect async roleに基づく。名前が`Async`で終わるだけでは起点にしない。非同期型の追加登録を可能にする拡張点は保持するが、未登録型を名前だけで推測しない。非同期ラムダも起点に含める。
+
+index時にsource-backed method/lambda間の解決済みinvocation逆辺を決定的に並べた複数始点BFSを実行し、`async_involvement_depth`と1つの`async_next_symbol_id`を保存する。起点はdepth 0かつnext nullである。未訪問またはより短い距離を見つけたときだけ更新し、同距離では最初に記録したnextを置換しない。metadata-only awaitableは起点にもpath nodeにも含めない。
+
+query時は再探索せず保存済みnext chainだけを反復的にたどる。各nodeは同一profileのsource-backed method/lambdaで正規化ソースを持ち、depthが1ずつ減少しなければならない。欠落ID、profile越境、cycle、非実行可能・source-less node、origin/non-origin状態の不整合はdatabase integrity errorとする。node上限を判定する前に取得済みnodeを検証する。
+
+`--max-nodes`の既定は500でrootを含み、正の値だけを許可する。打ち切った場合はtree/line/JSONのすべてでtruncationを明示する。
+
+## 33.6 呼び出し元グラフ
+
+`csindex callers tree <symbol>`は指定したsource-backed methodをrootとし、呼び出し元方向へprofile-scoped BFSを行う。rootのdepthは0、既定depthは3、`--depth 0`は深度無制限である。`--max-nodes`の既定は500でrootを含み、上限時は明示的にtruncateする。
+
+対象edgeは解決済みinvocationとobject creationで、nodeはsource-backed method/lambdaに限定する。metadata-only・外部libraryの定義と`System`/`System.*` namespaceを除外する。source有無は文書・assembly情報で判定し、名前空間文字列だけで外部と決めない。同一depthの候補はcanonical display name、source path、source start、symbol IDで全体sortしてからnode上限を適用する。
+
+nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界でもreverse edgeを読み、両端がすでに含まれるcycle/cross edgeは保持するが、より深いnodeは追加・enqueueしない。ラムダ内のcallはラムダ自身からのedgeとし、ownerへのedgeを合成しない。delegate `Invoke()`、event、callback、reflection、receiver data flow、runtime dispatchの実行位置は推論しない。
+
+既定のtree出力はspanning treeを表示し、必要なら`Additional edges:`でcycle/cross edgeを示す。Mermaidは`flowchart TD`、`n<symbol-id>`の安全なnode ID、escape済み表示名label、callerからcalleeへの矢印を使用する。JSONはprofile、root、node depth、unique edge、truncationを独立fieldで返す。tree、Mermaid、JSONは同じnode/edge集合を表現する。
+
+## 33.7 スキーマと更新の原子性
+
+schema version 4は、属性、method kind、owner、初期化子、return type、source presence、正規化ソース/hash、async depth/nextを`symbols`と関連tableへ保存する。自己参照する`containing_symbol_id`と`async_next_symbol_id`はsymbol rowのnumeric ID確定後に解決する。profile、kind、名前component、owner、async depth/next、source-backed executableを効率よく検索できるprofile-prefix indexを持つ。正確なDDLは`docs/DB_SCHEMA.md`を正式なschema定義とする。
+
+更新は1つのSQLite transactionで行い、全symbol row、自己参照、parameter/call/relation/interface binding/conditional symbolを保存して`PRAGMA foreign_key_check`に成功した場合だけcommitする。例外またはcancel時はrollbackして直前のindexを保持する。旧schema、未知schema、`schema_info`のない非空DBはWALやDDLを変更する前に拒否する。
+
+## 33.8 エラー契約
+
+次を区別して明示的なエラーにする。
+
+* profileが存在しない
+* schemaが古い、未知、または破損している
+* symbolが0件、または一意性が必要なcommandで複数件
+* 正規表現が不正、またはtimeoutした
+* depthが負、max node数が0以下、数値形式が不正
+* `source search`にinclude/excludeがない
+* wildcard/regex、legacy override search/extended searchなど、同時指定できないoptionの組み合わせ
+* 保存済み非同期pathの整合性違反
+
+一意性が必要なgraph rootが曖昧な場合はcanonical候補を安定順で列挙し、同じ表示名の候補にはdocument pathとsymbol IDを付ける。詳細なCLI文言と終了コードは`docs/CLI.md`を参照する。
+
+## 33.9 対象外と変更してはならない境界
+
+この拡張では、旧schemaのmigration、delegate `Invoke()`やevent/callbackの実行位置推論、ラムダ所有関係からのcall edge合成、外部libraryのdecompile/Source Link取得、完全なdynamic/virtual dispatch、reflectionによる呼び出し推論を行わない。
+
+実装は、循環安全、profile isolation、project-scoped source identity、決定的順序、途中cancel、transaction rollback、正規表現timeout、literal内のcomment marker保存、JSONの構造化field、全出力でのtruncation明示を維持しなければならない。
+
+## 33.10 受け入れ条件
+
+正式な受け入れ条件は`docs/TEST_PLAN.md`の「Symbol, source, and graph expansion acceptance matrix」に定める。少なくとも次の分類をすべて満たすこと。
+
+1. suffix、owner suffix、完全名、nested、同番号複数ownerのラムダ検索
+2. 関数・初期化子単位の採番、挿入時の局所的renumber、partial文書の区別
+3. 全実行可能宣言kindの属性保存、適用可能な署名表示、canonical JSON、short-name表示
+4. self async、最短経路、同距離の1経路、再index決定性、Task/ValueTask/UniTask、cycle、整合性検証、truncation
+5. caller BFS、depth 0、node上限、cycle/cross edge、外部除外、ラムダ所有、Mermaid
+6. exact、wildcard、component、regex、timeout、overload、別project同名symbol
+7. comment除去、literal保存、token境界、source show/search、名前+source条件、exclude-first OR、include AND、case mode
+
+各条件は汎用buildの成功だけで代用せず、条件を直接検証する自動テストへ対応付ける。
+
+## 33.11 実装依存順
+
+この機能群を変更するときは、原則として次の依存順を守る。
+
+1. DB schemaとdomain modelの拡張
+2. 関数属性、ラムダowner、正規化ソースの抽出
+3. ラムダ命名規則
+4. exact、wildcard、component、regex名前検索
+5. ソース表示・検索query
+6. 非同期最短距離とnext hopの生成・保存
+7. `async tree`とtree/line/JSON出力
+8. `callers tree`とtree/Mermaid/JSON出力
+9. `symbol find`へのソース条件と`--show-source`の統合
+10. CLI help、正式仕様、schema文書、決定記録の同期
+11. 統合、cycle、旧schema拒否、cancel、決定的順序の回帰テスト
+
+各段階で既存機能を含む関連テストを実行し、失敗を解消してから次へ進む。

@@ -1,5 +1,9 @@
 # 非同期関与情報 Implementation Plan
 
+> Historical implementation plan for the original distance-only feature.
+> Current schema v4 also persists one deterministic async next hop as specified
+> by DEC-0023 and `docs/SPEC.md` section 33.5.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Roslynで非同期ロールと呼び出し時の利用方法を抽出し、循環安全な呼び出し元方向の伝播結果をSQLiteと既存CLI出力へ追加する。
