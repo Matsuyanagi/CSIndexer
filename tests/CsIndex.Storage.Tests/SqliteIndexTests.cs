@@ -872,7 +872,7 @@ public sealed class SqliteIndexTests
             cancellationToken);
 
         Assert.Equal(
-            ["Local", "Nested lambda", "Outer lambda", "Root", "Same", "Same", "Same", "Unrelated"],
+            ["Local", "Nested lambda", "Outer lambda", "Root", "Same", "Same", "Same", "Sync involved", "Unrelated"],
             functions.Select(symbol => symbol.Name).Order());
         Assert.Equal(
             ["same-z-generated", "same-m-source-earlier", "same-a-source-later"],
@@ -881,8 +881,48 @@ public sealed class SqliteIndexTests
             ["Nested lambda", "Outer lambda"],
             lambdas.Select(symbol => symbol.Name).Order());
         Assert.Equal(
-            ["Nested lambda", "Outer lambda", "Root"],
+            ["Nested lambda", "Outer lambda", "Root", "Sync involved"],
             asyncInvolved.Select(symbol => symbol.Name).Order());
+    }
+
+    [Fact]
+    public async Task FindFunctionSymbolsAsync_FiltersDirectAsyncStatusAndComposesAsyncInvolved()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateLambdaCallSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+
+        var all = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            null,
+            AsyncStatusFilter.All,
+            false,
+            cancellationToken);
+        var async = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            null,
+            AsyncStatusFilter.Async,
+            false,
+            cancellationToken);
+        var syncInvolved = await repository.FindFunctionSymbolsAsync(
+            profile.Id,
+            null,
+            AsyncStatusFilter.Sync,
+            true,
+            cancellationToken);
+
+        Assert.Equal([1L, 2L, 3L, 4L, 7L, 6L, 5L, 8L, 9L], all.Select(symbol => symbol.Id));
+        Assert.Equal([3L, 4L], async.Select(symbol => symbol.Id));
+        Assert.Equal([2L, 8L], syncInvolved.Select(symbol => symbol.Id));
+        Assert.Contains(
+            syncInvolved,
+            symbol => symbol.Kind == IndexedSymbolKind.Method &&
+                      symbol.AsyncRole == AsyncRole.None &&
+                      symbol.AsyncInvolvementDepth is not null);
     }
 
     [Fact]
@@ -1931,10 +1971,27 @@ public sealed class SqliteIndexTests
             IsGenerated = true,
             GenerationKind = GenerationKind.FileName,
         });
-        AddSymbol("root", IndexedSymbolKind.Method, "Root", null, 0, "project|source", 0);
+        AddSymbol(
+            "root",
+            IndexedSymbolKind.Method,
+            "Root",
+            null,
+            0,
+            "project|source",
+            0,
+            AsyncRole.ReturnsAwaitable);
         AddSymbol("local", IndexedSymbolKind.Method, "Local", "root", null, "project|source", 10);
-        AddSymbol("outer", IndexedSymbolKind.Lambda, "Outer lambda", "local", 1, "project|source", 20);
+        AddSymbol(
+            "outer",
+            IndexedSymbolKind.Lambda,
+            "Outer lambda",
+            "local",
+            1,
+            "project|source",
+            20,
+            AsyncRole.ContainsAwait);
         AddSymbol("nested", IndexedSymbolKind.Lambda, "Nested lambda", "outer", 2, "project|generated", 30);
+        AddSymbol("sync-involved", IndexedSymbolKind.Method, "Sync involved", null, 1, "project|source", 35);
         AddSymbol("unrelated", IndexedSymbolKind.Method, "Unrelated", null, null, "project|source", 40);
         AddSymbol("same-z-generated", IndexedSymbolKind.Method, "Same", null, null, "project|generated", 100);
         AddSymbol("same-a-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|source", 110);
@@ -1954,7 +2011,8 @@ public sealed class SqliteIndexTests
             string? containingSymbolKey,
             int? asyncInvolvementDepth,
             string documentKey,
-            int sourceStart)
+            int sourceStart,
+            AsyncRole asyncRole = AsyncRole.None)
         {
             snapshot.Symbols[stableKey] = new SymbolData
             {
@@ -1966,6 +2024,7 @@ public sealed class SqliteIndexTests
                 FullyQualifiedName = name,
                 DisplayName = name,
                 ContainingSymbolKey = containingSymbolKey,
+                AsyncRole = asyncRole,
                 AsyncInvolvementDepth = asyncInvolvementDepth,
                 SourceDocumentKey = documentKey,
                 SourceStart = sourceStart,

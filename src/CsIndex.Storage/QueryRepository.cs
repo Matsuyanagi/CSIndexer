@@ -103,15 +103,31 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         long profileId,
         IndexedSymbolKind? kind,
         bool asyncInvolved,
+        CancellationToken cancellationToken = default) =>
+        await FindFunctionSymbolsAsync(
+            profileId,
+            kind,
+            AsyncStatusFilter.All,
+            asyncInvolved,
+            cancellationToken);
+
+    public async Task<IReadOnlyList<StoredSymbol>> FindFunctionSymbolsAsync(
+        long profileId,
+        IndexedSymbolKind? kind,
+        AsyncStatusFilter asyncStatus,
+        bool asyncInvolved,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = BuildSymbolSelect("""
             s.analysis_profile_id = $profile_id
+              AND s.kind IN ($method_kind, $lambda_kind)
+              AND ($kind IS NULL OR s.kind = $kind)
               AND (
-                  ($kind IS NOT NULL AND s.kind = $kind)
-                  OR ($kind IS NULL AND s.kind IN ($method_kind, $lambda_kind))
+                  $async_status = $all_async_status
+                  OR ($async_status = $async_status_async AND s.async_role <> 0)
+                  OR ($async_status = $async_status_sync AND s.async_role = 0)
               )
               AND ($async_involved = 0 OR s.async_involvement_depth IS NOT NULL)
             """) + """
@@ -121,6 +137,10 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
         command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+        command.Parameters.AddWithValue("$async_status", (int)asyncStatus);
+        command.Parameters.AddWithValue("$all_async_status", (int)AsyncStatusFilter.All);
+        command.Parameters.AddWithValue("$async_status_async", (int)AsyncStatusFilter.Async);
+        command.Parameters.AddWithValue("$async_status_sync", (int)AsyncStatusFilter.Sync);
         command.Parameters.AddWithValue("$async_involved", asyncInvolved);
         return await ReadSymbolsAsync(connection, command, cancellationToken);
     }

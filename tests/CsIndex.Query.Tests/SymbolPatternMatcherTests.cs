@@ -193,6 +193,26 @@ public sealed class SymbolPatternMatcherTests
     }
 
     [Fact]
+    public void AsyncStatus_MatchesDirectRoleForExecutableSymbols()
+    {
+        Assert.True(Matcher(AsyncStatusFilter.Async).IsMatch(Method(asyncRole: AsyncRole.ReturnsAwaitable)));
+        Assert.False(Matcher(AsyncStatusFilter.Async).IsMatch(Method(asyncRole: AsyncRole.None)));
+        Assert.True(Matcher(AsyncStatusFilter.Sync).IsMatch(Method(asyncRole: AsyncRole.None, depth: 1)));
+        Assert.True(Matcher(AsyncStatusFilter.Async).IsMatch(Lambda(asyncRole: AsyncRole.DeclaredAsync)));
+        Assert.False(Matcher(AsyncStatusFilter.Sync).IsMatch(Type(asyncRole: AsyncRole.None)));
+        Assert.True(Matcher(AsyncStatusFilter.All).IsMatch(Type(asyncRole: AsyncRole.None)));
+    }
+
+    [Fact]
+    public void KindAndAsyncStatus_AreCombinedWithAndSemantics()
+    {
+        var matcher = Matcher(AsyncStatusFilter.Async, IndexedSymbolKind.Method);
+
+        Assert.True(matcher.IsMatch(Method(asyncRole: AsyncRole.ReturnsAwaitable)));
+        Assert.False(matcher.IsMatch(Lambda(asyncRole: AsyncRole.ReturnsAwaitable)));
+    }
+
+    [Fact]
     public void RegexMode_LeavesRegexAsteriskAsRegexSyntax()
     {
         var matcher = new SymbolPatternMatcher(Request("^Tokyo\\.Gamer::P.*$", useRegex: true));
@@ -207,7 +227,8 @@ public sealed class SymbolPatternMatcherTests
         string? methodPattern = null,
         IndexedSymbolKind? kind = null,
         bool useRegex = false,
-        bool ignoreCase = false) => new(
+        bool ignoreCase = false,
+        AsyncStatusFilter asyncStatus = AsyncStatusFilter.All) => new(
         pattern,
         namespacePattern,
         typePattern,
@@ -217,14 +238,40 @@ public sealed class SymbolPatternMatcherTests
         ignoreCase,
         [],
         [],
-        ShowSource: false);
+        ShowSource: false,
+        AsyncStatus: asyncStatus);
+
+    private static SymbolPatternMatcher Matcher(
+        AsyncStatusFilter asyncStatus,
+        IndexedSymbolKind? kind = null) =>
+        new(Request(pattern: null, kind: kind, asyncStatus: asyncStatus));
+
+    private static StoredSymbol Method(AsyncRole asyncRole, int? depth = null) =>
+        Symbol("Tokyo.Gamer::Play()", asyncRole: asyncRole, depth: depth);
+
+    private static StoredSymbol Lambda(AsyncRole asyncRole, int? depth = null) =>
+        Symbol(
+            "Tokyo.Gamer::Play()::<lambda#1>",
+            kind: IndexedSymbolKind.Lambda,
+            name: "<lambda#1>",
+            asyncRole: asyncRole,
+            depth: depth);
+
+    private static StoredSymbol Type(AsyncRole asyncRole) =>
+        Symbol(
+            "Tokyo.Gamer",
+            kind: IndexedSymbolKind.Type,
+            name: "Gamer",
+            asyncRole: asyncRole);
 
     private static StoredSymbol Symbol(
         string displayName,
         IndexedSymbolKind kind = IndexedSymbolKind.Method,
         string namespaceName = "Tokyo",
         string? typeSimpleName = "Gamer",
-        string name = "Play") => new(
+        string name = "Play",
+        AsyncRole asyncRole = AsyncRole.None,
+        int? depth = null) => new(
         Id: 1,
         StableKey: "symbol-key",
         Kind: kind,
@@ -242,8 +289,8 @@ public sealed class SymbolPatternMatcherTests
         IsAbstract: false,
         IsVirtual: false,
         IsOverride: false,
-        AsyncRole: AsyncRole.None,
-        AsyncInvolvementDepth: null,
+        AsyncRole: asyncRole,
+        AsyncInvolvementDepth: depth,
         AsyncNextSymbolId: null,
         ReturnTypeKey: null,
         NormalizedSource: null,

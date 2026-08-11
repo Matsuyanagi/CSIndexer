@@ -15,6 +15,13 @@ public enum AsyncRole
     UsesAwaitUsing = 1 << 8,
 }
 
+public enum AsyncStatusFilter
+{
+    All = 0,
+    Async = 1,
+    Sync = 2,
+}
+
 public enum AsyncUsageKind
 {
     None = 0,

@@ -12,4 +12,5 @@ public sealed record SymbolSearchRequest(
     bool IgnoreCase,
     IReadOnlyList<string> Includes,
     IReadOnlyList<string> Excludes,
-    bool ShowSource);
+    bool ShowSource,
+    AsyncStatusFilter AsyncStatus = AsyncStatusFilter.All);
