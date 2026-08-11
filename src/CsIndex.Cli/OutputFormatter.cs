@@ -5,23 +5,47 @@ using CsIndex.Storage;
 
 namespace CsIndex.Cli;
 
-internal sealed class OutputFormatter(string format, bool shortNames = false)
+internal sealed class OutputFormatter
 {
-    private readonly bool _shortNames = shortNames;
+    private readonly TextWriter _diagnosticsWriter;
+    private readonly string _format;
+    private readonly bool _shortNames;
+    private readonly SourceLayout _sourceLayout;
+    private readonly TextWriter _writer;
 
-    private readonly string _format = format switch
+    public OutputFormatter(string format, bool shortNames = false)
+        : this(format, shortNames, SourceLayout.SingleLine, Console.Out, Console.Error)
     {
-        "table" or "json" => format,
-        _ => throw new CliUsageException(
-            $"Output format '{format}' is reserved but not implemented. Use table or json."),
-    };
+    }
+
+    public OutputFormatter(
+        string format,
+        bool shortNames,
+        SourceLayout sourceLayout,
+        TextWriter writer,
+        TextWriter diagnosticsWriter)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(diagnosticsWriter);
+
+        _format = format switch
+        {
+            "table" or "json" => format,
+            _ => throw new CliUsageException(
+                $"Output format '{format}' is reserved but not implemented. Use table or json."),
+        };
+        _shortNames = shortNames;
+        _sourceLayout = sourceLayout;
+        _writer = writer;
+        _diagnosticsWriter = diagnosticsWriter;
+    }
 
     public void WriteSymbols(QueryContext context, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = context.Profile.Name,
                 matched = SelectWithCancellation(
@@ -32,15 +56,26 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
+        if (_sourceLayout == SourceLayout.MultiLine)
+        {
+            WriteSymbolsMultiLine(context, cancellationToken);
+            return;
+        }
+
+        _diagnosticsWriter.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
         foreach (var symbol in context.MatchedSymbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine(
-                $"  {SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
-            if (context.ShowSource && symbol.NormalizedSource is not null)
+            var signature = FormatTableSignature(symbol);
+            var location = FormatDefinitionLocationField(symbol);
+            if (context.ShowSource)
             {
-                Console.WriteLine($"    source: {symbol.NormalizedSource}");
+                var source = TableTextSanitizer.Sanitize(symbol.NormalizedSource);
+                _writer.WriteLine($"{signature}\t{location}\t{source}");
+            }
+            else
+            {
+                _writer.WriteLine($"{signature}\t{location}");
             }
         }
     }
@@ -50,7 +85,7 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = result.Context.Profile.Name,
                 matched = SelectWithCancellation(
@@ -65,14 +100,14 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"{result.Definitions.Count} definition(s):");
+        _writer.WriteLine($"{result.Definitions.Count} definition(s):");
         foreach (var definition in result.Definitions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine($"  {SymbolSignatureFormatter.Format(definition, _shortNames)}{FormatDefinitionLocation(definition)}");
+            _writer.WriteLine($"  {SymbolSignatureFormatter.Format(definition, _shortNames)}{FormatDefinitionLocation(definition)}");
             if (definition.DocumentPath is null)
             {
-                Console.WriteLine($"    assembly: {definition.AssemblyName ?? "unknown"}; no source definition");
+                _writer.WriteLine($"    assembly: {definition.AssemblyName ?? "unknown"}; no source definition");
             }
         }
     }
@@ -82,7 +117,7 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = result.Context.Profile.Name,
                 matched = SelectWithCancellation(
@@ -124,34 +159,34 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"{result.Context.MatchedSymbols.Count} matched symbol(s); {result.Calls.Count} {heading}:");
+        _writer.WriteLine($"{result.Context.MatchedSymbols.Count} matched symbol(s); {result.Calls.Count} {heading}:");
         foreach (var call in result.Calls)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var point = SafeResolve(call.DocumentPath, call.SourceStart);
             var target = FormatName(call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName ?? call.UnresolvedName ?? "<unresolved>");
-            Console.WriteLine(
+            _writer.WriteLine(
                 $"  {point.Path}:{point.Line}:{point.Column}  {FormatName(call.CallerDisplayName)} -> {target} " +
                 $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]");
         }
 
         if (result.EffectiveCallers.Count > 0)
         {
-            Console.WriteLine("Callers:");
+            _writer.WriteLine("Callers:");
             foreach (var caller in result.EffectiveCallers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Console.WriteLine($"  {FormatName(caller.DisplayName)}");
+                _writer.WriteLine($"  {FormatName(caller.DisplayName)}");
             }
         }
 
         if (result.PossibleRuntimeTargets.Count > 0)
         {
-            Console.WriteLine("Possible runtime targets:");
+            _writer.WriteLine("Possible runtime targets:");
             foreach (var relation in result.PossibleRuntimeTargets)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Console.WriteLine($"  {FormatName(relation.SourceDisplayName)} [{relation.Kind}]");
+                _writer.WriteLine($"  {FormatName(relation.SourceDisplayName)} [{relation.Kind}]");
             }
         }
     }
@@ -161,7 +196,7 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = result.Context.Profile.Name,
                 matched = SelectWithCancellation(
@@ -181,11 +216,11 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"{result.Relations.Count} override(s):");
+        _writer.WriteLine($"{result.Relations.Count} override(s):");
         foreach (var relation in result.Relations)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine($"  {FormatName(relation.SourceDisplayName)} -> {FormatName(relation.TargetDisplayName)}");
+            _writer.WriteLine($"  {FormatName(relation.SourceDisplayName)} -> {FormatName(relation.TargetDisplayName)}");
         }
     }
 
@@ -194,7 +229,7 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = result.Profile.Name,
                 activeSymbols = result.Profile.PreprocessorSymbols,
@@ -212,13 +247,13 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"Profile: {result.Profile.Name}");
-        Console.WriteLine($"Active symbols: {string.Join(", ", result.Profile.PreprocessorSymbols)}");
-        Console.WriteLine("Conditional symbols found:");
+        _writer.WriteLine($"Profile: {result.Profile.Name}");
+        _writer.WriteLine($"Active symbols: {string.Join(", ", result.Profile.PreprocessorSymbols)}");
+        _writer.WriteLine("Conditional symbols found:");
         foreach (var symbol in result.Symbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine(
+            _writer.WriteLine(
                 $"  {symbol.SymbolName,-30} {symbol.FileCount,6} file(s)  " +
                 (symbol.IsDefined ? "defined" : "undefined"));
         }
@@ -282,6 +317,17 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         return $"  {point.Path}:{point.Line}:{point.Column}";
     }
 
+    private static string FormatDefinitionLocationField(StoredSymbol symbol)
+    {
+        if (symbol.DocumentPath is null || symbol.SourceStart is null)
+        {
+            return string.Empty;
+        }
+
+        var point = SafeResolve(symbol.DocumentPath, symbol.SourceStart.Value);
+        return TableTextSanitizer.Sanitize($"{point.Path}:{point.Line}:{point.Column}");
+    }
+
     private static string FormatAsyncAnalysis(StoredSymbol symbol)
     {
         if (symbol.AsyncRole == AsyncRole.None && symbol.AsyncInvolvementDepth is null)
@@ -309,7 +355,7 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
-            WriteJson(new
+            WriteJsonPayload(new
             {
                 profile = context.Profile.Name,
                 symbols = SelectWithCancellation(
@@ -320,15 +366,28 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
             return;
         }
 
-        Console.WriteLine($"{context.MatchedSymbols.Count} symbol(s):");
+        _diagnosticsWriter.WriteLine($"{context.MatchedSymbols.Count} symbol(s):");
         foreach (var symbol in context.MatchedSymbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine(
-                $"  {SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}");
-            if (context.ShowSource && symbol.NormalizedSource is not null)
+            _writer.WriteLine(FormatTableSignature(symbol));
+        }
+    }
+
+    private string FormatTableSignature(StoredSymbol symbol) => TableTextSanitizer.Sanitize(
+        $"{SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatAsyncAnalysis(symbol)}");
+
+    private void WriteSymbolsMultiLine(QueryContext context, CancellationToken cancellationToken)
+    {
+        _writer.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
+        foreach (var symbol in context.MatchedSymbols)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _writer.WriteLine(TableTextSanitizer.Sanitize(
+                $"  {SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}"));
+            if (context.ShowSource)
             {
-                Console.WriteLine($"    source: {symbol.NormalizedSource}");
+                _writer.WriteLine($"    source: {TableTextSanitizer.Sanitize(symbol.NormalizedSource)}");
             }
         }
     }
@@ -352,9 +411,17 @@ internal sealed class OutputFormatter(string format, bool shortNames = false)
         ? SymbolNameShortener.Shorten(name)
         : name;
 
-    internal static void WriteJson(object value) => Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions
+    private void WriteJsonPayload(object value) => WriteJson(value, _writer);
+
+    internal static void WriteJson(object value) => WriteJson(value, Console.Out);
+
+    internal static void WriteJson(object value, TextWriter writer)
     {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    }));
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        }));
+    }
 }

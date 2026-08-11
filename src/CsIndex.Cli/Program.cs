@@ -211,7 +211,7 @@ internal static class Program
         var parsed = ParseQueryArguments(
             args,
             "db", "profile", "output-format", "require-single", "short-names", "include-overrides", "namespace", "type",
-            "method", "kind", "async-status", "regex", "include", "exclude", "ignore-case", "show-source", "help");
+            "method", "kind", "async-status", "regex", "include", "exclude", "ignore-case", "show-source", "source-layout", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -232,6 +232,7 @@ internal static class Program
                 ExcludeHelpOption,
                 IgnoreCaseNameAndSourceHelpOption,
                 new HelpOption("--show-source", "Include normalized source in output"),
+                SourceLayoutHelpOption,
                 new HelpOption(
                     "--include-overrides",
                     "Include descendant overrides and interface implementations (exact method pattern only)"),
@@ -240,6 +241,7 @@ internal static class Program
         }
 
         var request = CreateSymbolSearchRequest(parsed);
+        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: request.ShowSource);
         var service = CreateQueryService(parsed);
         QueryContext result;
         if (parsed.HasFlag("include-overrides"))
@@ -275,7 +277,7 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
+        formatter.WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -346,7 +348,7 @@ internal static class Program
     private static async Task<int> RunSourceShowAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output-format", "kind", "async-status", "short-names", "help");
+            args, "db", "profile", "output-format", "kind", "async-status", "source-layout", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -357,17 +359,19 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                SourceLayoutHelpOption,
                 ShortNamesHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: true);
         var result = await CreateQueryService(parsed).ShowSourceAsync(
             RequireQuery(parsed),
             ParseFunctionTargetFilter(parsed),
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
+        formatter.WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -375,7 +379,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "include", "exclude", "ignore-case", "short-names", "help");
+            "db", "profile", "output-format", "kind", "async-status", "source-layout", "include", "exclude", "ignore-case", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -389,6 +393,7 @@ internal static class Program
                 IncludeHelpOption,
                 ExcludeHelpOption,
                 IgnoreCaseSourceHelpOption,
+                SourceLayoutHelpOption,
                 ShortNamesHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
@@ -406,6 +411,7 @@ internal static class Program
             throw new CliUsageException("source search requires at least one include or exclude condition.");
         }
 
+        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: true);
         var result = await CreateQueryService(parsed).SearchSourceAsync(
             includes,
             excludes,
@@ -413,7 +419,7 @@ internal static class Program
             ParseFunctionTargetFilter(parsed),
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
+        formatter.WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -861,8 +867,36 @@ internal static class Program
         return new SemanticQueryService(new SqliteIndex(databasePath).CreateQueryRepository());
     }
 
-    private static OutputFormatter CreateFormatter(CliArguments parsed) =>
-        new(parsed.GetSingle("output-format") ?? "table", parsed.HasFlag("short-names"));
+    private static OutputFormatter CreateFormatter(CliArguments parsed, bool sourceLayoutAllowed = false)
+    {
+        var outputFormat = parsed.GetSingle("output-format") ?? "table";
+        var sourceLayoutValue = parsed.GetSingle("source-layout");
+        var sourceLayout = ParseSourceLayout(sourceLayoutValue);
+        if (sourceLayoutValue is not null && !sourceLayoutAllowed)
+        {
+            throw new CliUsageException("--source-layout requires --show-source for symbol find.");
+        }
+
+        if (sourceLayoutValue is not null && outputFormat == "json")
+        {
+            throw new CliUsageException("--source-layout cannot be combined with --output-format json.");
+        }
+
+        return new OutputFormatter(
+            outputFormat,
+            parsed.HasFlag("short-names"),
+            sourceLayout,
+            Console.Out,
+            Console.Error);
+    }
+
+    private static SourceLayout ParseSourceLayout(string? value) => value switch
+    {
+        null or "single-line" => SourceLayout.SingleLine,
+        "multi-line" => SourceLayout.MultiLine,
+        _ => throw new CliUsageException(
+            $"Unknown source layout: {value}. Use single-line or multi-line."),
+    };
 
     private static string RequireQuery(CliArguments parsed)
     {
@@ -1035,6 +1069,8 @@ internal static class Program
               --exclude <text>             Reject normalized source text (repeatable)
               --ignore-case                Compare name and source filters without case sensitivity
               --show-source                Include normalized source in output
+              --source-layout single-line|multi-line
+                                          Source table layout (default: single-line)
 
             Async tree options:
               --output-format tree|line|json
@@ -1048,8 +1084,8 @@ internal static class Program
                                           Output format (default: tree)
 
             Source commands:
-              source show supports --output-format table|json
-              source search requires --include <text> or --exclude <text>
+              source show supports --output-format table|json and --source-layout single-line|multi-line
+              source search requires --include <text> or --exclude <text> and supports --source-layout single-line|multi-line
 
             Callees options:
               --exclude-lambda-calls       Exclude calls made by nested lambdas

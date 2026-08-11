@@ -386,6 +386,77 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task UnknownSourceLayoutListsEveryAllowedValue()
+    {
+        var result = await RunAsync(
+            "source", "show", "Alpha.AClass::Play()", "--source-layout", "compact");
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains(
+            "Argument error: Unknown source layout: compact. Use single-line or multi-line.",
+            result.StandardError);
+        Assert.Equal(string.Empty, result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task SourceLayoutRejectsJsonAndSymbolFindWithoutShowSource()
+    {
+        string[][] jsonCommands =
+        [
+            ["symbol", "find", "Alpha.AClass::Play()", "--show-source"],
+            ["source", "show", "Alpha.AClass::Play()"],
+            ["source", "search", "--include", "Play"],
+        ];
+        foreach (var command in jsonCommands)
+        {
+            var result = await RunAsync(
+                [.. command, "--source-layout", "single-line", "--output-format", "json"]);
+
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains(
+                "--source-layout cannot be combined with --output-format json.",
+                result.StandardError);
+            Assert.Equal(string.Empty, result.StandardOutput);
+        }
+
+        var missingShowSource = await RunAsync(
+            "symbol", "find", "Alpha.AClass::Play()", "--source-layout", "multi-line");
+
+        Assert.Equal(ExitCodes.InvalidArguments, missingShowSource.ExitCode);
+        Assert.Contains(
+            "--source-layout requires --show-source for symbol find.",
+            missingShowSource.StandardError);
+        Assert.Equal(string.Empty, missingShowSource.StandardOutput);
+    }
+
+    [Fact]
+    public async Task NonSourceCommandsRejectSourceLayoutAsUnknownOption()
+    {
+        string[][] commands =
+        [
+            ["index", "."],
+            ["symbol", "list"],
+            ["async", "tree", "Alpha.AsyncGraph::Start()"],
+            ["callers", "tree", "Alpha.CallerGraph::DirectTarget()"],
+            ["definition", "Alpha.AClass::Play()"],
+            ["references", "Alpha.AClass::Play()"],
+            ["callers", "Alpha.AClass::Play()"],
+            ["callees", "Alpha.AClass::Play()"],
+            ["overrides", "Alpha.BaseClass::Run()"],
+            ["conditions"],
+        ];
+
+        foreach (var command in commands)
+        {
+            var result = await RunAsync([.. command, "--source-layout", "single-line"]);
+
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains("Unknown option(s): --source-layout", result.StandardError);
+            Assert.Equal(string.Empty, result.StandardOutput);
+        }
+    }
+
+    [Fact]
     public async Task GraphCommandsValidateValuesRootsAndUnsupportedOptions()
     {
         await _fixture.BuildTask;
@@ -493,7 +564,8 @@ public sealed class CliCommandTests : IDisposable
     {
         await _fixture.BuildTask;
 
-        var shown = await RunAsync("source", "show", "Tokyo.Gamer::Play", "--db", _fixture.DatabasePath);
+        var shown = await RunAsync(
+            "source", "show", "Tokyo.Gamer::Play", "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
         var shownJson = await RunAsync(
             "source", "show", "Tokyo.Gamer::Play", "--output-format", "json", "--db", _fixture.DatabasePath);
         var searched = await RunAsync(
@@ -523,7 +595,8 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         const string lambdaQuery = "Tokyo.LambdaSearch::Function()::<lambda#1>";
-        var table = await RunAsync("source", "show", lambdaQuery, "--db", _fixture.DatabasePath);
+        var table = await RunAsync(
+            "source", "show", lambdaQuery, "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
         var json = await RunAsync(
             "source", "show", lambdaQuery, "--output-format", "json", "--db", _fixture.DatabasePath);
 
@@ -536,6 +609,90 @@ public sealed class CliCommandTests : IDisposable
         var lambda = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal(lambdaQuery, lambda.GetProperty("displayName").GetString());
         Assert.Equal("()=>LambdaMarker(\"first\")", lambda.GetProperty("normalizedSource").GetString());
+    }
+
+    [Fact]
+    public async Task SingleLineSymbolAndSourceCommandsEmitOnlyFixedSchemaRecordsAndDiagnosticSummaries()
+    {
+        await _fixture.BuildTask;
+
+        var find = await RunAsync(
+            "symbol", "find", "Alpha.AClass::Play()", "--db", _fixture.DatabasePath);
+        var findWithSource = await RunAsync(
+            "symbol", "find", "Alpha.AClass::Play()", "--show-source", "--source-layout", "single-line",
+            "--db", _fixture.DatabasePath);
+        var sourceShow = await RunAsync(
+            "source", "show", "Tokyo.Gamer::Play()", "--source-layout", "single-line", "--db", _fixture.DatabasePath);
+        var sourceSearch = await RunAsync(
+            "source", "search", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
+        var symbolList = await RunAsync("symbol", "list", "--db", _fixture.DatabasePath);
+        var zeroResults = await RunAsync(
+            "source", "search", "--include", "__source_layout_missing__", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, find.ExitCode);
+        var findLines = GetPhysicalLines(find.StandardOutput);
+        Assert.Single(findLines);
+        Assert.All(findLines, line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*$", line);
+            Assert.Equal(1, line.Count(character => character == '\t'));
+        });
+        Assert.Contains("Query matched 1 symbol(s):", find.StandardError);
+
+        Assert.Equal(ExitCodes.Success, findWithSource.ExitCode);
+        var findWithSourceLines = GetPhysicalLines(findWithSource.StandardOutput);
+        Assert.Single(findWithSourceLines);
+        Assert.All(findWithSourceLines, line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*\t[^\t]*$", line);
+            Assert.Equal(2, line.Count(character => character == '\t'));
+        });
+        Assert.Contains("Query matched 1 symbol(s):", findWithSource.StandardError);
+
+        Assert.Equal(ExitCodes.Success, sourceShow.ExitCode);
+        var sourceShowLines = GetPhysicalLines(sourceShow.StandardOutput);
+        Assert.Single(sourceShowLines);
+        Assert.All(sourceShowLines, line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*\t[^\t]*$", line);
+            Assert.Equal(2, line.Count(character => character == '\t'));
+        });
+        Assert.Contains("Query matched 1 symbol(s):", sourceShow.StandardError);
+
+        Assert.Equal(ExitCodes.Success, sourceSearch.ExitCode);
+        Assert.NotEmpty(GetPhysicalLines(sourceSearch.StandardOutput));
+        Assert.All(GetPhysicalLines(sourceSearch.StandardOutput), line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*\t[^\t]*$", line);
+            Assert.Equal(2, line.Count(character => character == '\t'));
+        });
+        Assert.Contains("Query matched", sourceSearch.StandardError);
+
+        Assert.Equal(ExitCodes.Success, symbolList.ExitCode);
+        Assert.NotEmpty(GetPhysicalLines(symbolList.StandardOutput));
+        Assert.All(GetPhysicalLines(symbolList.StandardOutput), line => Assert.DoesNotContain('\t', line));
+        Assert.Contains("symbol(s):", symbolList.StandardError);
+
+        Assert.Equal(ExitCodes.Success, zeroResults.ExitCode);
+        Assert.Equal(string.Empty, zeroResults.StandardOutput);
+        Assert.Contains("Query matched 0 symbol(s):", zeroResults.StandardError);
+    }
+
+    [Fact]
+    public async Task MultiLineSourceLayoutRetainsHeadingAndOnePhysicalSourceLine()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "source", "show", "Tokyo.Gamer::Play()", "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        var lines = GetPhysicalLines(result.StandardOutput);
+        Assert.Equal(3, lines.Length);
+        Assert.Equal("Query matched 1 symbol(s):", lines[0]);
+        Assert.StartsWith("  ", lines[1], StringComparison.Ordinal);
+        Assert.StartsWith("    source: ", lines[2], StringComparison.Ordinal);
+        Assert.Equal(string.Empty, result.StandardError);
     }
 
     [Fact]
@@ -653,6 +810,7 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("--output-format table|json", help);
         Assert.Contains("--kind all|method|lambda", help);
         Assert.Contains("--async-status all|async|sync", help);
+        Assert.Contains("--source-layout single-line|multi-line", help);
         Assert.DoesNotContain("--output table|json", help);
     }
 
@@ -736,6 +894,7 @@ public sealed class CliCommandTests : IDisposable
               --exclude <text>  Reject normalized source text (repeatable)
               --ignore-case  Compare name and source filters without case sensitivity
               --show-source  Include normalized source in output
+              --source-layout single-line|multi-line  Source table layout (default: single-line)
               --include-overrides  Include descendant overrides and interface implementations (exact method pattern only)
               --help  Show this help text
             """
@@ -781,6 +940,7 @@ public sealed class CliCommandTests : IDisposable
               --kind all|method|lambda  Limit function targets by kind (default: all)
               --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --output-format table|json  Output format (default: table)
+              --source-layout single-line|multi-line  Source table layout (default: single-line)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
             """
@@ -798,6 +958,7 @@ public sealed class CliCommandTests : IDisposable
               --include <text>  Require normalized source text (repeatable)
               --exclude <text>  Reject normalized source text (repeatable)
               --ignore-case  Compare source filters without case sensitivity
+              --source-layout single-line|multi-line  Source table layout (default: single-line)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
             """
@@ -805,18 +966,20 @@ public sealed class CliCommandTests : IDisposable
     };
 
     [Fact]
-    public async Task SymbolListDefaultsToMethodsAndLambdasWithLocationsAndAsyncAnnotations()
+    public async Task SymbolListDefaultsToMethodsAndLambdasAsSignatureOnlyRecords()
     {
         await _fixture.BuildTask;
 
         var result = await RunAsync("symbol", "list", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains("symbol(s):", result.StandardOutput);
+        Assert.DoesNotContain("symbol(s):", result.StandardOutput);
         Assert.Contains("Alpha.AClass::Play()", result.StandardOutput);
         Assert.Contains("<lambda#1>", result.StandardOutput);
-        Assert.Contains($"{_fixture.MainSourcePath}:", result.StandardOutput);
+        Assert.DoesNotContain($"{_fixture.MainSourcePath}:", result.StandardOutput);
         Assert.Contains("[async:", result.StandardOutput);
+        Assert.All(GetPhysicalLines(result.StandardOutput), line => Assert.DoesNotContain('\t', line));
+        Assert.Contains("symbol(s):", result.StandardError);
     }
 
     [Fact]
@@ -1179,6 +1342,10 @@ public sealed class CliCommandTests : IDisposable
             var padding = new string(' ', Math.Max(1, 28 - syntax.Length));
             return $"  {syntax}{padding}{line[(optionEnd + 2)..]}";
         }));
+
+    private static string[] GetPhysicalLines(string output) => output
+        .ReplaceLineEndings("\n")
+        .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
     private async Task AssertCommandSucceedsAsync(string[] command, params string[] options)
     {

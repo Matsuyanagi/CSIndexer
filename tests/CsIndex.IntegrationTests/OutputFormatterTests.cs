@@ -34,6 +34,234 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void WriteSymbolsSingleLineUsesFixedTwoFieldRecordsAndDiagnosticsWriter()
+    {
+        var sourceBacked = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 1,
+            displayName: "Example.SourceBacked()",
+            documentPath: "source\tfile.cs",
+            sourceStart: 0);
+        var metadataOnly = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 2,
+            displayName: "Example.MetadataOnly()");
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+            .WriteSymbols(
+                new QueryContext(CreateProfile(), [sourceBacked, metadataOnly]),
+                TestContext.Current.CancellationToken);
+
+        var lines = GetPhysicalLines(payload.ToString());
+        Assert.Equal(2, lines.Length);
+        Assert.All(lines, line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*$", line);
+            Assert.Equal(1, line.Count(character => character == '\t'));
+        });
+        Assert.Equal("Example.SourceBacked()\tsource file.cs:0:0", lines[0]);
+        Assert.Equal("Example.MetadataOnly()\t", lines[1]);
+        Assert.Equal($"Query matched 2 symbol(s):{Environment.NewLine}", diagnostics.ToString());
+    }
+
+    [Fact]
+    public void WriteSymbolsWithSourceSingleLineUsesFixedThreeFieldRecordsAndSanitizesDisplayText()
+    {
+        const string storedSource = "var raw=\"\"\"\r\nfirst\tline\rsecond\nthird\u0085fourth\u2028fifth\u2029sixth\r\n\"\"\";";
+        var sourceBacked = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 1,
+            displayName: "Example.Source\tBacked()",
+            normalizedSource: storedSource,
+            documentPath: "source.cs",
+            sourceStart: 0);
+        var metadataOnly = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 2,
+            displayName: "Example.MetadataOnly()");
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+            .WriteSymbols(
+                new QueryContext(CreateProfile(), [sourceBacked, metadataOnly], ShowSource: true),
+                TestContext.Current.CancellationToken);
+
+        var lines = GetPhysicalLines(payload.ToString());
+        Assert.Equal(2, lines.Length);
+        Assert.All(lines, line =>
+        {
+            Assert.Matches(@"^[^\t]+\t[^\t]*\t[^\t]*$", line);
+            Assert.Equal(2, line.Count(character => character == '\t'));
+        });
+        Assert.Equal(
+            "Example.Source Backed()\tsource.cs:0:0\tvar raw=\"\"\" first line second third fourth fifth sixth \"\"\";",
+            lines[0]);
+        Assert.Equal("Example.MetadataOnly()\t\t", lines[1]);
+        Assert.Equal($"Query matched 2 symbol(s):{Environment.NewLine}", diagnostics.ToString());
+    }
+
+    [Fact]
+    public void WriteSymbolListSingleLineWritesSignatureOnlyAndRoutesSummaryToDiagnostics()
+    {
+        var sourceBacked = CreateSymbol(
+            AsyncRole.DeclaredAsync,
+            asyncInvolvementDepth: 0,
+            id: 1,
+            displayName: "Example.SourceBacked()",
+            documentPath: "source.cs",
+            sourceStart: 0);
+        var metadataOnly = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 2,
+            displayName: "Example.MetadataOnly()");
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+            .WriteSymbolList(
+                new QueryContext(CreateProfile(), [sourceBacked, metadataOnly]),
+                TestContext.Current.CancellationToken);
+
+        var lines = GetPhysicalLines(payload.ToString());
+        Assert.Equal(2, lines.Length);
+        Assert.All(lines, line =>
+        {
+            Assert.Matches(@"^[^\t]+$", line);
+            Assert.DoesNotContain('\t', line);
+        });
+        Assert.Contains("async Example.SourceBacked() [async: DeclaredAsync; depth: 0]", lines);
+        Assert.Contains("Example.MetadataOnly()", lines);
+        Assert.DoesNotContain("source.cs", payload.ToString(), StringComparison.Ordinal);
+        Assert.Equal($"2 symbol(s):{Environment.NewLine}", diagnostics.ToString());
+    }
+
+    [Fact]
+    public void WriteSymbolsSingleLineWithNoResultsLeavesPayloadEmpty()
+    {
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+            .WriteSymbols(
+                new QueryContext(CreateProfile(), []),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(string.Empty, payload.ToString());
+        Assert.Equal($"Query matched 0 symbol(s):{Environment.NewLine}", diagnostics.ToString());
+    }
+
+    [Fact]
+    public void WriteSymbolsMultiLineRetainsHeadingAndOneSanitizedSignatureAndSourceLinePerResult()
+    {
+        const string storedSource = "var raw=\"\"\"\r\nfirst\tline\u2028second\r\n\"\"\";";
+        var sourceBacked = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 1,
+            displayName: "Example.Source\tBacked()",
+            normalizedSource: storedSource,
+            documentPath: "source.cs",
+            sourceStart: 0);
+        var metadataOnly = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 2,
+            displayName: "Example.Metadata\nOnly()");
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("table", false, SourceLayout.MultiLine, payload, diagnostics)
+            .WriteSymbols(
+                new QueryContext(CreateProfile(), [sourceBacked, metadataOnly], ShowSource: true),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            [
+                "Query matched 2 symbol(s):",
+                "  Example.Source Backed()  source.cs:0:0",
+                "    source: var raw=\"\"\" first line second \"\"\";",
+                "  Example.Metadata Only()",
+                "    source: ",
+            ],
+            GetPhysicalLines(payload.ToString()));
+        Assert.Equal(string.Empty, diagnostics.ToString());
+    }
+
+    [Fact]
+    public void TableTextSanitizerReplacesCrLfOnceAndEveryRecordBreakingCharacterWithAsciiSpace()
+    {
+        Assert.Equal(
+            "a b c d e f g h",
+            TableTextSanitizer.Sanitize("a\r\nb\tc\rd\ne\u0085f\u2028g\u2029h"));
+        Assert.Equal(string.Empty, TableTextSanitizer.Sanitize(null));
+    }
+
+    [Fact]
+    public void WriteSymbolsJsonUsesPayloadWriterAndPreservesUnsanitizedNormalizedSource()
+    {
+        const string storedSource = "var raw=\"\"\"\r\nfirst\tline\rsecond\nthird\u0085fourth\u2028fifth\u2029sixth\r\n\"\"\";";
+        var symbol = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            normalizedSource: storedSource,
+            documentPath: "source.cs",
+            sourceStart: 0);
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+
+        new OutputFormatter("json", false, SourceLayout.SingleLine, payload, diagnostics)
+            .WriteSymbols(
+                new QueryContext(CreateProfile(), [symbol], ShowSource: true),
+                TestContext.Current.CancellationToken);
+
+        using var document = JsonDocument.Parse(payload.ToString());
+        var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(storedSource, outputSymbol.GetProperty("normalizedSource").GetString());
+        Assert.Equal(string.Empty, diagnostics.ToString());
+    }
+
+    [Fact]
+    public void InjectedPayloadWriterReceivesEveryNonGraphFormatterFamily()
+    {
+        var symbol = CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null);
+        var context = new QueryContext(CreateProfile(), [symbol]);
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+        var formatter = new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics);
+
+        formatter.WriteDefinitions(
+            new DefinitionResult(context, [symbol]),
+            TestContext.Current.CancellationToken);
+        formatter.WriteCalls(
+            new CallResult(context, [CreateCall(AsyncUsageKind.None)], [], []),
+            "call(s)",
+            TestContext.Current.CancellationToken);
+        formatter.WriteRelations(new RelationResult(
+            context,
+            [new StoredRelation(1, "Example.Source()", 2, "Example.Target()", SymbolRelationKind.Overrides)]),
+            TestContext.Current.CancellationToken);
+        formatter.WriteConditions(new ConditionsResult(
+            CreateProfile(),
+            [new ConditionalSummary("FEATURE", 1, 2, IsDefined: true)]),
+            TestContext.Current.CancellationToken);
+
+        var output = payload.ToString();
+        Assert.Contains("1 definition(s):", output);
+        Assert.Contains("1 matched symbol(s); 1 call(s):", output);
+        Assert.Contains("1 override(s):", output);
+        Assert.Contains("Conditional symbols found:", output);
+        Assert.Equal(string.Empty, diagnostics.ToString());
+    }
+
+    [Fact]
     public void WriteSymbolsJsonShortensDisplayNameButPreservesCanonicalFields()
     {
         const string displayName = "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String)";
@@ -143,14 +371,17 @@ public sealed class OutputFormatterTests
 
         var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(hiddenContext));
         Assert.Equal(
-            "Query matched 2 symbol(s):" + Environment.NewLine +
-            "  public Tokyo.Gamer::.ctor(System.String)" + Environment.NewLine +
-            "  System.Int32 Tokyo.Gamer::Run()::<lambda#1>" + Environment.NewLine,
+            "public Tokyo.Gamer::.ctor(System.String)\t" + Environment.NewLine +
+            "System.Int32 Tokyo.Gamer::Run()::<lambda#1>\t" + Environment.NewLine,
             table);
         Assert.DoesNotContain("source:", table);
 
-        var shownTable = CaptureText(() => new OutputFormatter("table").WriteSymbols(
-            new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
+        var shownTable = CaptureText(() => new OutputFormatter(
+            "table",
+            false,
+            SourceLayout.MultiLine,
+            Console.Out,
+            Console.Error).WriteSymbols(new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
         Assert.Contains("source: public Gamer(string name){}", shownTable);
         Assert.Contains("source: ()=>42", shownTable);
 
@@ -227,11 +458,10 @@ public sealed class OutputFormatterTests
 
         var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
         Assert.Equal(
-            "Query matched 4 symbol(s):" + Environment.NewLine +
-            "  System.Int32 Test.A::Host()::Local()" + Environment.NewLine +
-            "  public System.Int32 Test.A::get_Value()" + Environment.NewLine +
-            "  public static Test.A Test.A::op_Addition(Test.A,Test.A)" + Environment.NewLine +
-            "  public static System.Int32 Test.A::op_Implicit(Test.A)" + Environment.NewLine,
+            "System.Int32 Test.A::Host()::Local()\t" + Environment.NewLine +
+            "public System.Int32 Test.A::get_Value()\t" + Environment.NewLine +
+            "public static Test.A Test.A::op_Addition(Test.A,Test.A)\t" + Environment.NewLine +
+            "public static System.Int32 Test.A::op_Implicit(Test.A)\t" + Environment.NewLine,
             table);
 
         using var json = CaptureJson(() => new OutputFormatter("json").WriteSymbols(context));
@@ -511,7 +741,7 @@ public sealed class OutputFormatterTests
         var output = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
 
         Assert.Equal(
-            $"Query matched 1 symbol(s):{Environment.NewLine}  {displayName}{Environment.NewLine}",
+            $"{displayName}\t{Environment.NewLine}",
             output);
     }
 
@@ -579,7 +809,7 @@ public sealed class OutputFormatterTests
         Assert.Contains(
             "Example.AsyncMethod() [async: DeclaredAsync, ReturnsAwaitable; depth: 0]",
             output);
-        Assert.Contains("  Example.SyncMethod()", output);
+        Assert.Contains("Example.SyncMethod()", output);
         Assert.DoesNotContain("Example.SyncMethod() [async:", output);
     }
 
@@ -595,6 +825,10 @@ public sealed class OutputFormatterTests
     }
 
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
+
+    private static string[] GetPhysicalLines(string output) => output
+        .ReplaceLineEndings("\n")
+        .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
     private static IEnumerable<CallerTreeNode> CancelBeforeYieldingNode(CancellationTokenSource cancellation)
     {
@@ -641,7 +875,9 @@ public sealed class OutputFormatterTests
         bool isStatic = false,
         string? returnTypeKey = null,
         string? normalizedSource = null,
-        int? accessibility = null) => new(
+        int? accessibility = null,
+        string? documentPath = null,
+        int? sourceStart = null) => new(
         Id: id,
         StableKey: $"symbol-{id}",
         Kind: kind,
@@ -665,9 +901,9 @@ public sealed class OutputFormatterTests
         ReturnTypeKey: returnTypeKey,
         NormalizedSource: normalizedSource,
         NormalizedSourceHash: null,
-        DocumentPath: null,
-        SourceStart: null,
-        SourceLength: null,
+        DocumentPath: documentPath,
+        SourceStart: sourceStart,
+        SourceLength: normalizedSource?.Length,
         IsGenerated: false,
         AssemblyName: null,
         Parameters: parameters ?? [],
