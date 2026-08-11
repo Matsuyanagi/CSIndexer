@@ -51,12 +51,32 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
         using var cancellation = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, eventArgs) =>
+        ConsoleCancelEventHandler cancellationHandler = (_, eventArgs) =>
         {
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
+        Console.CancelKeyPress += cancellationHandler;
+        try
+        {
+            return await RunAsync(
+                args,
+                cancellation.Token,
+                static (outputPath, databasePath) => OutputDestination.Create(outputPath, databasePath));
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancellationHandler;
+        }
+    }
 
+    internal static async Task<int> RunAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(outputDestinationFactory);
         if (args.Length == 0 || args[0] is "--help" or "-h" or "help")
         {
             WriteHelp();
@@ -67,25 +87,25 @@ internal static class Program
         {
             return args[0] switch
             {
-                "index" => await RunIndexAsync(args[1..], cancellation.Token),
+                "index" => await RunIndexAsync(args[1..], cancellationToken),
                 "symbol" when args.Length > 1 && args[1] == "list" =>
-                    await RunSymbolListAsync(args[2..], cancellation.Token),
+                    await RunSymbolListAsync(args[2..], cancellationToken, outputDestinationFactory),
                 "symbol" when args.Length > 1 && args[1] == "find" =>
-                    await RunSymbolAsync(args[2..], cancellation.Token),
+                    await RunSymbolAsync(args[2..], cancellationToken, outputDestinationFactory),
                 "async" when args.Length > 1 && args[1] == "tree" =>
-                    await RunAsyncTreeAsync(args[2..], cancellation.Token),
+                    await RunAsyncTreeAsync(args[2..], cancellationToken, outputDestinationFactory),
                 "callers" when args.Length > 1 && args[1] == "tree" =>
-                    await RunCallerTreeAsync(args[2..], cancellation.Token),
+                    await RunCallerTreeAsync(args[2..], cancellationToken, outputDestinationFactory),
                 "source" when args.Length > 1 && args[1] == "show" =>
-                    await RunSourceShowAsync(args[2..], cancellation.Token),
+                    await RunSourceShowAsync(args[2..], cancellationToken, outputDestinationFactory),
                 "source" when args.Length > 1 && args[1] == "search" =>
-                    await RunSourceSearchAsync(args[2..], cancellation.Token),
-                "definition" => await RunDefinitionAsync(args[1..], cancellation.Token),
-                "references" => await RunReferencesAsync(args[1..], cancellation.Token),
-                "callers" => await RunCallersAsync(args[1..], cancellation.Token),
-                "callees" => await RunCalleesAsync(args[1..], cancellation.Token),
-                "overrides" => await RunOverridesAsync(args[1..], cancellation.Token),
-                "conditions" => await RunConditionsAsync(args[1..], cancellation.Token),
+                    await RunSourceSearchAsync(args[2..], cancellationToken, outputDestinationFactory),
+                "definition" => await RunDefinitionAsync(args[1..], cancellationToken, outputDestinationFactory),
+                "references" => await RunReferencesAsync(args[1..], cancellationToken, outputDestinationFactory),
+                "callers" => await RunCallersAsync(args[1..], cancellationToken, outputDestinationFactory),
+                "callees" => await RunCalleesAsync(args[1..], cancellationToken, outputDestinationFactory),
+                "overrides" => await RunOverridesAsync(args[1..], cancellationToken, outputDestinationFactory),
+                "conditions" => await RunConditionsAsync(args[1..], cancellationToken, outputDestinationFactory),
                 _ => throw new CliUsageException($"Unknown command: {string.Join(' ', args)}"),
             };
         }
@@ -211,7 +231,10 @@ internal static class Program
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunSymbolAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunSymbolAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -262,7 +285,7 @@ internal static class Program
             }
         }
 
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         QueryContext result;
         if (parsed.HasFlag("include-overrides"))
@@ -288,12 +311,16 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteSymbols(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunAsyncTreeAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunAsyncTreeAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args, "db", "profile", "output-format", "output-file", "kind", "async-status", "max-nodes", "short-names", "help");
@@ -318,20 +345,24 @@ internal static class Program
         var query = RequireQuery(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
         var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var result = await CreateQueryService(parsed).FindAsyncPathAsync(
             query,
             filter,
             maxNodes,
             parsed.GetSingle("profile"),
             cancellationToken);
-        new GraphOutputFormatter(parsed.HasFlag("short-names"), destination.Writer)
-            .WriteAsyncPath(result, output, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => new GraphOutputFormatter(parsed.HasFlag("short-names"), writer)
+                .WriteAsyncPath(result, output, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunCallerTreeAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunCallerTreeAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args, "db", "profile", "output-format", "output-file", "kind", "async-status", "depth", "max-nodes", "short-names", "help");
@@ -358,7 +389,7 @@ internal static class Program
         var filter = ParseFunctionTargetFilter(parsed);
         var depth = ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3);
         var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var result = await CreateQueryService(parsed).FindCallerTreeAsync(
             query,
             filter,
@@ -366,13 +397,17 @@ internal static class Program
             maxNodes,
             parsed.GetSingle("profile"),
             cancellationToken);
-        new GraphOutputFormatter(parsed.HasFlag("short-names"), destination.Writer)
-            .WriteCallerTree(result, output, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => new GraphOutputFormatter(parsed.HasFlag("short-names"), writer)
+                .WriteCallerTree(result, output, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunSourceShowAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunSourceShowAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args, "db", "profile", "output-format", "output-file", "kind", "async-status", "source-layout", "short-names", "help");
@@ -396,18 +431,22 @@ internal static class Program
         var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
         var query = RequireQuery(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var result = await CreateQueryService(parsed).ShowSourceAsync(
             query,
             filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteSymbols(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunSourceSearchAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunSourceSearchAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -446,7 +485,7 @@ internal static class Program
 
         var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
         var filter = ParseFunctionTargetFilter(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var result = await CreateQueryService(parsed).SearchSourceAsync(
             includes,
             excludes,
@@ -454,12 +493,16 @@ internal static class Program
             filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteSymbols(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunSymbolListAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunSymbolListAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -488,7 +531,7 @@ internal static class Program
 
         var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.ListSymbolsAsync(
             filter.Kind,
@@ -497,12 +540,16 @@ internal static class Program
             parsed.GetSingle("profile"),
             cancellationToken);
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteSymbolList(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteSymbolList(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunDefinitionAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunDefinitionAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -550,7 +597,7 @@ internal static class Program
             query = RequireQuery(parsed);
         }
 
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         DefinitionResult result;
         if (at is not null)
@@ -576,12 +623,16 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteDefinitions(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteDefinitions(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunReferencesAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunReferencesAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -613,7 +664,7 @@ internal static class Program
         var filter = ParseFunctionTargetFilter(parsed);
         var query = RequireQuery(parsed);
         var generatedFilter = ParseGeneratedFilter(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.FindReferencesAsync(
             query,
@@ -627,12 +678,16 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "reference(s)", cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteCalls(result, "reference(s)", cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunCallersAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunCallersAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -680,7 +735,7 @@ internal static class Program
             "both" => CallerScope.Both,
             var value => throw new CliUsageException($"Unknown caller scope: {value}"),
         };
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.FindCallersAsync(
             query,
@@ -696,12 +751,19 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "caller call site(s)", cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteCalls(
+                result,
+                "caller call site(s)",
+                cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunCalleesAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunCalleesAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -734,7 +796,7 @@ internal static class Program
         var filter = ParseFunctionTargetFilter(parsed);
         var query = RequireQuery(parsed);
         var generatedFilter = ParseGeneratedFilter(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.FindCalleesAsync(
             query,
@@ -749,12 +811,16 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "callee call(s)", cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteCalls(result, "callee call(s)", cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunOverridesAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunOverridesAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(
             args,
@@ -779,7 +845,7 @@ internal static class Program
         var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
         var query = RequireQuery(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.FindOverridesAsync(
             query,
@@ -791,12 +857,16 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(formatterSettings, destination.Writer).WriteRelations(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteRelations(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunConditionsAsync(string[] args, CancellationToken cancellationToken)
+    private static async Task<int> RunConditionsAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
     {
         var parsed = ParseQueryArguments(args, "db", "profile", "output-format", "output-file", "help");
         if (parsed.HasFlag("help"))
@@ -818,11 +888,12 @@ internal static class Program
         }
 
         var formatterSettings = ParseOutputFormatterSettings(parsed);
-        using var destination = CreateOutputDestination(parsed);
+        using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var service = CreateQueryService(parsed);
         var result = await service.GetConditionsAsync(parsed.GetSingle("profile"), cancellationToken);
-        CreateFormatter(formatterSettings, destination.Writer).WriteConditions(result, cancellationToken);
-        destination.Commit();
+        destination.WritePayload(
+            writer => CreateFormatter(formatterSettings, writer).WriteConditions(result, cancellationToken),
+            cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -946,8 +1017,10 @@ internal static class Program
     private static string GetDatabasePath(CliArguments parsed) =>
         parsed.GetSingle("db") ?? Path.Combine(Environment.CurrentDirectory, ".csindex", "index.sqlite");
 
-    private static OutputDestination CreateOutputDestination(CliArguments parsed) =>
-        OutputDestination.Create(parsed.GetSingle("output-file"), GetDatabasePath(parsed));
+    private static OutputDestination CreateOutputDestination(
+        CliArguments parsed,
+        Func<string?, string, OutputDestination> outputDestinationFactory) =>
+        outputDestinationFactory(parsed.GetSingle("output-file"), GetDatabasePath(parsed));
 
     private static OutputFormatterSettings ParseOutputFormatterSettings(
         CliArguments parsed,

@@ -156,6 +156,91 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task OutputFileFormatValidationFailurePreservesSentinelWithoutOpeningTemporaryFile()
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory("format-validation");
+        var outputPath = Path.Combine(directory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        var result = await RunAsync(
+            "conditions", "--output-format", "xml", "--output-file", outputPath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.StartsWith("Argument error: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Fact]
+    public async Task OutputFileDatabaseFailurePreservesSentinelWithoutOpeningTemporaryFile()
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory("database-failure");
+        var outputPath = Path.Combine(directory, "result.txt");
+        var missingDatabasePath = Path.Combine(directory, "missing.sqlite");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        var result = await RunAsync(
+            "conditions", "--output-file", outputPath, "--db", missingDatabasePath);
+
+        Assert.Equal(ExitCodes.DatabaseFailure, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.StartsWith("Database error: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Fact]
+    public async Task OutputFileRequireSingleFailurePreservesSentinelWithoutOpeningTemporaryFile()
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory("require-single");
+        var outputPath = Path.Combine(directory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        var result = await RunAsync(
+            "symbol", "find", "Alpha.AsyncOverride*::Run()", "--require-single",
+            "--output-file", outputPath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.RequireSingleFailure, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Contains("--require-single expected one symbol", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Fact]
+    public async Task OutputFileFinalRecordCancellationPreservesSentinelAndReportsCancellation()
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory("final-write-cancellation");
+        var outputPath = Path.Combine(directory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+        using var cancellation = new CancellationTokenSource();
+
+        var result = await RunWithOutputDestinationFactoryAsync(
+            [
+                "symbol", "find", "Alpha.AsyncPlayer::Sync()",
+                "--output-file", outputPath,
+                "--db", _fixture.DatabasePath,
+            ],
+            cancellation.Token,
+            (requestedOutputPath, databasePath) => OutputDestination.Create(
+                requestedOutputPath,
+                databasePath,
+                stream => new CancelAfterFirstLineTextWriter(stream, cancellation)));
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(ExitCodes.AnalysisFailure, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Contains("Operation was cancelled.", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Fact]
     public async Task OutputFileEqualToDatabaseIsRejectedBeforeTheDatabaseCanChange()
     {
         await _fixture.BuildTask;
@@ -169,6 +254,78 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(databaseBefore, File.ReadAllBytes(_fixture.DatabasePath));
 
         var stillQueryable = await RunAsync("conditions", "--db", _fixture.DatabasePath);
+        Assert.Equal(ExitCodes.Success, stillQueryable.ExitCode);
+    }
+
+    [Theory]
+    [InlineData("trailing-separator")]
+    [InlineData("extended-drive")]
+    [InlineData("device-drive")]
+    public async Task OutputFileDatabaseAliasesAreRejectedBeforeTheDatabaseCanChange(string aliasKind)
+    {
+        await _fixture.BuildTask;
+        if (!OperatingSystem.IsWindows() && aliasKind != "trailing-separator")
+        {
+            Assert.Skip("Windows device-path aliases are only available on Windows.");
+        }
+
+        var directory = Path.Combine(_fixture.RootPath, $"database-alias-{aliasKind}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var databasePath = Path.Combine(directory, "index.sqlite");
+        File.Copy(_fixture.DatabasePath, databasePath);
+        var databaseBefore = File.ReadAllBytes(databasePath);
+        var databaseArgument = aliasKind == "trailing-separator"
+            ? databasePath + Path.DirectorySeparatorChar
+            : databasePath;
+        var outputArgument = aliasKind switch
+        {
+            "extended-drive" => $@"\\?\{databasePath}",
+            "device-drive" => $@"\\.\{databasePath}",
+            _ => databasePath,
+        };
+
+        var rejected = await RunAsync(
+            "conditions", "--output-file", outputArgument, "--db", databaseArgument);
+
+        Assert.Equal(ExitCodes.InvalidArguments, rejected.ExitCode);
+        Assert.Equal(string.Empty, rejected.StandardOutput);
+        Assert.StartsWith("Argument error: ", rejected.StandardError, StringComparison.Ordinal);
+        Assert.Contains("must not match the active database path", rejected.StandardError, StringComparison.Ordinal);
+        Assert.Equal(databaseBefore, File.ReadAllBytes(databasePath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+
+        var stillQueryable = await RunAsync("conditions", "--db", databasePath);
+        Assert.Equal(ExitCodes.Success, stillQueryable.ExitCode);
+    }
+
+    [Fact]
+    public async Task OutputFileExtendedUncAliasIsRejectedWhenTheTestDatabaseUsesUncStorage()
+    {
+        await _fixture.BuildTask;
+        var fixtureDatabasePath = Path.GetFullPath(_fixture.DatabasePath);
+        if (!OperatingSystem.IsWindows() || !fixtureDatabasePath.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            Assert.Skip("An accessible UNC test root is required for the extended UNC alias case.");
+        }
+
+        var directory = Path.Combine(_fixture.RootPath, $"database-alias-extended-unc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var databasePath = Path.Combine(directory, "index.sqlite");
+        File.Copy(_fixture.DatabasePath, databasePath);
+        var databaseBefore = File.ReadAllBytes(databasePath);
+        var extendedOutputPath = $@"\\?\UNC\{databasePath[2..]}";
+
+        var rejected = await RunAsync(
+            "conditions", "--output-file", extendedOutputPath, "--db", databasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, rejected.ExitCode);
+        Assert.Equal(string.Empty, rejected.StandardOutput);
+        Assert.StartsWith("Argument error: ", rejected.StandardError, StringComparison.Ordinal);
+        Assert.Contains("must not match the active database path", rejected.StandardError, StringComparison.Ordinal);
+        Assert.Equal(databaseBefore, File.ReadAllBytes(databasePath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+
+        var stillQueryable = await RunAsync("conditions", "--db", databasePath);
         Assert.Equal(ExitCodes.Success, stillQueryable.ExitCode);
     }
 
@@ -1548,6 +1705,16 @@ public sealed class CliCommandTests : IDisposable
             .Split('\n', StringSplitOptions.None);
     }
 
+    private static string[] FindOutputTemporaryFiles(string directory) =>
+        Directory.GetFiles(directory, ".*.tmp", SearchOption.TopDirectoryOnly);
+
+    private string CreateOutputFailureDirectory(string name)
+    {
+        var directory = Path.Combine(_fixture.RootPath, $"{name}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
     private async Task AssertCommandSucceedsAsync(string[] command, params string[] options)
     {
         var args = command.Concat(options).Concat(["--db", _fixture.DatabasePath]).ToArray();
@@ -1575,6 +1742,58 @@ public sealed class CliCommandTests : IDisposable
         {
             Console.SetOut(originalOutput);
             Console.SetError(originalError);
+        }
+    }
+
+    private static async Task<CommandResult> RunWithOutputDestinationFactoryAsync(
+        string[] args,
+        CancellationToken cancellationToken,
+        Func<string?, string, OutputDestination> outputDestinationFactory)
+    {
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            Console.SetError(error);
+            var exitCode = await Program.RunAsync(args, cancellationToken, outputDestinationFactory);
+            return new CommandResult(exitCode, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+        }
+    }
+
+    private sealed class CancelAfterFirstLineTextWriter(
+        Stream stream,
+        CancellationTokenSource cancellation) : TextWriter
+    {
+        private readonly StreamWriter _writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public override Encoding Encoding => _writer.Encoding;
+
+        public override void WriteLine(string? value)
+        {
+            _writer.WriteLine(value);
+            cancellation.Cancel();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _writer.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 

@@ -594,7 +594,7 @@ public sealed class OutputFormatterTests
         using (var destination = OutputDestination.Create(outputPath, databasePath))
         {
             destination.Writer.WriteLine("結果 payload");
-            destination.Commit();
+            destination.Commit(TestContext.Current.CancellationToken);
         }
 
         var bytes = File.ReadAllBytes(outputPath);
@@ -648,7 +648,7 @@ public sealed class OutputFormatterTests
             Environment.CurrentDirectory = directory.Path;
             using var destination = OutputDestination.Create("relative.txt", databasePath);
             destination.Writer.Write("relative payload");
-            destination.Commit();
+            destination.Commit(TestContext.Current.CancellationToken);
         }
         finally
         {
@@ -671,6 +671,20 @@ public sealed class OutputFormatterTests
 
         Assert.Equal("database sentinel", File.ReadAllText(databasePath));
         Assert.Equal([databasePath], Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public void OutputDestinationRejectsEquivalentWindowsExtendedUncComparisonPathWithoutAccessingTheShare()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Windows extended UNC syntax is only available on Windows.");
+        }
+
+        const string databasePath = @"\\server\share\folder\index.sqlite";
+        const string equivalentOutputPath = @"\\?\UNC\server\share\folder\index.sqlite";
+
+        Assert.Throws<CliUsageException>(() => OutputDestination.Create(equivalentOutputPath, databasePath));
     }
 
     [Fact]
@@ -699,7 +713,7 @@ public sealed class OutputFormatterTests
             using (var destination = OutputDestination.Create(outputPath: null, databasePath: "index.sqlite"))
             {
                 destination.Writer.WriteLine("payload");
-                destination.Commit();
+                destination.Commit(TestContext.Current.CancellationToken);
             }
 
             Console.Out.WriteLine("after dispose");
@@ -737,6 +751,344 @@ public sealed class OutputFormatterTests
         }
 
         Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationCommitCancellationBeforeFlushPreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        using var cancellation = new CancellationTokenSource();
+        TrackingFlushTextWriter? trackingWriter = null;
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => trackingWriter = new TrackingFlushTextWriter(stream)))
+        {
+            destination.Writer.Write("complete payload");
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => destination.Commit(cancellation.Token));
+            Assert.Equal(0, Assert.IsType<TrackingFlushTextWriter>(trackingWriter).FlushCount);
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationCommitCancellationDuringFlushPreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        using var cancellation = new CancellationTokenSource();
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new FlushCancellingTextWriter(stream, cancellation)))
+        {
+            destination.Writer.Write("complete payload");
+
+            Assert.Throws<OperationCanceledException>(() => destination.Commit(cancellation.Token));
+            Assert.True(cancellation.IsCancellationRequested);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationSuccessfulCommitIsIdempotentAndWriterCannotReopenIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        using var cancellation = new CancellationTokenSource();
+
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            destination.Writer.Write("committed payload");
+            destination.Commit(TestContext.Current.CancellationToken);
+            cancellation.Cancel();
+
+            destination.Commit(cancellation.Token);
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.Equal("committed payload", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationFailedCommitCannotBeRetriedOrReopened()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            destination.Writer.Write("replacement payload");
+            using (File.Open(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Assert.Throws<OutputException>(destination.Commit);
+            }
+
+            Assert.Throws<InvalidOperationException>(destination.Commit);
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationWriterCannotBeReusedAfterWriteFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new WriteThenThrowTextWriter(stream)))
+        {
+            Assert.Throws<OutputException>(() => destination.Writer.WriteLine("partial payload"));
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+            Assert.Throws<InvalidOperationException>(destination.Commit);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationCancellationRemainsPrimaryWhenAbortDisposeAlsoFails()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        using var cancellation = new CancellationTokenSource();
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new DisposeThrowingTextWriter(stream)))
+        {
+            var exception = Assert.Throws<OperationCanceledException>(() => destination.WritePayload(writer =>
+            {
+                writer.Write("final payload");
+                cancellation.Cancel();
+            }, cancellation.Token));
+
+            AssertCleanupFailure(exception, "Forced dispose failure.");
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationFormatterFailureRemainsPrimaryWhenAbortDisposeAlsoFails()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        var formatterFailure = new InvalidOperationException("Forced formatter failure.");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new DisposeThrowingTextWriter(stream)))
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() => destination.WritePayload(writer =>
+            {
+                writer.Write("partial payload");
+                throw formatterFailure;
+            }, TestContext.Current.CancellationToken));
+
+            Assert.Same(formatterFailure, exception);
+            AssertCleanupFailure(exception, "Forced dispose failure.");
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationWriteFailureRemainsPrimaryWhenAbortDisposeAlsoFails()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new WriteAndDisposeThrowingTextWriter(stream)))
+        {
+            var exception = Assert.Throws<OutputException>(() => destination.WritePayload(
+                writer => writer.WriteLine("partial payload"),
+                TestContext.Current.CancellationToken));
+
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("Forced write failure.", exception.Message, StringComparison.Ordinal);
+            AssertCleanupFailure(exception, "Forced dispose failure.");
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationCommitFailureRemainsPrimaryWhenAbortDisposeAlsoFails()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new FlushAndDisposeThrowingTextWriter(stream)))
+        {
+            destination.Writer.Write("partial payload");
+            var exception = Assert.Throws<OutputException>(() =>
+                destination.Commit(TestContext.Current.CancellationToken));
+
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("Forced flush failure.", exception.Message, StringComparison.Ordinal);
+            AssertCleanupFailure(exception, "Forced dispose failure.");
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationRetriesTemporaryNameCollisionWithoutDeletingTheExistingCandidate()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        var collisionPath = Path.Combine(directory.Path, ".result.txt.collision.tmp");
+        var ownedTemporaryPath = Path.Combine(directory.Path, ".result.txt.owned.tmp");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        File.WriteAllText(collisionPath, "collision sentinel");
+        var candidates = new Queue<string>([collisionPath, ownedTemporaryPath]);
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            CreateUtf8Writer,
+            _ => candidates.Dequeue()))
+        {
+            destination.Writer.Write("replacement payload");
+            destination.Commit(TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal("replacement payload", File.ReadAllText(outputPath));
+        Assert.Equal("collision sentinel", File.ReadAllText(collisionPath));
+        Assert.False(File.Exists(ownedTemporaryPath));
+        Assert.Equal(
+            [collisionPath, databasePath, outputPath],
+            Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationBoundsTemporaryNameCollisionRetriesWithoutTakingOwnership()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        var collisionPath = Path.Combine(directory.Path, ".result.txt.collision.tmp");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        File.WriteAllText(collisionPath, "collision sentinel");
+        var attempts = 0;
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            CreateUtf8Writer,
+            _ =>
+            {
+                attempts++;
+                return collisionPath;
+            }))
+        {
+            Assert.Throws<OutputException>(() => _ = destination.Writer);
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.InRange(attempts, 2, 32);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal("collision sentinel", File.ReadAllText(collisionPath));
+        Assert.Equal(
+            [collisionPath, databasePath, outputPath],
+            Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("throw")]
+    public void OutputDestinationWriterFactoryFailureIsAnOutputErrorAndCleansOnlyOwnedTemporaryFile(
+        string failureKind)
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        var ownedTemporaryPath = Path.Combine(directory.Path, ".result.txt.owned.tmp");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            _ => failureKind == "null"
+                ? null!
+                : throw new InvalidOperationException("Forced writer factory failure."),
+            _ => ownedTemporaryPath))
+        {
+            var exception = Assert.Throws<OutputException>(() => _ = destination.Writer);
+
+            Assert.IsType<InvalidOperationException>(exception.InnerException);
+            Assert.Contains(
+                failureKind == "null" ? "returned null" : "Forced writer factory failure.",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.False(File.Exists(ownedTemporaryPath));
         Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
     }
 
@@ -1219,6 +1571,19 @@ public sealed class OutputFormatterTests
         }
     }
 
+    private static void AssertCleanupFailure(Exception primaryFailure, string expectedMessage)
+    {
+        var cleanupFailure = Assert.IsAssignableFrom<Exception>(
+            primaryFailure.Data["OutputDestination.CleanupFailure"]);
+        Assert.Contains(expectedMessage, cleanupFailure.ToString(), StringComparison.Ordinal);
+    }
+
+    private static TextWriter CreateUtf8Writer(Stream stream) => new StreamWriter(
+        stream,
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        bufferSize: 1024,
+        leaveOpen: true);
+
     private sealed class CancelAfterFirstReadList<T>(IReadOnlyList<T> values, CancellationTokenSource cancellation)
         : IReadOnlyList<T>
     {
@@ -1294,6 +1659,111 @@ public sealed class OutputFormatterTests
 
             base.Dispose(disposing);
         }
+    }
+
+    private sealed class FlushCancellingTextWriter(
+        Stream stream,
+        CancellationTokenSource cancellation) : TextWriter
+    {
+        private readonly StreamWriter _writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public override Encoding Encoding => _writer.Encoding;
+
+        public override void Write(string? value) => _writer.Write(value);
+
+        public override void Flush()
+        {
+            _writer.Flush();
+            cancellation.Cancel();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _writer.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class TrackingFlushTextWriter(Stream stream) : TextWriter
+    {
+        private readonly StreamWriter _writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public int FlushCount { get; private set; }
+
+        public override Encoding Encoding => _writer.Encoding;
+
+        public override void Write(string? value) => _writer.Write(value);
+
+        public override void Flush()
+        {
+            FlushCount++;
+            _writer.Flush();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _writer.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private class DisposeThrowingTextWriter(Stream stream) : TextWriter
+    {
+        protected readonly StreamWriter Writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public override Encoding Encoding => Writer.Encoding;
+
+        public override void Write(string? value) => Writer.Write(value);
+
+        public override void WriteLine(string? value) => Writer.WriteLine(value);
+
+        public override void Flush() => Writer.Flush();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                Writer.Dispose();
+                throw new IOException("Forced dispose failure.");
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class WriteAndDisposeThrowingTextWriter(Stream stream) : DisposeThrowingTextWriter(stream)
+    {
+        public override void WriteLine(string? value)
+        {
+            Writer.WriteLine(value);
+            Writer.Flush();
+            throw new IOException("Forced write failure.");
+        }
+    }
+
+    private sealed class FlushAndDisposeThrowingTextWriter(Stream stream) : DisposeThrowingTextWriter(stream)
+    {
+        public override void Flush() => throw new IOException("Forced flush failure.");
     }
 
     private sealed class TemporaryDirectory : IDisposable
