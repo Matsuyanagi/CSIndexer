@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using CsIndex.Core.Analysis;
+using CsIndex.Core.Caching;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -128,6 +129,47 @@ class C
         Assert.Contains("$$\"\"\"{{value is int rawItem}}\"\"\"", result.Text, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("void M(string[] args) { }", "string[]args")]
+    [InlineData("void M(int[,] matrix) { }", "int[,]matrix")]
+    [InlineData("void M(int[][] values) { }", "int[][]values")]
+    [InlineData("void M(string?[] items) { }", "string?[]items")]
+    public void Normalize_OmitsZeroWidthArrayRankTokensFromSeparatorDecisions(
+        string member,
+        string expectedFragment)
+    {
+        var result = NormalizeMember(member);
+
+        Assert.Contains(expectedFragment, result.Text, StringComparison.Ordinal);
+        Assert.Equal(HashUtilities.Sha256(result.Text), result.Hash);
+    }
+
+    [Theory]
+    [InlineData("void M() { var values = new int[length + 1]; }", "new int[length+1]")]
+    [InlineData("[Obsolete] void M() { }", "[Obsolete]void M(){}")]
+    [InlineData("int this[int index] => index;", "this[int index]=>index;")]
+    [InlineData("List<int> values = [1, 2, 3];", "List<int>values=[1,2,3];")]
+    public void Normalize_PreservesNonArrayBracketForms(string member, string expectedFragment)
+    {
+        var result = NormalizeMember(member);
+
+        Assert.Contains(expectedFragment, result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Normalize_PreservesLiteralBracketTextWhileRemovingComments()
+    {
+        const string member =
+            "void M(){var interpolated=$\"[{1}]\";var raw=\"\"\"[kept]\"\"\";/*drop*/var value=1;//drop\n}";
+
+        var result = NormalizeMember(member);
+
+        Assert.Contains("$\"[{1}]\"", result.Text, StringComparison.Ordinal);
+        Assert.Contains("\"\"\"[kept]\"\"\"", result.Text, StringComparison.Ordinal);
+        Assert.Contains("var value=1;", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("drop", result.Text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void NormalizeTokens_ObservesCancellationAfterEnumerationHasStarted()
     {
@@ -178,5 +220,18 @@ class C
                 cancellation.Cancel();
             }
         }
+    }
+
+    private static NormalizedSourceData NormalizeMember(string member)
+    {
+        var root = CSharpSyntaxTree.ParseText(
+                $"class C {{ {member} }}",
+                cancellationToken: TestContext.Current.CancellationToken)
+            .GetRoot(TestContext.Current.CancellationToken);
+        var node = root.DescendantNodes()
+            .OfType<MemberDeclarationSyntax>()
+            .Single(candidate => candidate is not ClassDeclarationSyntax);
+
+        return SourceNormalizer.Normalize(node, TestContext.Current.CancellationToken);
     }
 }

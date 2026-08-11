@@ -8,6 +8,7 @@ public static class RequestHasher
 {
     public const string ToolVersion = "0.1.0";
     public const int SchemaVersion = 4;
+    public const int AnalysisCacheVersion = 2;
 
     public static byte[] Build(ResolvedInput input, IndexOptions options)
     {
@@ -15,6 +16,7 @@ public static class RequestHasher
         {
             ToolVersion,
             SchemaVersion,
+            AnalysisCacheVersion,
             InputMode = input.Mode.ToString(),
             Configuration = options.Configuration,
             TargetFramework = options.TargetFramework,

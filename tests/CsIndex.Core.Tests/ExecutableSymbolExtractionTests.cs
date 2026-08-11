@@ -99,6 +99,27 @@ public sealed class ExecutableSymbolExtractionTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_PersistsNormalizedArrayRankTextAndHash()
+    {
+        const string source = """
+            namespace Test;
+
+            public sealed class ArrayHost
+            {
+                public string?[] Build(string?[] items) => items;
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("ArrayHost.cs", source));
+
+        var build = Find(snapshot, "Build");
+        var normalizedSource = Assert.IsType<string>(build.NormalizedSource);
+        var normalizedSourceHash = Assert.IsType<byte[]>(build.NormalizedSourceHash);
+        Assert.Contains("string?[]Build(string?[]items)", normalizedSource, StringComparison.Ordinal);
+        Assert.Equal(HashUtilities.Sha256(normalizedSource), normalizedSourceHash);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment()
     {
         const string declarations = """

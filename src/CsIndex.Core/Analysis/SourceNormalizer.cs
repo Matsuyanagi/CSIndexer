@@ -32,6 +32,11 @@ public static class SourceNormalizer
         foreach (var token in tokens)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (token.IsMissing || token.Text.Length == 0)
+            {
+                continue;
+            }
+
             if (previous is { } preceding &&
                 RequiresSeparator(preceding, token, cancellationToken, afterPairRelex))
             {
