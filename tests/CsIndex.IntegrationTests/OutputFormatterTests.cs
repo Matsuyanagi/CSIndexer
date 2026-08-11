@@ -172,7 +172,8 @@ public sealed class OutputFormatterTests
     [Fact]
     public void WriteSymbolsMultiLineRetainsHeadingAndOneSanitizedSignatureAndSourceLinePerResult()
     {
-        const string storedSource = "var raw=\"\"\"\r\nfirst\tline\u2028second\r\n\"\"\";";
+        const string storedSource =
+            "var raw=\"\"\"\r\nfirst\tsecond\rthird\nfourth\u0085fifth\u2028sixth\u2029seventh\r\n\"\"\";";
         var sourceBacked = CreateSymbol(
             AsyncRole.None,
             asyncInvolvementDepth: null,
@@ -198,7 +199,7 @@ public sealed class OutputFormatterTests
             [
                 "Query matched 2 symbol(s):",
                 "  Example.Source Backed()  source.cs:0:0",
-                "    source: var raw=\"\"\" first line second \"\"\";",
+                "    source: var raw=\"\"\" first second third fourth fifth sixth seventh \"\"\";",
                 "  Example.Metadata Only()",
                 "    source: ",
             ],

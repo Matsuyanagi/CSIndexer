@@ -508,6 +508,7 @@ public sealed class CliCommandTests : IDisposable
     [Fact]
     public async Task AnalysisCacheVersionForcesReindexOfLegacyNormalizedSource()
     {
+        await _fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
         var inputDirectory = Path.Combine(_fixture.RootPath, $"cache-version-{Guid.NewGuid():N}");
         Directory.CreateDirectory(inputDirectory);
