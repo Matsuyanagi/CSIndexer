@@ -541,9 +541,9 @@ Add the common `--kind`/`--async-status` matrix, direct-vs-derived async distinc
 
 Add accepted decisions for common executable target filtering and injected atomic output. State that delegate `Invoke`, event, callback, reflection, and runtime-flow lambda references are not inferred. State that schema remains v4, cache version changes, reindex occurs on the next index request, and direct queries against an already-built DB need `index --rebuild` to refresh normalized source.
 
-- [ ] **Step 3: Update test/status documents with fresh evidence**
+- [ ] **Step 3: Update test/status documents with implemented coverage**
 
-Map revised sections 8.1-8.5 to concrete test classes/methods. Update current phase, completed work, important files, schema version, command list, build/test counts, and remaining limitations using results obtained in Task 9; do not write speculative counts.
+Map revised sections 8.1-8.5 to concrete test classes/methods. Update current phase, completed work, important files, schema version, command list, and remaining limitations. Preserve the last verified build/test totals until Task 9 replaces them with a fresh full-suite record; do not write speculative counts.
 
 - [ ] **Step 4: Validate documentation consistency**
 
@@ -568,7 +568,8 @@ rtk git commit -m "docs: specify revised cli query and output contracts"
 
 **Files:**
 - Inspect only: entire worktree diff and generated build/test outputs.
-- Modify only if a verification failure exposes an in-scope defect; repeat RED-GREEN for that defect.
+- Modify: `docs/IMPLEMENTATION_STATUS.md` and `docs/TEST_PLAN.md` with the fresh verification record.
+- Modify other files only if a verification failure exposes an in-scope defect; repeat RED-GREEN for that defect.
 
 **Interfaces:**
 - Produces: evidence required by `docs/2026-08-11.revised.md` section 10 and `superpowers:verification-before-completion`.
@@ -604,17 +605,26 @@ Run: `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`
 
 Expected: exit code 0, 0 failed tests; record exact passed/skipped totals.
 
-- [ ] **Step 5: Exercise help and representative CLI smoke cases**
+- [ ] **Step 5: Record the fresh verification evidence**
+
+Write the exact Release build warning/error totals, test passed/failed/skipped totals, command lines, and verification date into `docs/IMPLEMENTATION_STATUS.md` and the fresh-verification section of `docs/TEST_PLAN.md`. Commit only these evidence updates:
+
+```powershell
+rtk git add docs/IMPLEMENTATION_STATUS.md docs/TEST_PLAN.md
+rtk git commit -m "docs: record cli revision verification"
+```
+
+- [ ] **Step 6: Exercise help and representative CLI smoke cases**
 
 Run the built executable for global help and every command help. Confirm valid commands list `--kind all|method|lambda`, `--async-status all|async|sync`, `--source-layout single-line|multi-line`, `--output-format`, and `-o`/`--output-file` only where applicable, with no active `--output` entry. Run one stdout/file equivalence smoke case against the fixture or a fresh temporary index.
 
-- [ ] **Step 6: Perform final implementation and documentation review**
+- [ ] **Step 7: Perform final implementation and documentation review**
 
-Review acceptance criteria, failure paths, cancellation, writer ownership, temp cleanup, deterministic ordering, and JSON losslessness. If a defect is found, add a focused failing test, fix it, and repeat Steps 1-5.
+Review acceptance criteria, failure paths, cancellation, writer ownership, temp cleanup, deterministic ordering, and JSON losslessness. If a defect is found, add a focused failing test, fix it, and repeat Steps 1-6.
 
-- [ ] **Step 7: Commit any verification-only corrections**
+- [ ] **Step 8: Commit any verification-only corrections**
 
-If Step 6 required changes:
+If Step 7 required changes:
 
 ```powershell
 rtk git add -u
