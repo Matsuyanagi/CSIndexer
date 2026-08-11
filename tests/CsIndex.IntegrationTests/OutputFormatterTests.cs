@@ -679,11 +679,6 @@ public sealed class OutputFormatterTests
     public void OutputDestinationRejectsEquivalentWindowsExtendedUncComparisonPathWithoutAccessingTheShare(
         string equivalentOutputPath)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("Windows extended UNC syntax is only available on Windows.");
-        }
-
         const string databasePath = @"\\server\share\folder\index.sqlite";
 
         var exception = Assert.Throws<CliUsageException>(() =>

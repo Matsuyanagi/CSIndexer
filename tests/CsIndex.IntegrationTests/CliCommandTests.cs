@@ -1,6 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
+using CsIndex.Core.Caching;
+using CsIndex.Storage;
+using Microsoft.Data.Sqlite;
 
 namespace CsIndex.IntegrationTests;
 
@@ -264,10 +267,6 @@ public sealed class CliCommandTests : IDisposable
     public async Task OutputFileDatabaseAliasesAreRejectedBeforeTheDatabaseCanChange(string aliasKind)
     {
         await _fixture.BuildTask;
-        if (!OperatingSystem.IsWindows() && aliasKind != "trailing-separator")
-        {
-            Assert.Skip("Windows device-path aliases are only available on Windows.");
-        }
 
         var directory = Path.Combine(_fixture.RootPath, $"database-alias-{aliasKind}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -286,37 +285,6 @@ public sealed class CliCommandTests : IDisposable
 
         var rejected = await RunAsync(
             "conditions", "--output-file", outputArgument, "--db", databaseArgument);
-
-        Assert.Equal(ExitCodes.InvalidArguments, rejected.ExitCode);
-        Assert.Equal(string.Empty, rejected.StandardOutput);
-        Assert.StartsWith("Argument error: ", rejected.StandardError, StringComparison.Ordinal);
-        Assert.Contains("must not match the active database path", rejected.StandardError, StringComparison.Ordinal);
-        Assert.Equal(databaseBefore, File.ReadAllBytes(databasePath));
-        Assert.Empty(FindOutputTemporaryFiles(directory));
-
-        var stillQueryable = await RunAsync("conditions", "--db", databasePath);
-        Assert.Equal(ExitCodes.Success, stillQueryable.ExitCode);
-    }
-
-    [Fact]
-    public async Task OutputFileExtendedUncAliasIsRejectedWhenTheTestDatabaseUsesUncStorage()
-    {
-        await _fixture.BuildTask;
-        var fixtureDatabasePath = Path.GetFullPath(_fixture.DatabasePath);
-        if (!OperatingSystem.IsWindows() || !fixtureDatabasePath.StartsWith(@"\\", StringComparison.Ordinal))
-        {
-            Assert.Skip("An accessible UNC test root is required for the extended UNC alias case.");
-        }
-
-        var directory = Path.Combine(_fixture.RootPath, $"database-alias-extended-unc-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var databasePath = Path.Combine(directory, "index.sqlite");
-        File.Copy(_fixture.DatabasePath, databasePath);
-        var databaseBefore = File.ReadAllBytes(databasePath);
-        var extendedOutputPath = $@"\\?\UNC\{databasePath[2..]}";
-
-        var rejected = await RunAsync(
-            "conditions", "--output-file", extendedOutputPath, "--db", databasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, rejected.ExitCode);
         Assert.Equal(string.Empty, rejected.StandardOutput);
@@ -361,6 +329,275 @@ public sealed class CliCommandTests : IDisposable
         using var document = JsonDocument.Parse(File.ReadAllText(jsonInTextFile));
         Assert.True(document.RootElement.TryGetProperty("symbols", out _));
         Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(File.ReadAllText(tableInJsonFile)));
+    }
+
+    [Fact]
+    public async Task KindAndAsyncAllMatchOmissionAcrossListAndFindPayloadMatrix()
+    {
+        await _fixture.BuildTask;
+        var cases = new (string Name, string[] Arguments, string? JsonCollection)[]
+        {
+            ("symbol-find-table", ["symbol", "find", "Alpha.AsyncPlayer"], null),
+            ("symbol-find-json", ["symbol", "find", "Alpha.AsyncPlayer", "--output-format", "json"], "matched"),
+            ("symbol-list-table", ["symbol", "list"], null),
+            ("symbol-list-json", ["symbol", "list", "--output-format", "json"], "symbols"),
+        };
+        var explicitAllOptions = new[]
+        {
+            new[] { "--kind", "all" },
+            new[] { "--async-status", "all" },
+            new[] { "--kind", "all", "--async-status", "all" },
+        };
+
+        foreach (var (name, arguments, jsonCollection) in cases)
+        {
+            var omitted = await RunAsync([.. arguments, "--db", _fixture.DatabasePath]);
+            Assert.True(
+                omitted.ExitCode == ExitCodes.Success,
+                $"Omitted command failed: {name}{Environment.NewLine}{omitted.StandardError}");
+            Assert.NotEqual(string.Empty, omitted.StandardOutput);
+
+            long[]? omittedIds = null;
+            if (jsonCollection is not null)
+            {
+                using var omittedDocument = JsonDocument.Parse(omitted.StandardOutput);
+                omittedIds = omittedDocument.RootElement
+                    .GetProperty(jsonCollection)
+                    .EnumerateArray()
+                    .Select(symbol => symbol.GetProperty("id").GetInt64())
+                    .ToArray();
+                Assert.NotEmpty(omittedIds);
+            }
+
+            foreach (var options in explicitAllOptions)
+            {
+                var explicitAll = await RunAsync(
+                    [.. arguments, .. options, "--db", _fixture.DatabasePath]);
+
+                Assert.Equal(omitted.ExitCode, explicitAll.ExitCode);
+                Assert.Equal(omitted.StandardOutput, explicitAll.StandardOutput);
+                Assert.Equal(omitted.StandardError, explicitAll.StandardError);
+                if (jsonCollection is not null)
+                {
+                    using var explicitDocument = JsonDocument.Parse(explicitAll.StandardOutput);
+                    var explicitIds = explicitDocument.RootElement
+                        .GetProperty(jsonCollection)
+                        .EnumerateArray()
+                        .Select(symbol => symbol.GetProperty("id").GetInt64())
+                        .ToArray();
+                    Assert.Equal(omittedIds, explicitIds);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task OverridesKindAllMatchesOmissionForMethodResults()
+    {
+        await _fixture.BuildTask;
+
+        var omitted = await RunAsync(
+            "overrides", "Alpha.AsyncOverrideBase::Run()", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+        var explicitAll = await RunAsync(
+            "overrides", "Alpha.AsyncOverrideBase::Run()", "--kind", "all", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, omitted.ExitCode);
+        Assert.Equal(omitted.ExitCode, explicitAll.ExitCode);
+        Assert.Equal(omitted.StandardOutput, explicitAll.StandardOutput);
+        Assert.Equal(omitted.StandardError, explicitAll.StandardError);
+        using var document = JsonDocument.Parse(explicitAll.StandardOutput);
+        var root = document.RootElement;
+        Assert.All(root.GetProperty("matched").EnumerateArray(), symbol =>
+            Assert.Equal("method", symbol.GetProperty("kind").GetString()));
+        Assert.NotEmpty(root.GetProperty("relations").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task AsyncStatusTaxonomyFiltersEveryDirectRoleAndKeepsNestedOwnersSeparate()
+    {
+        await _fixture.BuildTask;
+
+        var asyncResult = await RunAsync(
+            "symbol", "list", "--async-status", "async", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+        var syncResult = await RunAsync(
+            "symbol", "list", "--async-status", "sync", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, asyncResult.ExitCode);
+        Assert.Equal(ExitCodes.Success, syncResult.ExitCode);
+        using var asyncDocument = JsonDocument.Parse(asyncResult.StandardOutput);
+        using var syncDocument = JsonDocument.Parse(syncResult.StandardOutput);
+        var asyncSymbols = asyncDocument.RootElement.GetProperty("symbols").EnumerateArray()
+            .Where(symbol => symbol.GetProperty("displayName").GetString()!
+                .StartsWith("Alpha.AsyncStatusCases::", StringComparison.Ordinal))
+            .ToArray();
+        var syncSymbols = syncDocument.RootElement.GetProperty("symbols").EnumerateArray()
+            .Where(symbol => symbol.GetProperty("displayName").GetString()!
+                .StartsWith("Alpha.AsyncStatusCases::", StringComparison.Ordinal))
+            .ToArray();
+        var asyncNames = asyncSymbols
+            .Select(symbol => symbol.GetProperty("displayName").GetString()!)
+            .ToArray();
+        var syncNames = syncSymbols
+            .Select(symbol => symbol.GetProperty("displayName").GetString()!)
+            .ToArray();
+
+        Assert.All(asyncSymbols, symbol => Assert.True(symbol.GetProperty("isAsync").GetBoolean()));
+        Assert.All(syncSymbols, symbol => Assert.False(symbol.GetProperty("isAsync").GetBoolean()));
+        Assert.Contains("Alpha.AsyncStatusCases::DeclaredTaskAsync()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::TaskResult()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::ValueTaskResult()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::UniTaskResult()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::FireAndForget()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::StreamAsync()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLambda()::<lambda#1>", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::NestedLocalAsync()", asyncNames);
+
+        Assert.Contains("Alpha.AsyncStatusCases::SyncSuffixAsync()", syncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::SyncSuffixAsync()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLambda()", syncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLocal()", syncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLambda()", asyncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLocal()", asyncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLambda()::<lambda#1>", syncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::NestedLocalAsync()", syncNames);
+    }
+
+    [Fact]
+    public async Task StoredSourceHashSearchAndJsonRemainLosslessAfterTableSanitization()
+    {
+        await _fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string displayName = "Alpha.LosslessSource::LiteralControls()";
+        const string sourceMarker = "first\tline";
+
+        var stored = await _fixture.GetStoredSymbolAsync(
+            displayName,
+            _fixture.PrimaryProfileName,
+            cancellationToken);
+        var normalizedSource = Assert.IsType<string>(stored.NormalizedSource);
+        var normalizedSourceHash = Assert.IsType<byte[]>(stored.NormalizedSourceHash);
+        Assert.Contains('\t', normalizedSource);
+        Assert.Contains('\n', normalizedSource);
+        Assert.Equal(HashUtilities.Sha256(normalizedSource), normalizedSourceHash);
+
+        var searched = await _fixture.Query.SearchSourceAsync(
+            includes: [sourceMarker],
+            excludes: [],
+            ignoreCase: false,
+            profileName: _fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var searchedSymbol = Assert.Single(searched.MatchedSymbols, symbol => symbol.Id == stored.Id);
+        Assert.Equal(normalizedSource, searchedSymbol.NormalizedSource);
+        Assert.Equal(normalizedSourceHash, searchedSymbol.NormalizedSourceHash);
+
+        var json = await RunAsync(
+            "source", "show", displayName, "--output-format", "json", "--db", _fixture.DatabasePath);
+        Assert.Equal(ExitCodes.Success, json.ExitCode);
+        using var document = JsonDocument.Parse(json.StandardOutput);
+        var jsonSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
+        var jsonSource = jsonSymbol.GetProperty("normalizedSource").GetString();
+        Assert.Equal(normalizedSource, jsonSource);
+        Assert.Contains('\t', jsonSource!);
+        Assert.Contains('\n', jsonSource!);
+    }
+
+    [Fact]
+    public async Task AnalysisCacheVersionForcesReindexOfLegacyNormalizedSource()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var inputDirectory = Path.Combine(_fixture.RootPath, $"cache-version-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(inputDirectory);
+        var sourcePath = Path.Combine(inputDirectory, "ArrayHost.cs");
+        var databasePath = Path.Combine(inputDirectory, "index.sqlite");
+        await File.WriteAllTextAsync(
+            sourcePath,
+            "namespace Acceptance; public sealed class ArrayHost { public string[] Echo(string[] args) => args; }",
+            cancellationToken);
+        string[] indexArguments =
+        [
+            "index", inputDirectory,
+            "--mode", "directory",
+            "--configuration", "Release",
+            "--framework", "net10.0",
+            "--runtime", "win-x64",
+            "--profile-name", "normalizer-test",
+            "--define", "TRACE",
+            "--define", "DEBUG",
+            "--undefine", "LEGACY",
+            "--exclude", "generated",
+            "--db", databasePath,
+        ];
+        const string previousPayload =
+            """{"ToolVersion":"0.1.0","SchemaVersion":4,"AnalysisCacheVersion":1,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
+        var previousRequestHash = HashUtilities.Sha256(previousPayload);
+
+        var initialIndex = await RunAsync(indexArguments);
+        Assert.Equal(ExitCodes.Success, initialIndex.ExitCode);
+        Assert.Contains("Cache: rebuilt", initialIndex.StandardError, StringComparison.Ordinal);
+
+        byte[] currentRequestHash;
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT request_hash FROM index_runs;";
+            currentRequestHash = Assert.IsType<byte[]>(await command.ExecuteScalarAsync(cancellationToken));
+            Assert.NotEqual(previousRequestHash, currentRequestHash);
+
+            const string legacySource = "public string[  ]Echo(string[  ]args)=>args;";
+            command.CommandText = """
+                UPDATE symbols
+                SET normalized_source = $legacy_source,
+                    normalized_source_hash = $legacy_hash
+                WHERE display_name = 'Acceptance.ArrayHost::Echo(System.String[])';
+                """;
+            command.Parameters.AddWithValue("$legacy_source", legacySource);
+            command.Parameters.Add("$legacy_hash", SqliteType.Blob).Value = HashUtilities.Sha256(legacySource);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE index_runs SET request_hash = $previous_request_hash;";
+            command.Parameters.Add("$previous_request_hash", SqliteType.Blob).Value = previousRequestHash;
+            Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+        }
+
+        var reindex = await RunAsync(indexArguments);
+        Assert.Equal(ExitCodes.Success, reindex.ExitCode);
+        Assert.Contains("Cache: rebuilt", reindex.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cache: reused", reindex.StandardError, StringComparison.Ordinal);
+
+        var repository = new SqliteIndex(databasePath).CreateQueryRepository();
+        var profile = await repository.GetProfileAsync("normalizer-test", cancellationToken);
+        var symbols = await repository.FindExecutableSymbolsAsync(
+            profile.Id,
+            sourceOnly: false,
+            cancellationToken);
+        var echo = Assert.Single(symbols, symbol =>
+            symbol.DisplayName == "Acceptance.ArrayHost::Echo(System.String[])");
+        var correctedSource = Assert.IsType<string>(echo.NormalizedSource);
+        var correctedHash = Assert.IsType<byte[]>(echo.NormalizedSourceHash);
+        Assert.Contains("string[]Echo(string[]args)", correctedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("[  ]", correctedSource, StringComparison.Ordinal);
+        Assert.Equal(HashUtilities.Sha256(correctedSource), correctedHash);
+
+        await using var verificationConnection = new SqliteConnection(connectionString);
+        await verificationConnection.OpenAsync(cancellationToken);
+        await using var verificationCommand = verificationConnection.CreateCommand();
+        verificationCommand.CommandText = "SELECT request_hash FROM index_runs;";
+        var reindexedRequestHash = Assert.IsType<byte[]>(
+            await verificationCommand.ExecuteScalarAsync(cancellationToken));
+        Assert.Equal(currentRequestHash, reindexedRequestHash);
     }
 
     [Fact]

@@ -11,7 +11,14 @@ public sealed class SemanticIndexFixture : IDisposable
 {
     private const string MainSource = """
         using System;
+        using System.Collections.Generic;
         using System.Threading.Tasks;
+
+        namespace Cysharp.Threading.Tasks
+        {
+            public readonly struct UniTask<T> { }
+            public readonly struct UniTaskVoid { }
+        }
 
         namespace Alpha
         {
@@ -201,6 +208,36 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void WithAsyncLambda()
                 {
                     Func<Task> action = async () => await Task.Yield();
+                }
+            }
+
+            public class AsyncStatusCases
+            {
+                public async Task DeclaredTaskAsync() => await Task.Yield();
+                public Task<int> TaskResult() => Task.FromResult(1);
+                public ValueTask ValueTaskResult() => default;
+                public Cysharp.Threading.Tasks.UniTask<int> UniTaskResult() => default;
+                public Cysharp.Threading.Tasks.UniTaskVoid FireAndForget() => default;
+
+                public async IAsyncEnumerable<int> StreamAsync()
+                {
+                    await Task.Yield();
+                    yield return 1;
+                }
+
+                public void SyncSuffixAsync() { }
+
+                public void OuterWithAsyncLambda()
+                {
+                    Func<Task> nested = async () => await Task.Yield();
+                    _ = nested;
+                }
+
+                public void OuterWithAsyncLocal()
+                {
+                    async Task NestedLocalAsync() => await Task.Yield();
+                    Func<Task> nested = NestedLocalAsync;
+                    _ = nested;
                 }
             }
 
@@ -528,6 +565,19 @@ public sealed class SemanticIndexFixture : IDisposable
         }
         """;
 
+    private const string LosslessSource = """"
+        namespace Alpha
+        {
+            public sealed class LosslessSource
+            {
+                public string LiteralControls() => """
+        first	line
+        second
+        """;
+            }
+        }
+        """";
+
     public SemanticIndexFixture()
     {
         RootPath = Path.Combine(Path.GetTempPath(), "csindex-integration-tests", Guid.NewGuid().ToString("N"));
@@ -535,6 +585,7 @@ public sealed class SemanticIndexFixture : IDisposable
         MainSourcePath = Path.Combine(RootPath, "Main.cs");
         File.WriteAllText(MainSourcePath, MainSource);
         File.WriteAllText(Path.Combine(RootPath, "GeneratedCaller.g.cs"), GeneratedSource);
+        File.WriteAllText(Path.Combine(RootPath, "LosslessSource.cs"), LosslessSource);
         DatabasePath = Path.Combine(RootPath, ".csindex", "index.sqlite");
         BuildTask = BuildAsync();
     }
