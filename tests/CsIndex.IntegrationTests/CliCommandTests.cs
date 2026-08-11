@@ -31,6 +31,218 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public void OutputFileAliasesNormalizeExactlyAndRejectMissingEmptyOrDuplicateValues()
+    {
+        Assert.Equal("result.json", CliArguments.Parse(["-o", "result.json"]).GetSingle("output-file"));
+        Assert.Equal("result.json", CliArguments.Parse(["--output-file=result.json"]).GetSingle("output-file"));
+        Assert.Throws<CliUsageException>(() => CliArguments.Parse(["-o"]));
+        Assert.Throws<CliUsageException>(() => CliArguments.Parse(["-o", ""]));
+        Assert.Throws<CliUsageException>(() =>
+            CliArguments.Parse(["-o", "a", "--output-file", "b"]).GetSingle("output-file"));
+
+        var compactForms = CliArguments.Parse(["-opath", "-o=result.json"]);
+        Assert.Null(compactForms.GetSingle("output-file"));
+        Assert.Equal(["-opath", "-o=result.json"], compactForms.Positionals);
+    }
+
+    [Fact]
+    public async Task FunctionFilterValueMatrixIsAcceptedByEveryApplicableCommand()
+    {
+        await _fixture.BuildTask;
+        var definitionAt = _fixture.GetLocation("a.Play()");
+        string[][] syncMethodCommands =
+        [
+            ["symbol", "find", "Alpha.AsyncPlayer::Sync()"],
+            ["symbol", "list"],
+            ["source", "show", "Alpha.AsyncPlayer::Sync()"],
+            ["source", "search", "--include", "Sync()"],
+            ["definition", "Alpha.AsyncPlayer::Sync()"],
+            ["definition", "--at", definitionAt],
+            ["references", "Alpha.LambdaPlayer::Play()"],
+            ["callers", "Alpha.LambdaPlayer::Play()"],
+            ["callees", "Alpha.DescendantCallees::Execute()"],
+            ["async", "tree", "Alpha.AsyncGraph::Start()"],
+            ["callers", "tree", "Alpha.CallerGraph::DirectTarget()"],
+            ["overrides", "Alpha.AsyncOverrideBase::Run()"],
+        ];
+        string[][] lambdaCommands =
+        [
+            ["symbol", "find", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["symbol", "list"],
+            ["source", "show", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["source", "search", "--include", "LambdaTarget()"],
+            ["definition", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["definition", "--at", definitionAt],
+            ["references", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["callers", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["callees", "Alpha.LambdaPlayer::Execute()::<lambda#1>"],
+            ["async", "tree", "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>"],
+            ["callers", "tree", "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>"],
+        ];
+        string[][] asyncCommands =
+        [
+            ["symbol", "find", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["symbol", "list"],
+            ["source", "show", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["source", "search", "--include", "Task.Yield()"],
+            ["definition", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["definition", "--at", definitionAt],
+            ["references", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["callers", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["callees", "Alpha.AsyncPlayer::ExecuteAsync()"],
+            ["async", "tree", "Alpha.AsyncGraph::SelfAsync()"],
+            ["callers", "tree", "Alpha.AsyncGraph::EndAsync()"],
+            ["overrides", "Alpha.AsyncOverrideDerived::Run()"],
+        ];
+
+        foreach (var command in syncMethodCommands)
+        {
+            await AssertCommandSucceedsAsync(command, "--kind", "all");
+            await AssertCommandSucceedsAsync(command, "--kind", "method");
+            await AssertCommandSucceedsAsync(command, "--async-status", "all");
+            await AssertCommandSucceedsAsync(command, "--async-status", "sync");
+        }
+
+        foreach (var command in lambdaCommands)
+        {
+            await AssertCommandSucceedsAsync(command, "--kind", "lambda");
+        }
+
+        foreach (var command in asyncCommands)
+        {
+            await AssertCommandSucceedsAsync(command, "--async-status", "async");
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitAllFiltersMatchOmissionAndDirectStatusAppliesBeforeRequireSingle()
+    {
+        await _fixture.BuildTask;
+
+        var omitted = await RunAsync(
+            "symbol", "find", "Alpha.AsyncPlayer", "--output-format", "json", "--db", _fixture.DatabasePath);
+        var explicitAll = await RunAsync(
+            "symbol", "find", "Alpha.AsyncPlayer", "--kind", "all", "--async-status", "all",
+            "--output-format", "json", "--db", _fixture.DatabasePath);
+        var unfiltered = await RunAsync(
+            "symbol", "find", "Alpha.AsyncOverride*::Run()", "--require-single", "--async-status", "all",
+            "--db", _fixture.DatabasePath);
+        var syncOnly = await RunAsync(
+            "symbol", "find", "Alpha.AsyncOverride*::Run()", "--require-single", "--async-status", "sync",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, omitted.ExitCode);
+        Assert.Equal(omitted.StandardOutput, explicitAll.StandardOutput);
+        Assert.Equal(ExitCodes.RequireSingleFailure, unfiltered.ExitCode);
+        Assert.Equal(ExitCodes.Success, syncOnly.ExitCode);
+        Assert.Contains("Alpha.AsyncOverrideBase::Run()", syncOnly.StandardOutput);
+        Assert.DoesNotContain("Alpha.AsyncOverrideDerived::Run()", syncOnly.StandardOutput);
+    }
+
+    [Fact]
+    public async Task InvalidFunctionFilterValuesReportEveryAllowedValue()
+    {
+        var invalidKind = await RunAsync("symbol", "list", "--kind", "type");
+        var invalidAsyncStatus = await RunAsync("symbol", "list", "--async-status", "involved");
+
+        Assert.Equal(ExitCodes.InvalidArguments, invalidKind.ExitCode);
+        Assert.Contains(
+            "Unknown symbol kind: type. Use all, method, or lambda.",
+            invalidKind.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, invalidAsyncStatus.ExitCode);
+        Assert.Contains(
+            "Unknown async status: involved. Use all, async, or sync.",
+            invalidAsyncStatus.StandardError);
+    }
+
+    [Fact]
+    public async Task IncludeOverridesAcceptsAllAndMethodKindsButRejectsLambdaKind()
+    {
+        await _fixture.BuildTask;
+        foreach (var kind in new string?[] { null, "all", "method" })
+        {
+            var args = new List<string>
+            {
+                "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--db", _fixture.DatabasePath,
+            };
+            if (kind is not null)
+            {
+                args.AddRange(["--kind", kind]);
+            }
+
+            var result = await RunAsync(args.ToArray());
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            Assert.Contains("Alpha.ProPianist::Play()", result.StandardOutput);
+        }
+
+        string[][] includeOverrideCommands =
+        [
+            ["symbol", "find", "Alpha.Pianist::Play()"],
+            ["definition", "Alpha.Pianist::Play()"],
+            ["references", "Alpha.Pianist::Play()"],
+            ["callers", "Alpha.Pianist::Play()"],
+            ["callees", "Alpha.Pianist::Play()"],
+        ];
+        foreach (var command in includeOverrideCommands)
+        {
+            var result = await RunAsync(
+                [.. command, "--kind", "lambda", "--include-overrides", "--db", _fixture.DatabasePath]);
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains("--kind lambda", result.StandardError);
+            Assert.Contains("--include-overrides", result.StandardError);
+        }
+
+        var overrides = await RunAsync(
+            "overrides", "Alpha.AsyncOverrideBase::Run()", "--kind", "lambda", "--db", _fixture.DatabasePath);
+        Assert.Equal(ExitCodes.InvalidArguments, overrides.ExitCode);
+        Assert.Contains("--kind lambda is not applicable to overrides.", overrides.StandardError);
+    }
+
+    [Fact]
+    public async Task IndexAndConditionsRejectFunctionFilters()
+    {
+        string[][] commands = [["index", "."], ["conditions"]];
+        foreach (var command in commands)
+        {
+            var kind = await RunAsync([.. command, "--kind", "all"]);
+            var asyncStatus = await RunAsync([.. command, "--async-status", "all"]);
+
+            Assert.Equal(ExitCodes.InvalidArguments, kind.ExitCode);
+            Assert.Contains("Unknown option(s): --kind", kind.StandardError);
+            Assert.Equal(ExitCodes.InvalidArguments, asyncStatus.ExitCode);
+            Assert.Contains("Unknown option(s): --async-status", asyncStatus.StandardError);
+        }
+    }
+
+    [Fact]
+    public async Task LegacyOutputOptionIsUnknownForEveryFormerOutputCommand()
+    {
+        string[][] commands =
+        [
+            ["symbol", "find", "Alpha.AClass::Play()"],
+            ["symbol", "list"],
+            ["async", "tree", "Alpha.AsyncGraph::Start()"],
+            ["callers", "tree", "Alpha.CallerGraph::DirectTarget()"],
+            ["source", "show", "Alpha.AClass::Play()"],
+            ["source", "search", "--include", "Play"],
+            ["definition", "Alpha.AClass::Play()"],
+            ["references", "Alpha.AClass::Play()"],
+            ["callers", "Alpha.AClass::Play()"],
+            ["callees", "Alpha.AClass::Play()"],
+            ["overrides", "Alpha.BaseClass::Run()"],
+            ["conditions"],
+        ];
+
+        foreach (var command in commands)
+        {
+            var result = await RunAsync([.. command, "--output", "json"]);
+
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains("Unknown option(s): --output", result.StandardError);
+        }
+    }
+
+    [Fact]
     public async Task SourceSearchRequiresAtLeastOneIncludeOrExcludeCondition()
     {
         var result = await RunAsync("source", "search");
@@ -49,9 +261,9 @@ public sealed class CliCommandTests : IDisposable
         var invalidMaxNodes = await RunAsync(
             "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "0", "--db", _fixture.DatabasePath);
         var invalidAsyncOutput = await RunAsync(
-            "async", "tree", "Alpha.AsyncGraph::Start()", "--output", "mermaid", "--db", _fixture.DatabasePath);
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--output-format", "mermaid", "--db", _fixture.DatabasePath);
         var invalidCallerOutput = await RunAsync(
-            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output", "line", "--db", _fixture.DatabasePath);
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output-format", "line", "--db", _fixture.DatabasePath);
         var ambiguousRoot = await RunAsync(
             "async", "tree", "Alpha.AClass::Play", "--db", _fixture.DatabasePath);
         var missingRoot = await RunAsync(
@@ -86,17 +298,17 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         var lambda = await RunAsync(
-            "symbol", "find", "::<lambda#1>", "--kind", "lambda", "--output", "json", "--db", _fixture.DatabasePath);
+            "symbol", "find", "::<lambda#1>", "--kind", "lambda", "--output-format", "json", "--db", _fixture.DatabasePath);
         var components = await RunAsync(
-            "symbol", "find", "--namespace", "Tokyo", "--type", "Gamer", "--method", "Play", "--output", "json",
+            "symbol", "find", "--namespace", "Tokyo", "--type", "Gamer", "--method", "Play", "--output-format", "json",
             "--db", _fixture.DatabasePath);
         var regex = await RunAsync(
-            "symbol", "find", "--regex", "^(Tokyo|Fukuoka)\\.Gamer::P[lr]ay$", "--output", "json", "--db", _fixture.DatabasePath);
+            "symbol", "find", "--regex", "^(Tokyo|Fukuoka)\\.Gamer::P[lr]ay$", "--output-format", "json", "--db", _fixture.DatabasePath);
         var sourceFiltered = await RunAsync(
             "symbol", "find", "Tokyo.*::Play", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--show-source",
-            "--output", "json", "--db", _fixture.DatabasePath);
+            "--output-format", "json", "--db", _fixture.DatabasePath);
         var ignoredCase = await RunAsync(
-            "symbol", "find", "TOKYO.GAMER::PLAY", "--ignore-case", "--output", "json", "--db", _fixture.DatabasePath);
+            "symbol", "find", "TOKYO.GAMER::PLAY", "--ignore-case", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, lambda.ExitCode);
         using var lambdaDocument = JsonDocument.Parse(lambda.StandardOutput);
@@ -149,9 +361,9 @@ public sealed class CliCommandTests : IDisposable
 
         var shown = await RunAsync("source", "show", "Tokyo.Gamer::Play", "--db", _fixture.DatabasePath);
         var shownJson = await RunAsync(
-            "source", "show", "Tokyo.Gamer::Play", "--output", "json", "--db", _fixture.DatabasePath);
+            "source", "show", "Tokyo.Gamer::Play", "--output-format", "json", "--db", _fixture.DatabasePath);
         var searched = await RunAsync(
-            "source", "search", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--output", "json", "--db",
+            "source", "search", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--output-format", "json", "--db",
             _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, shown.ExitCode);
@@ -179,7 +391,7 @@ public sealed class CliCommandTests : IDisposable
         const string lambdaQuery = "Tokyo.LambdaSearch::Function()::<lambda#1>";
         var table = await RunAsync("source", "show", lambdaQuery, "--db", _fixture.DatabasePath);
         var json = await RunAsync(
-            "source", "show", lambdaQuery, "--output", "json", "--db", _fixture.DatabasePath);
+            "source", "show", lambdaQuery, "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, table.ExitCode);
         Assert.Contains(lambdaQuery, table.StandardOutput);
@@ -199,11 +411,11 @@ public sealed class CliCommandTests : IDisposable
 
         var self = await RunAsync("async", "tree", "Alpha.AsyncGraph::SelfAsync()", "--db", _fixture.DatabasePath);
         var unreachable = await RunAsync(
-            "async", "tree", "Alpha.AsyncGraph::Unreachable()", "--output", "line", "--db", _fixture.DatabasePath);
+            "async", "tree", "Alpha.AsyncGraph::Unreachable()", "--output-format", "line", "--db", _fixture.DatabasePath);
         var truncatedTree = await RunAsync(
             "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "1", "--db", _fixture.DatabasePath);
         var truncatedJson = await RunAsync(
-            "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "1", "--output", "json", "--db", _fixture.DatabasePath);
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--max-nodes", "1", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, self.ExitCode);
         Assert.Equal("async Alpha.AsyncGraph::SelfAsync()" + Environment.NewLine, self.StandardOutput);
@@ -234,15 +446,15 @@ public sealed class CliCommandTests : IDisposable
         var table = await RunAsync(
             "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--short-names", "--db", _fixture.DatabasePath);
         var mermaid = await RunAsync(
-            "callers", "tree", "Alpha.CallerGraph::RecursiveTarget()", "--depth", "0", "--output", "mermaid", "--db",
+            "callers", "tree", "Alpha.CallerGraph::RecursiveTarget()", "--depth", "0", "--output-format", "mermaid", "--db",
             _fixture.DatabasePath);
         var lambda = await RunAsync(
-            "callers", "tree", "Alpha.CallerGraph::LambdaTarget()", "--output", "json", "--db", _fixture.DatabasePath);
+            "callers", "tree", "Alpha.CallerGraph::LambdaTarget()", "--output-format", "json", "--db", _fixture.DatabasePath);
         var bounded = await RunAsync(
-            "callers", "tree", "Alpha.CallerGraph::DepthTarget()", "--depth", "2", "--output", "json", "--db",
+            "callers", "tree", "Alpha.CallerGraph::DepthTarget()", "--depth", "2", "--output-format", "json", "--db",
             _fixture.DatabasePath);
         var metadata = await RunAsync(
-            "callers", "tree", "Alpha.CallerGraph::MetadataTarget()", "--depth", "0", "--output", "json", "--db",
+            "callers", "tree", "Alpha.CallerGraph::MetadataTarget()", "--depth", "0", "--output-format", "json", "--db",
             _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, table.ExitCode);
@@ -304,6 +516,56 @@ public sealed class CliCommandTests : IDisposable
               csindex conditions [options]
             """.ReplaceLineEndings("\n"),
             help[usageStart..usageEnd]);
+        Assert.Contains("--output-format table|json", help);
+        Assert.Contains("--kind all|method|lambda", help);
+        Assert.Contains("--async-status all|async|sync", help);
+        Assert.DoesNotContain("--output table|json", help);
+    }
+
+    [Theory]
+    [MemberData(nameof(FunctionFilterHelpCases))]
+    public async Task CommandHelpMatchesFunctionFilterAndOutputFormatMatrix(
+        string[] args,
+        string expectedOutputFormat)
+    {
+        var result = await RunAsync(args);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("--kind all|method|lambda", result.StandardOutput);
+        Assert.Contains("--async-status all|async|sync", result.StandardOutput);
+        Assert.Contains($"--output-format {expectedOutputFormat}", result.StandardOutput);
+        Assert.DoesNotContain("--output ", result.StandardOutput);
+    }
+
+    public static TheoryData<string[], string> FunctionFilterHelpCases { get; } = new()
+    {
+        { ["symbol", "find", "--help"], "table|json" },
+        { ["symbol", "list", "--help"], "table|json" },
+        { ["async", "tree", "--help"], "tree|line|json" },
+        { ["callers", "tree", "--help"], "tree|mermaid|json" },
+        { ["source", "show", "--help"], "table|json" },
+        { ["source", "search", "--help"], "table|json" },
+        { ["definition", "--help"], "table|json" },
+        { ["references", "--help"], "table|json" },
+        { ["callers", "--help"], "table|json" },
+        { ["callees", "--help"], "table|json" },
+        { ["overrides", "--help"], "table|json" },
+    };
+
+    [Fact]
+    public async Task IndexAndConditionsHelpExcludeFunctionFilters()
+    {
+        var index = await RunAsync("index", "--help");
+        var conditions = await RunAsync("conditions", "--help");
+
+        Assert.Equal(ExitCodes.Success, index.ExitCode);
+        Assert.DoesNotContain("--kind", index.StandardOutput);
+        Assert.DoesNotContain("--async-status", index.StandardOutput);
+        Assert.DoesNotContain("--output-format", index.StandardOutput);
+        Assert.Equal(ExitCodes.Success, conditions.ExitCode);
+        Assert.DoesNotContain("--kind", conditions.StandardOutput);
+        Assert.DoesNotContain("--async-status", conditions.StandardOutput);
+        Assert.Contains("--output-format table|json", conditions.StandardOutput);
     }
 
     [Theory]
@@ -327,13 +589,14 @@ public sealed class CliCommandTests : IDisposable
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
-              --output table|json  Output format (default: table)
+              --output-format table|json  Output format (default: table)
               --require-single  Fail unless the search matches exactly one symbol
               --short-names  Shorten namespaces in displayed symbol names
               --namespace <pattern>  Namespace component filter
               --type <pattern>  Type component filter
               --method <pattern>  Method component filter
-              --kind method|lambda  Limit results to executable kind
+              --kind all|method|lambda  Limit function targets by kind (default: all)
+              --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --regex  Interpret name filters as regular expressions
               --include <text>  Require normalized source text (repeatable)
               --exclude <text>  Reject normalized source text (repeatable)
@@ -350,7 +613,9 @@ public sealed class CliCommandTests : IDisposable
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
-              --output tree|line|json  Output format (default: tree)
+              --kind all|method|lambda  Limit function targets by kind (default: all)
+              --async-status all|async|sync  Limit function targets by direct async status (default: all)
+              --output-format tree|line|json  Output format (default: tree)
               --max-nodes <count>  Maximum path nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
@@ -363,7 +628,9 @@ public sealed class CliCommandTests : IDisposable
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
-              --output tree|mermaid|json  Output format (default: tree)
+              --kind all|method|lambda  Limit function targets by kind (default: all)
+              --async-status all|async|sync  Limit function targets by direct async status (default: all)
+              --output-format tree|mermaid|json  Output format (default: tree)
               --depth <count>  Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>  Maximum graph nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
@@ -377,7 +644,9 @@ public sealed class CliCommandTests : IDisposable
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
-              --output table|json  Output format (default: table)
+              --kind all|method|lambda  Limit function targets by kind (default: all)
+              --async-status all|async|sync  Limit function targets by direct async status (default: all)
+              --output-format table|json  Output format (default: table)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
             """
@@ -389,7 +658,9 @@ public sealed class CliCommandTests : IDisposable
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
-              --output table|json  Output format (default: table)
+              --kind all|method|lambda  Limit function targets by kind (default: all)
+              --async-status all|async|sync  Limit function targets by direct async status (default: all)
+              --output-format table|json  Output format (default: table)
               --include <text>  Require normalized source text (repeatable)
               --exclude <text>  Reject normalized source text (repeatable)
               --ignore-case  Compare source filters without case sensitivity
@@ -431,7 +702,7 @@ public sealed class CliCommandTests : IDisposable
     {
         await _fixture.BuildTask;
 
-        var result = await RunAsync("symbol", "list", "--kind", "lambda", "--output", "json", "--db", _fixture.DatabasePath);
+        var result = await RunAsync("symbol", "list", "--kind", "lambda", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         using var document = JsonDocument.Parse(result.StandardOutput);
@@ -445,7 +716,7 @@ public sealed class CliCommandTests : IDisposable
     {
         await _fixture.BuildTask;
 
-        var result = await RunAsync("symbol", "list", "--async-involved", "--output", "json", "--db", _fixture.DatabasePath);
+        var result = await RunAsync("symbol", "list", "--async-involved", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         using var document = JsonDocument.Parse(result.StandardOutput);
@@ -460,7 +731,7 @@ public sealed class CliCommandTests : IDisposable
     {
         await _fixture.BuildTask;
 
-        var result = await RunAsync("symbol", "list", "--output", "json", "--db", _fixture.DatabasePath);
+        var result = await RunAsync("symbol", "list", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         using var document = JsonDocument.Parse(result.StandardOutput);
@@ -556,14 +827,14 @@ public sealed class CliCommandTests : IDisposable
 
         var table = await RunAsync(commandPrefix.Concat(
         [
-            "Alpha.Pianist::Play()", "--include-overrides", "--output", "table", "--db", _fixture.DatabasePath,
+            "Alpha.Pianist::Play()", "--include-overrides", "--output-format", "table", "--db", _fixture.DatabasePath,
         ]).ToArray());
         Assert.Equal(ExitCodes.Success, table.ExitCode);
         Assert.Contains("Alpha.ProPianist::Play()", table.StandardOutput);
 
         var json = await RunAsync(commandPrefix.Concat(
         [
-            "Alpha.Pianist::Play()", "--include-overrides", "--output", "json", "--db", _fixture.DatabasePath,
+            "Alpha.Pianist::Play()", "--include-overrides", "--output-format", "json", "--db", _fixture.DatabasePath,
         ]).ToArray());
         Assert.Equal(ExitCodes.Success, json.ExitCode);
         using var document = JsonDocument.Parse(json.StandardOutput);
@@ -604,7 +875,7 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         var result = await RunAsync(
-            "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--show-source", "--output", "json",
+            "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--show-source", "--output-format", "json",
             "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
@@ -765,10 +1036,25 @@ public sealed class CliCommandTests : IDisposable
             }
 
             var optionEnd = line.IndexOf("  ", 2, StringComparison.Ordinal);
-            return optionEnd < 0
-                ? line
-                : $"  {line[2..optionEnd].PadRight(28)}{line[(optionEnd + 2)..]}";
+            if (optionEnd < 0)
+            {
+                return line;
+            }
+
+            var syntax = line[2..optionEnd];
+            var padding = new string(' ', Math.Max(1, 28 - syntax.Length));
+            return $"  {syntax}{padding}{line[(optionEnd + 2)..]}";
         }));
+
+    private async Task AssertCommandSucceedsAsync(string[] command, params string[] options)
+    {
+        var args = command.Concat(options).Concat(["--db", _fixture.DatabasePath]).ToArray();
+        var result = await RunAsync(args);
+
+        Assert.True(
+            result.ExitCode == ExitCodes.Success,
+            $"Command failed: {string.Join(' ', args)}{Environment.NewLine}{result.StandardError}");
+    }
 
     private static async Task<CommandResult> RunAsync(params string[] args)
     {

@@ -22,6 +22,23 @@ internal sealed class CliArguments
         while (enumerator.MoveNext())
         {
             var token = enumerator.Current;
+            if (token == "-o")
+            {
+                if (!enumerator.MoveNext())
+                {
+                    throw new CliUsageException("Option -o requires a value.");
+                }
+
+                var outputPath = enumerator.Current;
+                if (outputPath.Length == 0)
+                {
+                    throw new CliUsageException("Option -o requires a non-empty value.");
+                }
+
+                result.Add("output-file", outputPath);
+                continue;
+            }
+
             if (!token.StartsWith("--", StringComparison.Ordinal))
             {
                 result.Positionals.Add(token);

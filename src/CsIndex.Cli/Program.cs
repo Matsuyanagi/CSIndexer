@@ -26,11 +26,19 @@ internal static class Program
         "--short-names", "Shorten namespaces in displayed symbol names");
     private static readonly HelpOption HelpHelpOption = new("--help", "Show this help text");
     private static readonly HelpOption TableJsonOutputHelpOption = new(
-        "--output table|json", "Output format (default: table)");
+        "--output-format table|json", "Output format (default: table)");
     private static readonly HelpOption AsyncOutputHelpOption = new(
-        "--output tree|line|json", "Output format (default: tree)");
+        "--output-format tree|line|json", "Output format (default: tree)");
     private static readonly HelpOption CallerOutputHelpOption = new(
-        "--output tree|mermaid|json", "Output format (default: tree)");
+        "--output-format tree|mermaid|json", "Output format (default: tree)");
+    private static readonly HelpOption FunctionKindHelpOption = new(
+        "--kind all|method|lambda", "Limit function targets by kind (default: all)");
+    private static readonly HelpOption AsyncStatusHelpOption = new(
+        "--async-status all|async|sync", "Limit function targets by direct async status (default: all)");
+    private static readonly HelpOption SourceLayoutHelpOption = new(
+        "--source-layout single-line|multi-line", "Source table layout (default: single-line)");
+    private static readonly HelpOption OutputFileHelpOption = new(
+        "-o <path> | --output-file <path>", "Write the result payload to a file");
     private static readonly HelpOption IncludeHelpOption = new(
         "--include <text>", "Require normalized source text (repeatable)");
     private static readonly HelpOption ExcludeHelpOption = new(
@@ -202,8 +210,8 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "require-single", "short-names", "include-overrides", "namespace", "type",
-            "method", "kind", "regex", "include", "exclude", "ignore-case", "show-source", "help");
+            "db", "profile", "output-format", "require-single", "short-names", "include-overrides", "namespace", "type",
+            "method", "kind", "async-status", "regex", "include", "exclude", "ignore-case", "show-source", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -217,7 +225,8 @@ internal static class Program
                 new HelpOption("--namespace <pattern>", "Namespace component filter"),
                 new HelpOption("--type <pattern>", "Type component filter"),
                 new HelpOption("--method <pattern>", "Method component filter"),
-                new HelpOption("--kind method|lambda", "Limit results to executable kind"),
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
                 new HelpOption("--regex", "Interpret name filters as regular expressions"),
                 IncludeHelpOption,
                 ExcludeHelpOption,
@@ -235,15 +244,21 @@ internal static class Program
         QueryContext result;
         if (parsed.HasFlag("include-overrides"))
         {
-            if (!IsLegacyExactOverrideSearch(request))
+            if (request.Kind == IndexedSymbolKind.Lambda)
+            {
+                throw new CliUsageException("--kind lambda cannot be combined with --include-overrides.");
+            }
+
+            if (!IsExactOverrideSearch(request))
             {
                 throw new CliUsageException(
-                    "--include-overrides cannot be combined with component, kind, regex, case, or source search options.");
+                    "--include-overrides cannot be combined with component, lambda, regex, case, or source filter options.");
             }
 
             result = await service.FindSymbolsAsync(
                 request.Pattern!,
-                parsed.GetSingle("profile"),
+                new FunctionTargetFilter(request.Kind, request.AsyncStatus),
+                profileName: parsed.GetSingle("profile"),
                 includeOverrides: true,
                 cancellationToken: cancellationToken);
             result = result with { ShowSource = request.ShowSource };
@@ -266,7 +281,8 @@ internal static class Program
 
     private static async Task<int> RunAsyncTreeAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "max-nodes", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output-format", "kind", "async-status", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -274,6 +290,8 @@ internal static class Program
                 [],
                 DatabaseHelpOption,
                 ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
                 AsyncOutputHelpOption,
                 new HelpOption("--max-nodes <count>", "Maximum path nodes (default: 500)"),
                 ShortNamesHelpOption,
@@ -281,9 +299,10 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var output = ParseOutput(parsed.GetSingle("output") ?? "tree", "async tree", "tree", "line", "json");
+        var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "async tree", "tree", "line", "json");
         var result = await CreateQueryService(parsed).FindAsyncPathAsync(
             RequireQuery(parsed),
+            ParseFunctionTargetFilter(parsed),
             ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
             parsed.GetSingle("profile"),
             cancellationToken);
@@ -293,7 +312,8 @@ internal static class Program
 
     private static async Task<int> RunCallerTreeAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "depth", "max-nodes", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output-format", "kind", "async-status", "depth", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -301,6 +321,8 @@ internal static class Program
                 [],
                 DatabaseHelpOption,
                 ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
                 CallerOutputHelpOption,
                 new HelpOption("--depth <count>", "Maximum caller depth; 0 is unlimited (default: 3)"),
                 new HelpOption("--max-nodes <count>", "Maximum graph nodes (default: 500)"),
@@ -309,9 +331,10 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var output = ParseOutput(parsed.GetSingle("output") ?? "tree", "callers tree", "tree", "mermaid", "json");
+        var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "callers tree", "tree", "mermaid", "json");
         var result = await CreateQueryService(parsed).FindCallerTreeAsync(
             RequireQuery(parsed),
+            ParseFunctionTargetFilter(parsed),
             ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3),
             ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
             parsed.GetSingle("profile"),
@@ -322,7 +345,8 @@ internal static class Program
 
     private static async Task<int> RunSourceShowAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args, "db", "profile", "output-format", "kind", "async-status", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -330,6 +354,8 @@ internal static class Program
                 [],
                 DatabaseHelpOption,
                 ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
                 ShortNamesHelpOption,
                 HelpHelpOption);
@@ -338,8 +364,9 @@ internal static class Program
 
         var result = await CreateQueryService(parsed).ShowSourceAsync(
             RequireQuery(parsed),
-            parsed.GetSingle("profile"),
-            cancellationToken);
+            ParseFunctionTargetFilter(parsed),
+            profileName: parsed.GetSingle("profile"),
+            cancellationToken: cancellationToken);
         CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
@@ -347,7 +374,8 @@ internal static class Program
     private static async Task<int> RunSourceSearchAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output", "include", "exclude", "ignore-case", "short-names", "help");
+            args,
+            "db", "profile", "output-format", "kind", "async-status", "include", "exclude", "ignore-case", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -355,6 +383,8 @@ internal static class Program
                 [],
                 DatabaseHelpOption,
                 ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
                 IncludeHelpOption,
                 ExcludeHelpOption,
@@ -380,18 +410,31 @@ internal static class Program
             includes,
             excludes,
             parsed.HasFlag("ignore-case"),
-            parsed.GetSingle("profile"),
-            cancellationToken);
+            ParseFunctionTargetFilter(parsed),
+            profileName: parsed.GetSingle("profile"),
+            cancellationToken: cancellationToken);
         CreateFormatter(parsed).WriteSymbols(result, cancellationToken);
         return ExitCodes.Success;
     }
 
     private static async Task<int> RunSymbolListAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "kind", "async-involved", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args,
+            "db", "profile", "output-format", "kind", "async-status", "async-involved", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("Usage: csindex symbol list [--kind method|lambda] [--async-involved] [--db <path>] [--output table|json] [--short-names]");
+            WriteCommandHelp(
+                "csindex symbol list [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--async-involved", "Include only symbols with async involvement"),
+                ShortNamesHelpOption,
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
@@ -400,16 +443,11 @@ internal static class Program
             throw new CliUsageException("symbol list does not accept positional arguments.");
         }
 
-        var kind = parsed.GetSingle("kind") switch
-        {
-            null => (IndexedSymbolKind?)null,
-            "method" => IndexedSymbolKind.Method,
-            "lambda" => IndexedSymbolKind.Lambda,
-            var value => throw new CliUsageException($"Unknown symbol kind: {value}. Use method or lambda."),
-        };
+        var filter = ParseFunctionTargetFilter(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.ListSymbolsAsync(
-            kind,
+            filter.Kind,
+            filter.AsyncStatus,
             parsed.HasFlag("async-involved"),
             parsed.GetSingle("profile"),
             cancellationToken);
@@ -421,17 +459,30 @@ internal static class Program
     private static async Task<int> RunDefinitionAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output", "at", "require-single", "short-names", "include-overrides", "help");
+            args,
+            "db", "profile", "output-format", "kind", "async-status", "at", "require-single", "short-names",
+            "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex definition <query> | --at <path:line:column> [--short-names]
-
-                  --include-overrides         Include descendant overrides and interface implementations
-                """);
+            WriteCommandHelp(
+                "csindex definition <query> | --at <path:line:column> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--at <path:line:column>", "Resolve the call target at a source position"),
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                ShortNamesHelpOption,
+                new HelpOption(
+                    "--include-overrides",
+                    "Include descendant overrides and interface implementations (method queries only)"),
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var filter = ParseFunctionTargetFilter(parsed);
         var service = CreateQueryService(parsed);
         DefinitionResult result;
         var at = parsed.GetSingle("at");
@@ -447,15 +498,20 @@ internal static class Program
                 throw new CliUsageException("definition accepts either a query or --at, not both.");
             }
 
-            result = await service.FindDefinitionAtAsync(at, parsed.GetSingle("profile"), cancellationToken);
+            result = await service.FindDefinitionAtAsync(
+                at,
+                filter,
+                profileName: parsed.GetSingle("profile"),
+                cancellationToken: cancellationToken);
         }
         else
         {
             result = await service.FindDefinitionsAsync(
                 RequireQuery(parsed),
-                parsed.GetSingle("profile"),
+                filter,
+                profileName: parsed.GetSingle("profile"),
                 includeOverrides: parsed.HasFlag("include-overrides"),
-                cancellationToken);
+                cancellationToken: cancellationToken);
         }
 
         if (RequiresSingleFailure(parsed, result.Definitions.Count))
@@ -471,23 +527,36 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names",
-            "include-overrides", "help");
+            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "require-single", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex references <query> [options]
-
-                  --include-overrides         Include descendant overrides and interface implementations
-                """);
+            WriteCommandHelp(
+                "csindex references <query> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--exclude-generated", "Exclude generated documents"),
+                new HelpOption("--only-generated", "Include only generated documents"),
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                ShortNamesHelpOption,
+                new HelpOption(
+                    "--include-overrides",
+                    "Include descendant overrides and interface implementations (method queries only)"),
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var filter = ParseFunctionTargetFilter(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindReferencesAsync(
             RequireQuery(parsed),
             ParseGeneratedFilter(parsed),
-            parsed.GetSingle("profile"),
+            filter,
+            profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
@@ -503,18 +572,32 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "dispatch",
-            "caller-scope", "short-names", "include-overrides", "help");
+            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "require-single", "dispatch", "caller-scope", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex callers <query> [options]
-
-                  --include-overrides         Include descendant overrides and interface implementations
-                """);
+            WriteCommandHelp(
+                "csindex callers <query> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--exclude-generated", "Exclude generated documents"),
+                new HelpOption("--only-generated", "Include only generated documents"),
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                new HelpOption("--dispatch static|virtual|all", "Dispatch mode (default: static)"),
+                new HelpOption("--caller-scope direct|containing|both", "Caller scope (default: direct)"),
+                ShortNamesHelpOption,
+                new HelpOption(
+                    "--include-overrides",
+                    "Include descendant overrides and interface implementations (method queries only)"),
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var filter = ParseFunctionTargetFilter(parsed);
         var dispatch = (parsed.GetSingle("dispatch") ?? "static") switch
         {
             "static" => DispatchSearchMode.Static,
@@ -535,7 +618,8 @@ internal static class Program
             ParseGeneratedFilter(parsed),
             dispatch,
             callerScope,
-            parsed.GetSingle("profile"),
+            filter,
+            profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
@@ -551,22 +635,36 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output", "exclude-generated", "only-generated", "require-single", "short-names",
-            "exclude-lambda-calls", "include-overrides", "help");
+            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "require-single", "short-names", "exclude-lambda-calls", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
-            Console.WriteLine("""
-                Usage: csindex callees <query> [options]
-
-                  --include-overrides         Include descendant overrides and interface implementations
-                """);
+            WriteCommandHelp(
+                "csindex callees <query> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--exclude-generated", "Exclude generated documents"),
+                new HelpOption("--only-generated", "Include only generated documents"),
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                ShortNamesHelpOption,
+                new HelpOption("--exclude-lambda-calls", "Exclude calls made by nested lambdas"),
+                new HelpOption(
+                    "--include-overrides",
+                    "Include descendant overrides and interface implementations (method queries only)"),
+                HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var filter = ParseFunctionTargetFilter(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindCalleesAsync(
             RequireQuery(parsed),
             ParseGeneratedFilter(parsed),
+            filter,
             includeLambdaCalls: !parsed.HasFlag("exclude-lambda-calls"),
             profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
@@ -582,12 +680,32 @@ internal static class Program
 
     private static async Task<int> RunOverridesAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "require-single", "short-names", "help");
+        var parsed = ParseQueryArguments(
+            args,
+            "db", "profile", "output-format", "kind", "async-status", "require-single", "short-names", "help");
+        if (parsed.HasFlag("help"))
+        {
+            WriteCommandHelp(
+                "csindex overrides <query> [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                FunctionKindHelpOption,
+                AsyncStatusHelpOption,
+                TableJsonOutputHelpOption,
+                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                ShortNamesHelpOption,
+                HelpHelpOption);
+            return ExitCodes.Success;
+        }
+
+        var filter = ParseFunctionTargetFilter(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindOverridesAsync(
             RequireQuery(parsed),
-            parsed.GetSingle("profile"),
-            cancellationToken);
+            filter,
+            profileName: parsed.GetSingle("profile"),
+            cancellationToken: cancellationToken);
         if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
@@ -599,7 +717,19 @@ internal static class Program
 
     private static async Task<int> RunConditionsAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output", "help");
+        var parsed = ParseQueryArguments(args, "db", "profile", "output-format", "help");
+        if (parsed.HasFlag("help"))
+        {
+            WriteCommandHelp(
+                "csindex conditions [options]",
+                [],
+                DatabaseHelpOption,
+                ProfileHelpOption,
+                TableJsonOutputHelpOption,
+                HelpHelpOption);
+            return ExitCodes.Success;
+        }
+
         if (parsed.Positionals.Count != 0)
         {
             throw new CliUsageException("conditions does not accept a positional query.");
@@ -629,6 +759,7 @@ internal static class Program
         var namespacePattern = parsed.GetSingle("namespace");
         var typePattern = parsed.GetSingle("type");
         var methodPattern = parsed.GetSingle("method");
+        var filter = ParseFunctionTargetFilter(parsed);
         if (pattern is null && namespacePattern is null && typePattern is null && methodPattern is null)
         {
             throw new CliUsageException(
@@ -640,30 +771,44 @@ internal static class Program
             namespacePattern,
             typePattern,
             methodPattern,
-            ParseSearchKind(parsed.GetSingle("kind")),
+            filter.Kind,
             parsed.HasFlag("regex"),
             parsed.HasFlag("ignore-case"),
             parsed.GetMany("include"),
             parsed.GetMany("exclude"),
-            parsed.HasFlag("show-source"));
+            parsed.HasFlag("show-source"),
+            filter.AsyncStatus);
     }
 
-    private static IndexedSymbolKind? ParseSearchKind(string? value) => value switch
+    private static FunctionTargetFilter ParseFunctionTargetFilter(CliArguments parsed)
     {
-        null => null,
-        "method" => IndexedSymbolKind.Method,
-        "lambda" => IndexedSymbolKind.Lambda,
-        _ => throw new CliUsageException($"Unknown symbol kind: {value}. Use method or lambda."),
-    };
+        var kind = parsed.GetSingle("kind") switch
+        {
+            null or "all" => (IndexedSymbolKind?)null,
+            "method" => IndexedSymbolKind.Method,
+            "lambda" => IndexedSymbolKind.Lambda,
+            var value => throw new CliUsageException(
+                $"Unknown symbol kind: {value}. Use all, method, or lambda."),
+        };
+        var asyncStatus = parsed.GetSingle("async-status") switch
+        {
+            null or "all" => AsyncStatusFilter.All,
+            "async" => AsyncStatusFilter.Async,
+            "sync" => AsyncStatusFilter.Sync,
+            var value => throw new CliUsageException(
+                $"Unknown async status: {value}. Use all, async, or sync."),
+        };
 
-    private static bool IsLegacyExactOverrideSearch(SymbolSearchRequest request) =>
+        return new FunctionTargetFilter(kind, asyncStatus);
+    }
+
+    private static bool IsExactOverrideSearch(SymbolSearchRequest request) =>
         request.Pattern is not null &&
         !request.Pattern.Contains('*') &&
         !request.Pattern.Contains("::<lambda#", StringComparison.OrdinalIgnoreCase) &&
         request.NamespacePattern is null &&
         request.TypePattern is null &&
         request.MethodPattern is null &&
-        request.Kind is null &&
         !request.UseRegex &&
         !request.IgnoreCase &&
         request.Includes.Count == 0 &&
@@ -717,7 +862,7 @@ internal static class Program
     }
 
     private static OutputFormatter CreateFormatter(CliArguments parsed) =>
-        new(parsed.GetSingle("output") ?? "table", parsed.HasFlag("short-names"));
+        new(parsed.GetSingle("output-format") ?? "table", parsed.HasFlag("short-names"));
 
     private static string RequireQuery(CliArguments parsed)
     {
@@ -868,7 +1013,10 @@ internal static class Program
             Common query options:
               --db <path>                 SQLite index path (default: .csindex/index.sqlite)
               --profile <name>            Analysis profile
-              --output table|json         Output format
+              --output-format table|json  Output format
+              --kind all|method|lambda    Limit function targets by kind (default: all)
+              --async-status all|async|sync
+                                          Limit function targets by direct async status (default: all)
               --exclude-generated         Exclude generated documents
               --only-generated            Include only generated documents
               --require-single            Fail unless the query matches one symbol
@@ -876,14 +1024,12 @@ internal static class Program
               --include-overrides         Include descendant overrides and interface implementations (method queries only)
 
             Symbol list options:
-              --kind method|lambda         Limit listed function symbols by kind
               --async-involved             Include only symbols with async involvement
 
             Symbol find options:
               --namespace <pattern>        Namespace component filter
               --type <pattern>             Type component filter
               --method <pattern>           Method component filter
-              --kind method|lambda         Limit results to executable kind
               --regex                      Interpret name filters as regular expressions
               --include <text>             Require normalized source text (repeatable)
               --exclude <text>             Reject normalized source text (repeatable)
@@ -891,16 +1037,18 @@ internal static class Program
               --show-source                Include normalized source in output
 
             Async tree options:
-              --output tree|line|json      Output format (default: tree)
+              --output-format tree|line|json
+                                          Output format (default: tree)
               --max-nodes <count>          Maximum path nodes (default: 500)
 
             Callers tree options:
               --depth <count>              Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>          Maximum graph nodes (default: 500)
-              --output tree|mermaid|json   Output format (default: tree)
+              --output-format tree|mermaid|json
+                                          Output format (default: tree)
 
             Source commands:
-              source show supports --output table|json
+              source show supports --output-format table|json
               source search requires --include <text> or --exclude <text>
 
             Callees options:
@@ -928,7 +1076,8 @@ internal static class Program
         Console.WriteLine();
         foreach (var option in options)
         {
-            Console.WriteLine($"  {option.Syntax,-28}{option.Description}");
+            var padding = new string(' ', Math.Max(1, 28 - option.Syntax.Length));
+            Console.WriteLine($"  {option.Syntax}{padding}{option.Description}");
         }
     }
 
