@@ -49,8 +49,21 @@ internal sealed class OutputDestination : IDisposable
 
             if (_state == DestinationState.Unopened)
             {
-                _writer = OpenTemporaryWriter();
-                _state = DestinationState.Open;
+                _state = DestinationState.Opening;
+                try
+                {
+                    _writer = OpenTemporaryWriter();
+                    _state = DestinationState.Open;
+                }
+                catch (Exception exception)
+                {
+                    if (_state == DestinationState.Opening)
+                    {
+                        throw FailOpen(exception);
+                    }
+
+                    throw;
+                }
             }
 
             return _writer!;
@@ -195,6 +208,8 @@ internal sealed class OutputDestination : IDisposable
         {
             return;
         }
+
+        ThrowIfOpening();
 
         OutputException? disposalException = null;
         if (_state != DestinationState.Committed && _destinationPath is not null)
@@ -481,6 +496,7 @@ internal sealed class OutputDestination : IDisposable
 
     private void ThrowIfTerminal()
     {
+        ThrowIfOpening();
         if (_state == DestinationState.Committed)
         {
             throw new InvalidOperationException("The output destination has already been committed.");
@@ -489,6 +505,15 @@ internal sealed class OutputDestination : IDisposable
         if (_state == DestinationState.Faulted)
         {
             throw new InvalidOperationException("The output destination is faulted and cannot be reused.");
+        }
+    }
+
+    private void ThrowIfOpening()
+    {
+        if (_state == DestinationState.Opening)
+        {
+            throw new InvalidOperationException(
+                "The output destination is being opened and cannot be reentered.");
         }
     }
 
@@ -532,6 +557,7 @@ internal sealed class OutputDestination : IDisposable
     private enum DestinationState
     {
         Unopened,
+        Opening,
         Open,
         Committed,
         Faulted,

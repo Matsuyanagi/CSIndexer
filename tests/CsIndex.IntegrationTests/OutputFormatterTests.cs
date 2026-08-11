@@ -673,8 +673,11 @@ public sealed class OutputFormatterTests
         Assert.Equal([databasePath], Directory.GetFiles(directory.Path));
     }
 
-    [Fact]
-    public void OutputDestinationRejectsEquivalentWindowsExtendedUncComparisonPathWithoutAccessingTheShare()
+    [Theory]
+    [InlineData(@"\\?\UNC\server\share\folder\index.sqlite")]
+    [InlineData(@"\\.\UNC\server\share\folder\index.sqlite")]
+    public void OutputDestinationRejectsEquivalentWindowsExtendedUncComparisonPathWithoutAccessingTheShare(
+        string equivalentOutputPath)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -682,9 +685,11 @@ public sealed class OutputFormatterTests
         }
 
         const string databasePath = @"\\server\share\folder\index.sqlite";
-        const string equivalentOutputPath = @"\\?\UNC\server\share\folder\index.sqlite";
 
-        Assert.Throws<CliUsageException>(() => OutputDestination.Create(equivalentOutputPath, databasePath));
+        var exception = Assert.Throws<CliUsageException>(() =>
+            OutputDestination.Create(equivalentOutputPath, databasePath));
+
+        Assert.Contains("must not match the active database path", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1048,7 +1053,7 @@ public sealed class OutputFormatterTests
             Assert.Throws<InvalidOperationException>(() => _ = destination.Writer);
         }
 
-        Assert.InRange(attempts, 2, 32);
+        Assert.Equal(8, attempts);
         Assert.Equal("output sentinel", File.ReadAllText(outputPath));
         Assert.Equal("collision sentinel", File.ReadAllText(collisionPath));
         Assert.Equal(
@@ -1090,6 +1095,103 @@ public sealed class OutputFormatterTests
         Assert.Equal("output sentinel", File.ReadAllText(outputPath));
         Assert.False(File.Exists(ownedTemporaryPath));
         Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("writer", "writer")]
+    [InlineData("writer", "commit")]
+    [InlineData("writer", "dispose")]
+    [InlineData("path", "writer")]
+    [InlineData("path", "commit")]
+    [InlineData("path", "dispose")]
+    public void OutputDestinationRejectsReentrantOpenCallbacksWithoutLosingTemporaryFileOwnership(
+        string callbackKind,
+        string operation)
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        OutputDestination? destination = null;
+        var callbackEntered = false;
+        var candidateIndex = 0;
+
+        void ReenterDestination()
+        {
+            switch (operation)
+            {
+                case "writer":
+                    _ = destination!.Writer;
+                    break;
+                case "commit":
+                    destination!.Commit(TestContext.Current.CancellationToken);
+                    break;
+                case "dispose":
+                    destination!.Dispose();
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(operation));
+            }
+        }
+
+        TextWriter CreateWriter(Stream stream)
+        {
+            try
+            {
+                if (callbackKind == "writer" && !callbackEntered)
+                {
+                    callbackEntered = true;
+                    ReenterDestination();
+                }
+
+                return new StringWriter();
+            }
+            finally
+            {
+                stream.Dispose();
+            }
+        }
+
+        string CreateTemporaryPath(string _)
+        {
+            var candidatePath = Path.Combine(directory.Path, $".result.{candidateIndex++}.tmp");
+            if (callbackKind == "path" && !callbackEntered)
+            {
+                callbackEntered = true;
+                ReenterDestination();
+            }
+
+            return candidatePath;
+        }
+
+        destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            CreateWriter,
+            CreateTemporaryPath);
+        Exception? openingFailure;
+        Exception? writerReuseFailure = null;
+        Exception? commitReuseFailure = null;
+        using (destination)
+        {
+            openingFailure = Record.Exception(() => _ = destination.Writer);
+            if (openingFailure is not null)
+            {
+                writerReuseFailure = Record.Exception(() => _ = destination.Writer);
+                commitReuseFailure = Record.Exception(() =>
+                    destination.Commit(TestContext.Current.CancellationToken));
+            }
+        }
+
+        Assert.True(callbackEntered);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+        var outputException = Assert.IsType<OutputException>(openingFailure);
+        var lifecycleException = Assert.IsType<InvalidOperationException>(outputException.InnerException);
+        Assert.Contains("being opened", lifecycleException.Message, StringComparison.Ordinal);
+        Assert.IsType<InvalidOperationException>(writerReuseFailure);
+        Assert.IsType<InvalidOperationException>(commitReuseFailure);
     }
 
     [Fact]
