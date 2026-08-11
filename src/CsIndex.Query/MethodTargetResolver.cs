@@ -108,7 +108,7 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
 
         var targets = await repository.GetSymbolsByIdsAsync(profileId, targetIds, cancellationToken);
         return sourceOnly
-            ? targets.Where(target => target.DocumentPath is not null).ToArray()
+            ? targets.Where(IsSourceBackedMethod).ToArray()
             : targets;
     }
 
@@ -144,7 +144,7 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
             .Select(candidate => new ResolvedRoot(
                 methodsById[candidate.MethodId],
                 receiversById[candidate.ReceiverTypeId]))
-            .Where(root => (!sourceOnly || root.Method.DocumentPath is not null) &&
+            .Where(root => (!sourceOnly || IsSourceBackedMethod(root.Method)) &&
                            SymbolMatcher.IsMethodSignatureMatch(query, root.Method))
             .ToArray();
     }
@@ -196,6 +196,11 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
 
         return result;
     }
+
+    private static bool IsSourceBackedMethod(StoredSymbol symbol) =>
+        symbol.Kind == IndexedSymbolKind.Method &&
+        symbol.DocumentPath is not null &&
+        symbol.NormalizedSource is not null;
 
     private sealed record ResolvedRoot(StoredSymbol Method, StoredSymbol ReceiverType);
 }

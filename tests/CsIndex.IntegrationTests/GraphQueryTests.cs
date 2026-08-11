@@ -32,6 +32,40 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task AsyncPath_ResolvesOwnerQualifiedLambdaRootsWithoutFilteringSavedMethodPathNodes()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var filter = new FunctionTargetFilter(IndexedSymbolKind.Lambda, AsyncStatusFilter.Sync);
+
+        var first = await fixture.Query.FindAsyncPathAsync(
+            "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>",
+            filter: filter,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var second = await fixture.Query.FindAsyncPathAsync(
+            "Alpha.AsyncGraph::ZLambdaPathOwner()::<lambda#1>",
+            filter: filter,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(IndexedSymbolKind.Lambda, first.Root.Kind);
+        Assert.Equal(AsyncRole.None, first.Root.AsyncRole);
+        Assert.Equal(
+            [
+                "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>",
+                "Alpha.AsyncGraph::Start()",
+                "Alpha.AsyncGraph::Middle()",
+                "Alpha.AsyncGraph::EndAsync()",
+            ],
+            first.Nodes.Select(node => node.DisplayName));
+        Assert.Contains(first.Nodes, node => node.Kind == IndexedSymbolKind.Method);
+        Assert.Contains(first.Nodes, node => node.AsyncRole != AsyncRole.None);
+        Assert.True(second.Found);
+        Assert.Equal("Alpha.AsyncGraph::ZLambdaPathOwner()::<lambda#1>", second.Root.DisplayName);
+    }
+
+    [Fact]
     public async Task AsyncPath_RepresentsSelfAsyncAndUnreachableMethods()
     {
         await fixture.BuildTask;
@@ -389,7 +423,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
-    public async Task AsyncPath_RejectsRootWithoutNormalizedSource()
+    public async Task AsyncPath_RejectsRootWithoutNormalizedSourceDuringTargetResolution()
     {
         await fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -407,11 +441,13 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 fixture.PrimaryProfileName,
                 cancellationToken);
 
-            var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
+            var exception = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
                 root.DisplayName,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
-            Assert.Contains("source-backed executable", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                "No source-backed executable matches graph query: Alpha.AsyncGraph::Start()",
+                exception.Message);
         }
         finally
         {
@@ -444,8 +480,41 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             "Alpha.AClass::Play(), Alpha.AClass::Play(System.String)",
             ambiguous.Message);
         Assert.Equal(
-            "No source-backed method matches graph query: Alpha.AClass::Missing()",
+            "No source-backed executable matches graph query: Alpha.AClass::Missing()",
             missing.Message);
+    }
+
+    [Fact]
+    public async Task GraphRootResolution_ReportsSuffixOnlyLambdaAmbiguityInStableCandidateOrder()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var filter = new FunctionTargetFilter(IndexedSymbolKind.Lambda, AsyncStatusFilter.Sync);
+
+        var asyncPath = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
+            "::<lambda#1>",
+            filter: filter,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken));
+        var callerTree = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindCallerTreeAsync(
+            "::<lambda#1>",
+            filter: filter,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken));
+
+        Assert.Equal(asyncPath.Message, callerTree.Message);
+        Assert.StartsWith(
+            "Graph query is ambiguous for '::<lambda#1>'. Candidates: ",
+            asyncPath.Message,
+            StringComparison.Ordinal);
+        var firstCandidate = asyncPath.Message.IndexOf(
+            "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>",
+            StringComparison.Ordinal);
+        var secondCandidate = asyncPath.Message.IndexOf(
+            "Alpha.AsyncGraph::ZLambdaPathOwner()::<lambda#1>",
+            StringComparison.Ordinal);
+        Assert.True(firstCandidate >= 0, asyncPath.Message);
+        Assert.True(secondCandidate > firstCandidate, asyncPath.Message);
     }
 
     [Fact]
@@ -847,6 +916,36 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         Assert.Contains("Alpha.CallerGraph::LambdaOwner()::<lambda#1>", lambda.DisplayName, StringComparison.Ordinal);
         Assert.DoesNotContain(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::LambdaOwner()");
         Assert.Contains(new CallerTreeEdge(lambda.Id, result.Root.Id), result.Edges);
+    }
+
+    [Fact]
+    public async Task CallerTree_ResolvesALambdaRootWithoutFilteringStoredMethodCallers()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string lambdaRoot = "Alpha.CallerGraph::LambdaTreeOwner()::<lambda#1>";
+        await fixture.AddResolvedCallAsync(
+            "Alpha.CallerGraph::LambdaRootCaller()",
+            lambdaRoot,
+            fixture.PrimaryProfileName,
+            cancellationToken);
+
+        var result = await fixture.Query.FindCallerTreeAsync(
+            lambdaRoot,
+            filter: new(IndexedSymbolKind.Lambda, AsyncStatusFilter.Sync),
+            depth: 1,
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(lambdaRoot, result.Root.DisplayName);
+        Assert.Equal(IndexedSymbolKind.Lambda, result.Root.Kind);
+        var caller = Assert.Single(result.Nodes, node => node.Depth == 1).Symbol;
+        Assert.Equal("Alpha.CallerGraph::LambdaRootCaller()", caller.DisplayName);
+        Assert.Equal(IndexedSymbolKind.Method, caller.Kind);
+        Assert.DoesNotContain(
+            result.Nodes,
+            node => node.Symbol.DisplayName == "Alpha.CallerGraph::LambdaTreeOwner()");
+        Assert.Contains(new CallerTreeEdge(caller.Id, result.Root.Id), result.Edges);
     }
 
     [Fact]

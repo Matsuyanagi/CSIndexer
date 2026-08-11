@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using CsIndex.Core.Model;
+using CsIndex.Query;
 using CsIndex.Storage;
 
 namespace CsIndex.Query.Symbols;
@@ -9,8 +10,7 @@ public sealed class SymbolPatternMatcher
 {
     private static readonly TimeSpan ProductionRegexTimeout = TimeSpan.FromSeconds(2);
 
-    private readonly IndexedSymbolKind? _kind;
-    private readonly AsyncStatusFilter _asyncStatus;
+    private readonly FunctionTargetFilter _filter;
     private readonly CompiledPattern? _pattern;
     private readonly CompiledPattern? _lambdaSuffixPattern;
     private readonly CompiledPattern? _namespacePattern;
@@ -21,8 +21,7 @@ public sealed class SymbolPatternMatcher
     {
         ArgumentNullException.ThrowIfNull(request);
         var timeout = regexTimeout ?? ProductionRegexTimeout;
-        _kind = request.Kind;
-        _asyncStatus = request.AsyncStatus;
+        _filter = new FunctionTargetFilter(request.Kind, request.AsyncStatus);
         _pattern = Compile(request.Pattern, "pattern", request.UseRegex, request.IgnoreCase, timeout);
         _namespacePattern = Compile(
             request.NamespacePattern,
@@ -50,23 +49,9 @@ public sealed class SymbolPatternMatcher
     {
         ArgumentNullException.ThrowIfNull(symbol);
 
-        if (_kind is not null && symbol.Kind != _kind)
+        if (!_filter.Matches(symbol))
         {
             return false;
-        }
-
-        if (_asyncStatus is AsyncStatusFilter.Async or AsyncStatusFilter.Sync)
-        {
-            if (symbol.Kind is not (IndexedSymbolKind.Method or IndexedSymbolKind.Lambda))
-            {
-                return false;
-            }
-
-            if ((_asyncStatus == AsyncStatusFilter.Async && symbol.AsyncRole == AsyncRole.None) ||
-                (_asyncStatus == AsyncStatusFilter.Sync && symbol.AsyncRole != AsyncRole.None))
-            {
-                return false;
-            }
         }
 
         if (!MatchesPattern(_pattern, symbol.DisplayName) &&

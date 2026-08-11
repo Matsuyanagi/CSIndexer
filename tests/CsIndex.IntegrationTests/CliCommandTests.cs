@@ -74,7 +74,7 @@ public sealed class CliCommandTests : IDisposable
             ambiguousRoot.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, missingRoot.ExitCode);
         Assert.Equal(
-            "Query error: No source-backed method matches graph query: Alpha.Missing::Run()" + Environment.NewLine,
+            "Query error: No source-backed executable matches graph query: Alpha.Missing::Run()" + Environment.NewLine,
             missingRoot.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, unsupportedOption.ExitCode);
         Assert.Contains("Unknown option(s): --include", unsupportedOption.StandardError);

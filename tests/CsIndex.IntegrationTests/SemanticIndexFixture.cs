@@ -204,6 +204,35 @@ public sealed class SemanticIndexFixture : IDisposable
                 }
             }
 
+            public class AsyncOverrideBase
+            {
+                public virtual void Run() { }
+            }
+
+            public class AsyncOverrideDerived : AsyncOverrideBase
+            {
+                public override async void Run() => await Task.Yield();
+            }
+
+            public sealed class FunctionKinds
+            {
+                public FunctionKinds() { }
+
+                public int Value { get; set; }
+
+                public void Regular() { }
+
+                public void LocalOwner()
+                {
+                    void Local() { }
+                    Local();
+                }
+
+                public static FunctionKinds operator +(FunctionKinds left, FunctionKinds right) => left;
+
+                public static implicit operator int(FunctionKinds value) => value.Value;
+            }
+
             public class AsyncGraph
             {
                 public void Start() => Middle();
@@ -228,6 +257,18 @@ public sealed class SemanticIndexFixture : IDisposable
                 public void EqualLeft() => EqualEndAsync();
                 public void EqualRight() => EqualEndAsync();
                 public async Task EqualEndAsync() { await Task.Yield(); }
+
+                public void ALambdaPathOwner()
+                {
+                    Action action = () => Start();
+                    _ = action;
+                }
+
+                public void ZLambdaPathOwner()
+                {
+                    Action action = () => Start();
+                    _ = action;
+                }
             }
 
             public sealed class GraphCreated
@@ -274,6 +315,14 @@ public sealed class SemanticIndexFixture : IDisposable
                     Action action = () => LambdaTarget();
                     _ = action;
                 }
+
+                public void LambdaTreeOwner()
+                {
+                    Action action = () => { };
+                    _ = action;
+                }
+
+                public void LambdaRootCaller() { }
 
                 public void OrderingTarget() { }
                 public void ZCaller() => OrderingTarget();
