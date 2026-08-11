@@ -139,6 +139,98 @@ public sealed class CliCommandTests : IDisposable
         Assert.DoesNotContain("Alpha.AsyncOverrideDerived::Run()", syncOnly.StandardOutput);
     }
 
+    [Theory]
+    [InlineData("symbol-find")]
+    [InlineData("symbol-list")]
+    [InlineData("source-show")]
+    [InlineData("source-search")]
+    [InlineData("definition-query")]
+    [InlineData("definition-at")]
+    [InlineData("references")]
+    [InlineData("callers")]
+    [InlineData("callees")]
+    [InlineData("overrides")]
+    public async Task FunctionFiltersConstrainEveryWiredJsonCommand(string commandPath)
+    {
+        await _fixture.BuildTask;
+        var (args, emptyProperties) = commandPath switch
+        {
+            "symbol-find" =>
+                (new[] { "symbol", "find", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
+                    new[] { "matched" }),
+            "symbol-list" =>
+                (new[] { "symbol", "list", "--kind", "lambda" }, Array.Empty<string>()),
+            "source-show" =>
+                (new[] { "source", "show", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
+                    new[] { "matched" }),
+            "source-search" =>
+                (new[] { "source", "search", "--include", "public void Sync()", "--async-status", "async" },
+                    new[] { "matched" }),
+            "definition-query" =>
+                (new[] { "definition", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
+                    new[] { "matched", "definitions" }),
+            "definition-at" =>
+                (new[] { "definition", "--at", _fixture.GetLocation("a.Play()"), "--async-status", "async" },
+                    new[] { "matched", "definitions" }),
+            "references" =>
+                (new[] { "references", "Alpha.LambdaPlayer::Play()", "--async-status", "async" },
+                    new[] { "matched", "calls" }),
+            "callers" =>
+                (new[] { "callers", "Alpha.LambdaPlayer::Play()", "--async-status", "async" },
+                    new[] { "matched", "calls" }),
+            "callees" =>
+                (new[] { "callees", "Alpha.DescendantCallees::Execute()", "--async-status", "async" },
+                    new[] { "matched", "calls" }),
+            "overrides" =>
+                (new[] { "overrides", "Alpha.AsyncOverrideBase::Run()", "--async-status", "async" },
+                    new[] { "matched", "relations" }),
+            _ => throw new ArgumentOutOfRangeException(nameof(commandPath)),
+        };
+
+        var result = await RunAsync(
+            [.. args, "--output-format", "json", "--db", _fixture.DatabasePath]);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        if (commandPath == "symbol-list")
+        {
+            var symbols = document.RootElement.GetProperty("symbols").EnumerateArray().ToArray();
+            Assert.NotEmpty(symbols);
+            Assert.All(symbols, symbol => Assert.Equal("lambda", symbol.GetProperty("kind").GetString()));
+            return;
+        }
+
+        foreach (var property in emptyProperties)
+        {
+            Assert.Empty(document.RootElement.GetProperty(property).EnumerateArray());
+        }
+    }
+
+    [Theory]
+    [InlineData("async", "tree", "Alpha.AsyncGraph::Start()")]
+    [InlineData("callers", "tree", "Alpha.CallerGraph::DirectTarget()")]
+    public async Task FunctionFiltersConstrainEveryWiredGraphRoot(
+        string command,
+        string subcommand,
+        string query)
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            command,
+            subcommand,
+            query,
+            "--async-status",
+            "async",
+            "--db",
+            _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Equal(
+            $"Query error: No source-backed executable matches graph query: {query}{Environment.NewLine}",
+            result.StandardError);
+    }
+
     [Fact]
     public async Task InvalidFunctionFilterValuesReportEveryAllowedValue()
     {
@@ -196,6 +288,48 @@ public sealed class CliCommandTests : IDisposable
             "overrides", "Alpha.AsyncOverrideBase::Run()", "--kind", "lambda", "--db", _fixture.DatabasePath);
         Assert.Equal(ExitCodes.InvalidArguments, overrides.ExitCode);
         Assert.Contains("--kind lambda is not applicable to overrides.", overrides.StandardError);
+    }
+
+    [Theory]
+    [InlineData("definition", "definitions")]
+    [InlineData("references", "calls")]
+    [InlineData("callers", "calls")]
+    [InlineData("callees", "calls")]
+    public async Task IncludeOverridesAcceptsExplicitAllAndMethodAcrossSupportedQueryCommands(
+        string command,
+        string expandedCollection)
+    {
+        await _fixture.BuildTask;
+        foreach (var kind in new[] { "all", "method" })
+        {
+            var result = await RunAsync(
+                command,
+                "Alpha.Pianist::Play()",
+                "--include-overrides",
+                "--kind",
+                kind,
+                "--output-format",
+                "json",
+                "--db",
+                _fixture.DatabasePath);
+
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var root = document.RootElement;
+            Assert.Contains(root.GetProperty("matched").EnumerateArray(), symbol =>
+                symbol.GetProperty("displayName").GetString() == "Alpha.ProPianist::Play()");
+            if (expandedCollection == "definitions")
+            {
+                Assert.Contains(root.GetProperty(expandedCollection).EnumerateArray(), symbol =>
+                    symbol.GetProperty("displayName").GetString() == "Alpha.ProPianist::Play()");
+            }
+            else
+            {
+                Assert.Contains(root.GetProperty(expandedCollection).EnumerateArray(), call =>
+                    (command == "callees" ? call.GetProperty("caller") : call.GetProperty("callee"))
+                    .GetString()!.Contains("Alpha.ProPianist::Play()", StringComparison.Ordinal));
+            }
+        }
     }
 
     [Fact]
