@@ -110,6 +110,11 @@ internal static class Program
             Console.Error.WriteLine($"Input error: {exception.Message}");
             return ExitCodes.AnalysisFailure;
         }
+        catch (OutputException exception)
+        {
+            Console.Error.WriteLine($"Output error: {exception.Message}");
+            return ExitCodes.AnalysisFailure;
+        }
         catch (IndexDatabaseException exception)
         {
             Console.Error.WriteLine($"Database error: {exception.Message}");
@@ -210,7 +215,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "require-single", "short-names", "include-overrides", "namespace", "type",
+            "db", "profile", "output-format", "output-file", "require-single", "short-names", "include-overrides", "namespace", "type",
             "method", "kind", "async-status", "regex", "include", "exclude", "ignore-case", "show-source", "source-layout", "help");
         if (parsed.HasFlag("help"))
         {
@@ -220,6 +225,7 @@ internal static class Program
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
                 ShortNamesHelpOption,
                 new HelpOption("--namespace <pattern>", "Namespace component filter"),
@@ -241,9 +247,7 @@ internal static class Program
         }
 
         var request = CreateSymbolSearchRequest(parsed);
-        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: request.ShowSource);
-        var service = CreateQueryService(parsed);
-        QueryContext result;
+        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: request.ShowSource);
         if (parsed.HasFlag("include-overrides"))
         {
             if (request.Kind == IndexedSymbolKind.Lambda)
@@ -256,7 +260,13 @@ internal static class Program
                 throw new CliUsageException(
                     "--include-overrides cannot be combined with component, lambda, regex, case, or source filter options.");
             }
+        }
 
+        using var destination = CreateOutputDestination(parsed);
+        var service = CreateQueryService(parsed);
+        QueryContext result;
+        if (parsed.HasFlag("include-overrides"))
+        {
             result = await service.FindSymbolsAsync(
                 request.Pattern!,
                 new FunctionTargetFilter(request.Kind, request.AsyncStatus),
@@ -272,19 +282,21 @@ internal static class Program
                 parsed.GetSingle("profile"),
                 cancellationToken);
         }
+
         if (RequiresSingleFailure(parsed, result.MatchedSymbols.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
 
-        formatter.WriteSymbols(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
     private static async Task<int> RunAsyncTreeAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output-format", "kind", "async-status", "max-nodes", "short-names", "help");
+            args, "db", "profile", "output-format", "output-file", "kind", "async-status", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -295,6 +307,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 AsyncOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--max-nodes <count>", "Maximum path nodes (default: 500)"),
                 ShortNamesHelpOption,
                 HelpHelpOption);
@@ -302,20 +315,26 @@ internal static class Program
         }
 
         var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "async tree", "tree", "line", "json");
+        var query = RequireQuery(parsed);
+        var filter = ParseFunctionTargetFilter(parsed);
+        var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
+        using var destination = CreateOutputDestination(parsed);
         var result = await CreateQueryService(parsed).FindAsyncPathAsync(
-            RequireQuery(parsed),
-            ParseFunctionTargetFilter(parsed),
-            ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
+            query,
+            filter,
+            maxNodes,
             parsed.GetSingle("profile"),
             cancellationToken);
-        new GraphOutputFormatter(parsed.HasFlag("short-names")).WriteAsyncPath(result, output, cancellationToken);
+        new GraphOutputFormatter(parsed.HasFlag("short-names"), destination.Writer)
+            .WriteAsyncPath(result, output, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
     private static async Task<int> RunCallerTreeAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output-format", "kind", "async-status", "depth", "max-nodes", "short-names", "help");
+            args, "db", "profile", "output-format", "output-file", "kind", "async-status", "depth", "max-nodes", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -326,6 +345,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 CallerOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--depth <count>", "Maximum caller depth; 0 is unlimited (default: 3)"),
                 new HelpOption("--max-nodes <count>", "Maximum graph nodes (default: 500)"),
                 ShortNamesHelpOption,
@@ -334,21 +354,28 @@ internal static class Program
         }
 
         var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "callers tree", "tree", "mermaid", "json");
+        var query = RequireQuery(parsed);
+        var filter = ParseFunctionTargetFilter(parsed);
+        var depth = ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3);
+        var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
+        using var destination = CreateOutputDestination(parsed);
         var result = await CreateQueryService(parsed).FindCallerTreeAsync(
-            RequireQuery(parsed),
-            ParseFunctionTargetFilter(parsed),
-            ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3),
-            ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500),
+            query,
+            filter,
+            depth,
+            maxNodes,
             parsed.GetSingle("profile"),
             cancellationToken);
-        new GraphOutputFormatter(parsed.HasFlag("short-names")).WriteCallerTree(result, output, cancellationToken);
+        new GraphOutputFormatter(parsed.HasFlag("short-names"), destination.Writer)
+            .WriteCallerTree(result, output, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
     private static async Task<int> RunSourceShowAsync(string[] args, CancellationToken cancellationToken)
     {
         var parsed = ParseQueryArguments(
-            args, "db", "profile", "output-format", "kind", "async-status", "source-layout", "short-names", "help");
+            args, "db", "profile", "output-format", "output-file", "kind", "async-status", "source-layout", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -359,19 +386,24 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 SourceLayoutHelpOption,
                 ShortNamesHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
         }
 
-        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: true);
+        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
+        var query = RequireQuery(parsed);
+        var filter = ParseFunctionTargetFilter(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var result = await CreateQueryService(parsed).ShowSourceAsync(
-            RequireQuery(parsed),
-            ParseFunctionTargetFilter(parsed),
+            query,
+            filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        formatter.WriteSymbols(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -379,7 +411,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "source-layout", "include", "exclude", "ignore-case", "short-names", "help");
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "source-layout", "include", "exclude", "ignore-case", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -390,6 +422,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 IncludeHelpOption,
                 ExcludeHelpOption,
                 IgnoreCaseSourceHelpOption,
@@ -411,15 +444,18 @@ internal static class Program
             throw new CliUsageException("source search requires at least one include or exclude condition.");
         }
 
-        var formatter = CreateFormatter(parsed, sourceLayoutAllowed: true);
+        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
+        var filter = ParseFunctionTargetFilter(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var result = await CreateQueryService(parsed).SearchSourceAsync(
             includes,
             excludes,
             parsed.HasFlag("ignore-case"),
-            ParseFunctionTargetFilter(parsed),
+            filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        formatter.WriteSymbols(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteSymbols(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -427,7 +463,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "async-involved", "short-names", "help");
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "async-involved", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -438,6 +474,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--async-involved", "Include only symbols with async involvement"),
                 ShortNamesHelpOption,
                 HelpHelpOption);
@@ -449,7 +486,9 @@ internal static class Program
             throw new CliUsageException("symbol list does not accept positional arguments.");
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.ListSymbolsAsync(
             filter.Kind,
@@ -458,7 +497,8 @@ internal static class Program
             parsed.GetSingle("profile"),
             cancellationToken);
 
-        CreateFormatter(parsed).WriteSymbolList(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteSymbolList(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -466,7 +506,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "at", "require-single", "short-names",
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "at", "require-single", "short-names",
             "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
@@ -478,6 +518,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--at <path:line:column>", "Resolve the call target at a source position"),
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
                 ShortNamesHelpOption,
@@ -488,10 +529,10 @@ internal static class Program
             return ExitCodes.Success;
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
-        var service = CreateQueryService(parsed);
-        DefinitionResult result;
         var at = parsed.GetSingle("at");
+        string? query = null;
         if (at is not null)
         {
             if (parsed.HasFlag("include-overrides"))
@@ -503,7 +544,17 @@ internal static class Program
             {
                 throw new CliUsageException("definition accepts either a query or --at, not both.");
             }
+        }
+        else
+        {
+            query = RequireQuery(parsed);
+        }
 
+        using var destination = CreateOutputDestination(parsed);
+        var service = CreateQueryService(parsed);
+        DefinitionResult result;
+        if (at is not null)
+        {
             result = await service.FindDefinitionAtAsync(
                 at,
                 filter,
@@ -513,7 +564,7 @@ internal static class Program
         else
         {
             result = await service.FindDefinitionsAsync(
-                RequireQuery(parsed),
+                query!,
                 filter,
                 profileName: parsed.GetSingle("profile"),
                 includeOverrides: parsed.HasFlag("include-overrides"),
@@ -525,7 +576,8 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteDefinitions(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteDefinitions(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -533,7 +585,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "exclude-generated", "only-generated",
             "require-single", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
@@ -545,6 +597,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--exclude-generated", "Exclude generated documents"),
                 new HelpOption("--only-generated", "Include only generated documents"),
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
@@ -556,11 +609,15 @@ internal static class Program
             return ExitCodes.Success;
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
+        var query = RequireQuery(parsed);
+        var generatedFilter = ParseGeneratedFilter(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindReferencesAsync(
-            RequireQuery(parsed),
-            ParseGeneratedFilter(parsed),
+            query,
+            generatedFilter,
             filter,
             profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
@@ -570,7 +627,8 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "reference(s)", cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "reference(s)", cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -578,7 +636,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "exclude-generated", "only-generated",
             "require-single", "dispatch", "caller-scope", "short-names", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
@@ -590,6 +648,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--exclude-generated", "Exclude generated documents"),
                 new HelpOption("--only-generated", "Include only generated documents"),
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
@@ -603,7 +662,10 @@ internal static class Program
             return ExitCodes.Success;
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
+        var query = RequireQuery(parsed);
+        var generatedFilter = ParseGeneratedFilter(parsed);
         var dispatch = (parsed.GetSingle("dispatch") ?? "static") switch
         {
             "static" => DispatchSearchMode.Static,
@@ -618,10 +680,11 @@ internal static class Program
             "both" => CallerScope.Both,
             var value => throw new CliUsageException($"Unknown caller scope: {value}"),
         };
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindCallersAsync(
-            RequireQuery(parsed),
-            ParseGeneratedFilter(parsed),
+            query,
+            generatedFilter,
             dispatch,
             callerScope,
             filter,
@@ -633,7 +696,8 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "caller call site(s)", cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "caller call site(s)", cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -641,7 +705,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "exclude-generated", "only-generated",
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "exclude-generated", "only-generated",
             "require-single", "short-names", "exclude-lambda-calls", "include-overrides", "help");
         if (parsed.HasFlag("help"))
         {
@@ -653,6 +717,7 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--exclude-generated", "Exclude generated documents"),
                 new HelpOption("--only-generated", "Include only generated documents"),
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
@@ -665,11 +730,15 @@ internal static class Program
             return ExitCodes.Success;
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
+        var query = RequireQuery(parsed);
+        var generatedFilter = ParseGeneratedFilter(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindCalleesAsync(
-            RequireQuery(parsed),
-            ParseGeneratedFilter(parsed),
+            query,
+            generatedFilter,
             filter,
             includeLambdaCalls: !parsed.HasFlag("exclude-lambda-calls"),
             profileName: parsed.GetSingle("profile"),
@@ -680,7 +749,8 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteCalls(result, "callee call(s)", cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteCalls(result, "callee call(s)", cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -688,7 +758,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "kind", "async-status", "require-single", "short-names", "help");
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "require-single", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -699,16 +769,20 @@ internal static class Program
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
                 ShortNamesHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
+        var query = RequireQuery(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.FindOverridesAsync(
-            RequireQuery(parsed),
+            query,
             filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
@@ -717,13 +791,14 @@ internal static class Program
             return ExitCodes.RequireSingleFailure;
         }
 
-        CreateFormatter(parsed).WriteRelations(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteRelations(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
     private static async Task<int> RunConditionsAsync(string[] args, CancellationToken cancellationToken)
     {
-        var parsed = ParseQueryArguments(args, "db", "profile", "output-format", "help");
+        var parsed = ParseQueryArguments(args, "db", "profile", "output-format", "output-file", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -732,6 +807,7 @@ internal static class Program
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 TableJsonOutputHelpOption,
+                OutputFileHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
         }
@@ -741,9 +817,12 @@ internal static class Program
             throw new CliUsageException("conditions does not accept a positional query.");
         }
 
+        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        using var destination = CreateOutputDestination(parsed);
         var service = CreateQueryService(parsed);
         var result = await service.GetConditionsAsync(parsed.GetSingle("profile"), cancellationToken);
-        CreateFormatter(parsed).WriteConditions(result, cancellationToken);
+        CreateFormatter(formatterSettings, destination.Writer).WriteConditions(result, cancellationToken);
+        destination.Commit();
         return ExitCodes.Success;
     }
 
@@ -861,15 +940,26 @@ internal static class Program
         return parsed;
     }
 
-    private static SemanticQueryService CreateQueryService(CliArguments parsed)
-    {
-        var databasePath = parsed.GetSingle("db") ?? Path.Combine(Environment.CurrentDirectory, ".csindex", "index.sqlite");
-        return new SemanticQueryService(new SqliteIndex(databasePath).CreateQueryRepository());
-    }
+    private static SemanticQueryService CreateQueryService(CliArguments parsed) =>
+        new(new SqliteIndex(GetDatabasePath(parsed)).CreateQueryRepository());
 
-    private static OutputFormatter CreateFormatter(CliArguments parsed, bool sourceLayoutAllowed = false)
+    private static string GetDatabasePath(CliArguments parsed) =>
+        parsed.GetSingle("db") ?? Path.Combine(Environment.CurrentDirectory, ".csindex", "index.sqlite");
+
+    private static OutputDestination CreateOutputDestination(CliArguments parsed) =>
+        OutputDestination.Create(parsed.GetSingle("output-file"), GetDatabasePath(parsed));
+
+    private static OutputFormatterSettings ParseOutputFormatterSettings(
+        CliArguments parsed,
+        bool sourceLayoutAllowed = false)
     {
         var outputFormat = parsed.GetSingle("output-format") ?? "table";
+        if (outputFormat is not ("table" or "json"))
+        {
+            throw new CliUsageException(
+                $"Output format '{outputFormat}' is reserved but not implemented. Use table or json.");
+        }
+
         var sourceLayoutValue = parsed.GetSingle("source-layout");
         var sourceLayout = ParseSourceLayout(sourceLayoutValue);
         if (sourceLayoutValue is not null && !sourceLayoutAllowed)
@@ -882,13 +972,15 @@ internal static class Program
             throw new CliUsageException("--source-layout cannot be combined with --output-format json.");
         }
 
-        return new OutputFormatter(
-            outputFormat,
-            parsed.HasFlag("short-names"),
-            sourceLayout,
-            Console.Out,
-            Console.Error);
+        return new OutputFormatterSettings(outputFormat, parsed.HasFlag("short-names"), sourceLayout);
     }
+
+    private static OutputFormatter CreateFormatter(OutputFormatterSettings settings, TextWriter writer) => new(
+        settings.Format,
+        settings.ShortNames,
+        settings.SourceLayout,
+        writer,
+        Console.Error);
 
     private static SourceLayout ParseSourceLayout(string? value) => value switch
     {
@@ -1048,6 +1140,8 @@ internal static class Program
               --db <path>                 SQLite index path (default: .csindex/index.sqlite)
               --profile <name>            Analysis profile
               --output-format table|json  Output format
+              -o <path> | --output-file <path>
+                                          Write the result payload to a file
               --kind all|method|lambda    Limit function targets by kind (default: all)
               --async-status all|async|sync
                                           Limit function targets by direct async status (default: all)
@@ -1116,6 +1210,11 @@ internal static class Program
             Console.WriteLine($"  {option.Syntax}{padding}{option.Description}");
         }
     }
+
+    private readonly record struct OutputFormatterSettings(
+        string Format,
+        bool ShortNames,
+        SourceLayout SourceLayout);
 
     private sealed record HelpOption(string Syntax, string Description);
 

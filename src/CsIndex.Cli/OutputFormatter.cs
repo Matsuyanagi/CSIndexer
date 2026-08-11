@@ -413,8 +413,6 @@ internal sealed class OutputFormatter
 
     private void WriteJsonPayload(object value) => WriteJson(value, _writer);
 
-    internal static void WriteJson(object value) => WriteJson(value, Console.Out);
-
     internal static void WriteJson(object value, TextWriter writer)
     {
         ArgumentNullException.ThrowIfNull(writer);

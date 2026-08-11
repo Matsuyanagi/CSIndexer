@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
 
@@ -43,6 +44,166 @@ public sealed class CliCommandTests : IDisposable
         var compactForms = CliArguments.Parse(["-opath", "-o=result.json"]);
         Assert.Null(compactForms.GetSingle("output-file"));
         Assert.Equal(["-opath", "-o=result.json"], compactForms.Positionals);
+    }
+
+    [Fact]
+    public async Task OutputFilePayloadMatchesStdoutAcrossEverySupportedCommandAndFormat()
+    {
+        await _fixture.BuildTask;
+        var outputDirectory = Path.Combine(_fixture.RootPath, "payload-equivalence");
+        Directory.CreateDirectory(outputDirectory);
+        var cases = new (string Name, string[] Arguments)[]
+        {
+            ("symbol-find-table", ["symbol", "find", "Alpha.AsyncPlayer::Sync()"]),
+            ("symbol-find-json", ["symbol", "find", "Alpha.AsyncPlayer::Sync()", "--output-format", "json"]),
+            ("symbol-list-table", ["symbol", "list"]),
+            ("symbol-list-json", ["symbol", "list", "--output-format", "json"]),
+            ("source-show-table", ["source", "show", "Tokyo.Gamer::Play"]),
+            ("source-show-json", ["source", "show", "Tokyo.Gamer::Play", "--output-format", "json"]),
+            ("source-search-table", ["source", "search", "--include", "PrintVar("]),
+            ("source-search-json", ["source", "search", "--include", "PrintVar(", "--output-format", "json"]),
+            ("definition-table", ["definition", "Alpha.AsyncPlayer::Sync()"]),
+            ("definition-json", ["definition", "Alpha.AsyncPlayer::Sync()", "--output-format", "json"]),
+            ("references-table", ["references", "Alpha.LambdaPlayer::Play()"]),
+            ("references-json", ["references", "Alpha.LambdaPlayer::Play()", "--output-format", "json"]),
+            ("callers-table", ["callers", "Alpha.LambdaPlayer::Play()"]),
+            ("callers-json", ["callers", "Alpha.LambdaPlayer::Play()", "--output-format", "json"]),
+            ("callees-table", ["callees", "Alpha.DescendantCallees::Execute()"]),
+            ("callees-json", ["callees", "Alpha.DescendantCallees::Execute()", "--output-format", "json"]),
+            ("overrides-table", ["overrides", "Alpha.AsyncOverrideBase::Run()"]),
+            ("overrides-json", ["overrides", "Alpha.AsyncOverrideBase::Run()", "--output-format", "json"]),
+            ("async-tree", ["async", "tree", "Alpha.AsyncGraph::Start()"]),
+            ("async-line", ["async", "tree", "Alpha.AsyncGraph::Start()", "--output-format", "line"]),
+            ("async-json", ["async", "tree", "Alpha.AsyncGraph::Start()", "--output-format", "json"]),
+            ("caller-tree", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()"]),
+            ("caller-mermaid", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output-format", "mermaid"]),
+            ("caller-json", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output-format", "json"]),
+            ("conditions-table", ["conditions"]),
+            ("conditions-json", ["conditions", "--output-format", "json"]),
+        };
+
+        foreach (var (name, arguments) in cases)
+        {
+            var standard = await RunAsync([.. arguments, "--db", _fixture.DatabasePath]);
+            var outputPath = Path.Combine(outputDirectory, $"{name}.payload");
+            var redirected = await RunAsync(
+                [.. arguments, "--output-file", outputPath, "--db", _fixture.DatabasePath]);
+
+            Assert.True(
+                standard.ExitCode == ExitCodes.Success,
+                $"Stdout command failed: {name}{Environment.NewLine}{standard.StandardError}");
+            Assert.True(
+                redirected.ExitCode == ExitCodes.Success,
+                $"File command failed: {name}{Environment.NewLine}{redirected.StandardError}");
+            Assert.NotEqual(string.Empty, standard.StandardOutput);
+            Assert.Equal(string.Empty, redirected.StandardOutput);
+            Assert.Equal(standard.StandardError, redirected.StandardError);
+            var fileBytes = File.ReadAllBytes(outputPath);
+            Assert.Equal(new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(standard.StandardOutput), fileBytes);
+            Assert.False(fileBytes.AsSpan().StartsWith(Encoding.UTF8.Preamble));
+        }
+
+        Assert.Equal(cases.Length, Directory.GetFiles(outputDirectory).Length);
+    }
+
+    [Fact]
+    public async Task OutputFileAliasesProduceIdenticalPayloadAndPreserveDiagnostics()
+    {
+        await _fixture.BuildTask;
+        var outputDirectory = Path.Combine(_fixture.RootPath, "alias-equivalence");
+        Directory.CreateDirectory(outputDirectory);
+        var shortPath = Path.Combine(outputDirectory, "short.txt");
+        var longPath = Path.Combine(outputDirectory, "long.txt");
+
+        var shortResult = await RunAsync(
+            "symbol", "find", "Alpha.AsyncPlayer::Sync()", "-o", shortPath, "--db", _fixture.DatabasePath);
+        var longResult = await RunAsync(
+            "symbol", "find", "Alpha.AsyncPlayer::Sync()", "--output-file", longPath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, shortResult.ExitCode);
+        Assert.Equal(ExitCodes.Success, longResult.ExitCode);
+        Assert.Equal(string.Empty, shortResult.StandardOutput);
+        Assert.Equal(string.Empty, longResult.StandardOutput);
+        Assert.NotEqual(string.Empty, shortResult.StandardError);
+        Assert.Equal(shortResult.StandardError, longResult.StandardError);
+        Assert.Equal(File.ReadAllBytes(shortPath), File.ReadAllBytes(longPath));
+    }
+
+    [Fact]
+    public async Task OutputFileFailuresPreserveExistingFilesAndReportTheCorrectErrorCategory()
+    {
+        await _fixture.BuildTask;
+        var outputDirectory = Path.Combine(_fixture.RootPath, "failure-atomicity");
+        Directory.CreateDirectory(outputDirectory);
+        var outputPath = Path.Combine(outputDirectory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        var queryFailure = await RunAsync(
+            "callers", "tree", "Alpha.Missing::Run()", "--output-file", outputPath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, queryFailure.ExitCode);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([outputPath], Directory.GetFiles(outputDirectory));
+
+        var missingOutputPath = Path.Combine(_fixture.RootPath, "missing-output-parent", "result.txt");
+        var missingParent = await RunAsync(
+            "conditions", "--output-file", missingOutputPath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.AnalysisFailure, missingParent.ExitCode);
+        Assert.Equal(string.Empty, missingParent.StandardOutput);
+        Assert.StartsWith("Output error: ", missingParent.StandardError, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(missingOutputPath)));
+    }
+
+    [Fact]
+    public async Task OutputFileEqualToDatabaseIsRejectedBeforeTheDatabaseCanChange()
+    {
+        await _fixture.BuildTask;
+        var databaseBefore = File.ReadAllBytes(_fixture.DatabasePath);
+
+        var rejected = await RunAsync(
+            "conditions", "--output-file", _fixture.DatabasePath, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, rejected.ExitCode);
+        Assert.Contains("must not match the active database path", rejected.StandardError, StringComparison.Ordinal);
+        Assert.Equal(databaseBefore, File.ReadAllBytes(_fixture.DatabasePath));
+
+        var stillQueryable = await RunAsync("conditions", "--db", _fixture.DatabasePath);
+        Assert.Equal(ExitCodes.Success, stillQueryable.ExitCode);
+    }
+
+    [Fact]
+    public async Task CommandHelpNeverOpensOutputFile()
+    {
+        var outputPath = Path.Combine(_fixture.RootPath, "missing-help-parent", "help.txt");
+
+        var result = await RunAsync("conditions", "--help", "--output-file", outputPath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("Usage: csindex conditions", result.StandardOutput);
+        Assert.Equal(string.Empty, result.StandardError);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(outputPath)));
+    }
+
+    [Fact]
+    public async Task OutputFormatNotFileExtensionSelectsThePayloadFormat()
+    {
+        await _fixture.BuildTask;
+        var outputDirectory = Path.Combine(_fixture.RootPath, "extension-independent");
+        Directory.CreateDirectory(outputDirectory);
+        var jsonInTextFile = Path.Combine(outputDirectory, "symbols.txt");
+        var tableInJsonFile = Path.Combine(outputDirectory, "symbols.json");
+
+        var json = await RunAsync(
+            "symbol", "list", "--output-format", "json", "--output-file", jsonInTextFile, "--db", _fixture.DatabasePath);
+        var table = await RunAsync(
+            "symbol", "list", "--output-file", tableInJsonFile, "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, json.ExitCode);
+        Assert.Equal(ExitCodes.Success, table.ExitCode);
+        using var document = JsonDocument.Parse(File.ReadAllText(jsonInTextFile));
+        Assert.True(document.RootElement.TryGetProperty("symbols", out _));
+        Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(File.ReadAllText(tableInJsonFile)));
     }
 
     [Fact]
@@ -821,6 +982,7 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("--kind all|method|lambda", help);
         Assert.Contains("--async-status all|async|sync", help);
         Assert.Contains("--source-layout single-line|multi-line", help);
+        Assert.Contains("-o <path> | --output-file <path>", help);
         Assert.DoesNotContain("--output table|json", help);
     }
 
@@ -836,6 +998,7 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("--kind all|method|lambda", result.StandardOutput);
         Assert.Contains("--async-status all|async|sync", result.StandardOutput);
         Assert.Contains($"--output-format {expectedOutputFormat}", result.StandardOutput);
+        Assert.Contains("-o <path> | --output-file <path>", result.StandardOutput);
         Assert.DoesNotContain("--output ", result.StandardOutput);
     }
 
@@ -859,15 +1022,24 @@ public sealed class CliCommandTests : IDisposable
     {
         var index = await RunAsync("index", "--help");
         var conditions = await RunAsync("conditions", "--help");
+        var indexOutput = await RunAsync(
+            "index",
+            ".",
+            "--output-file",
+            Path.Combine(_fixture.RootPath, "index-output.txt"));
 
         Assert.Equal(ExitCodes.Success, index.ExitCode);
         Assert.DoesNotContain("--kind", index.StandardOutput);
         Assert.DoesNotContain("--async-status", index.StandardOutput);
         Assert.DoesNotContain("--output-format", index.StandardOutput);
+        Assert.DoesNotContain("--output-file", index.StandardOutput);
+        Assert.Equal(ExitCodes.InvalidArguments, indexOutput.ExitCode);
+        Assert.Contains("Unknown option(s): --output-file", indexOutput.StandardError);
         Assert.Equal(ExitCodes.Success, conditions.ExitCode);
         Assert.DoesNotContain("--kind", conditions.StandardOutput);
         Assert.DoesNotContain("--async-status", conditions.StandardOutput);
         Assert.Contains("--output-format table|json", conditions.StandardOutput);
+        Assert.Contains("-o <path> | --output-file <path>", conditions.StandardOutput);
     }
 
     [Theory]
@@ -892,6 +1064,7 @@ public sealed class CliCommandTests : IDisposable
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
               --output-format table|json  Output format (default: table)
+              -o <path> | --output-file <path>  Write the result payload to a file
               --require-single  Fail unless the search matches exactly one symbol
               --short-names  Shorten namespaces in displayed symbol names
               --namespace <pattern>  Namespace component filter
@@ -919,6 +1092,7 @@ public sealed class CliCommandTests : IDisposable
               --kind all|method|lambda  Limit function targets by kind (default: all)
               --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --output-format tree|line|json  Output format (default: tree)
+              -o <path> | --output-file <path>  Write the result payload to a file
               --max-nodes <count>  Maximum path nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
@@ -934,6 +1108,7 @@ public sealed class CliCommandTests : IDisposable
               --kind all|method|lambda  Limit function targets by kind (default: all)
               --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --output-format tree|mermaid|json  Output format (default: tree)
+              -o <path> | --output-file <path>  Write the result payload to a file
               --depth <count>  Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>  Maximum graph nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
@@ -950,6 +1125,7 @@ public sealed class CliCommandTests : IDisposable
               --kind all|method|lambda  Limit function targets by kind (default: all)
               --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --output-format table|json  Output format (default: table)
+              -o <path> | --output-file <path>  Write the result payload to a file
               --source-layout single-line|multi-line  Source table layout (default: single-line)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
@@ -965,6 +1141,7 @@ public sealed class CliCommandTests : IDisposable
               --kind all|method|lambda  Limit function targets by kind (default: all)
               --async-status all|async|sync  Limit function targets by direct async status (default: all)
               --output-format table|json  Output format (default: table)
+              -o <path> | --output-file <path>  Write the result payload to a file
               --include <text>  Require normalized source text (repeatable)
               --exclude <text>  Reject normalized source text (repeatable)
               --ignore-case  Compare source filters without case sensitivity
@@ -1337,7 +1514,8 @@ public sealed class CliCommandTests : IDisposable
     private static string FormatExpectedCommandHelp(string expectedHelp) =>
         string.Join("\n", expectedHelp.ReplaceLineEndings("\n").Split('\n').Select(line =>
         {
-            if (!line.StartsWith("  --", StringComparison.Ordinal))
+            if (!line.StartsWith("  --", StringComparison.Ordinal) &&
+                !line.StartsWith("  -o ", StringComparison.Ordinal))
             {
                 return line;
             }

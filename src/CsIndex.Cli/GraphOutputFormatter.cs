@@ -4,9 +4,24 @@ using CsIndex.Storage;
 
 namespace CsIndex.Cli;
 
-internal sealed class GraphOutputFormatter(bool shortNames)
+internal sealed class GraphOutputFormatter
 {
-    private readonly bool _shortNames = shortNames;
+    private readonly bool _shortNames;
+    private readonly TextWriter? _writer;
+
+    public GraphOutputFormatter(bool shortNames)
+    {
+        _shortNames = shortNames;
+    }
+
+    public GraphOutputFormatter(bool shortNames, TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        _shortNames = shortNames;
+        _writer = writer;
+    }
+
+    private TextWriter Writer => _writer ?? Console.Out;
 
     public void WriteAsyncPath(
         AsyncPathResult result,
@@ -60,7 +75,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
     {
         if (!result.Found)
         {
-            Console.WriteLine($"No reachable asynchronous function: {DisplayName(result.Root)}");
+            Writer.WriteLine($"No reachable asynchronous function: {DisplayName(result.Root)}");
             return;
         }
 
@@ -68,12 +83,12 @@ internal sealed class GraphOutputFormatter(bool shortNames)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var prefix = index == 0 ? string.Empty : string.Concat(Enumerable.Repeat("   ", index - 1)) + "└─ ";
-            Console.WriteLine(prefix + AsyncDisplayName(result.Nodes[index]));
+            Writer.WriteLine(prefix + AsyncDisplayName(result.Nodes[index]));
         }
 
         if (result.Truncated)
         {
-            Console.WriteLine(string.Concat(Enumerable.Repeat("   ", result.Nodes.Count - 1)) + "└─ <truncated>");
+            Writer.WriteLine(string.Concat(Enumerable.Repeat("   ", result.Nodes.Count - 1)) + "└─ <truncated>");
         }
     }
 
@@ -81,7 +96,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
     {
         if (!result.Found)
         {
-            Console.WriteLine($"No reachable asynchronous function: {DisplayName(result.Root)}");
+            Writer.WriteLine($"No reachable asynchronous function: {DisplayName(result.Root)}");
             return;
         }
 
@@ -97,7 +112,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             values.Add("<truncated>");
         }
 
-        Console.WriteLine(string.Join(" -> ", values));
+        Writer.WriteLine(string.Join(" -> ", values));
     }
 
     private void WriteAsyncJson(AsyncPathResult result, CancellationToken cancellationToken)
@@ -116,7 +131,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             truncated = result.Truncated,
             root = OutputFormatter.ToSymbolObject(result.Root, _shortNames, includeSource: false),
             nodes,
-        });
+        }, Writer);
     }
 
     private void WriteCallerTextTree(CallerTreeResult result, CancellationToken cancellationToken)
@@ -184,7 +199,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             var prefix = indent == 0
                 ? string.Empty
                 : string.Concat(Enumerable.Repeat("   ", indent - 1)) + "└─ ";
-            Console.WriteLine(prefix + DisplayName(node.Symbol));
+            Writer.WriteLine(prefix + DisplayName(node.Symbol));
 
             if (!childrenByParent.TryGetValue(node.Symbol.Id, out var children))
             {
@@ -200,7 +215,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
 
         if (result.Truncated)
         {
-            Console.WriteLine("└─ <truncated>");
+            Writer.WriteLine("└─ <truncated>");
         }
 
         var additionalEdges = new List<CallerTreeEdge>();
@@ -218,33 +233,33 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             return;
         }
 
-        Console.WriteLine("Additional edges:");
+        Writer.WriteLine("Additional edges:");
         foreach (var edge in additionalEdges)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine(
+            Writer.WriteLine(
                 $"  {GetEdgeDisplayName(edge.CallerSymbolId, nodesById)} -> {GetEdgeDisplayName(edge.CalleeSymbolId, nodesById)}");
         }
     }
 
     private void WriteMermaid(CallerTreeResult result, CancellationToken cancellationToken)
     {
-        Console.WriteLine("flowchart TD");
+        Writer.WriteLine("flowchart TD");
         foreach (var node in OrderNodesById(result.Nodes, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine($"    n{node.Symbol.Id}[\"{EscapeMermaidLabel(RawDisplayName(node.Symbol))}\"]");
+            Writer.WriteLine($"    n{node.Symbol.Id}[\"{EscapeMermaidLabel(RawDisplayName(node.Symbol))}\"]");
         }
 
         foreach (var edge in OrderEdges(result.Edges, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Console.WriteLine($"    n{edge.CallerSymbolId} --> n{edge.CalleeSymbolId}");
+            Writer.WriteLine($"    n{edge.CallerSymbolId} --> n{edge.CalleeSymbolId}");
         }
 
         if (result.Truncated)
         {
-            Console.WriteLine("    %% truncated");
+            Writer.WriteLine("    %% truncated");
         }
     }
 
@@ -275,7 +290,7 @@ internal sealed class GraphOutputFormatter(bool shortNames)
             root = OutputFormatter.ToSymbolObject(result.Root, _shortNames, includeSource: false),
             nodes,
             edges,
-        });
+        }, Writer);
     }
 
     private string DisplayName(StoredSymbol symbol) => NormalizeText(RawDisplayName(symbol));

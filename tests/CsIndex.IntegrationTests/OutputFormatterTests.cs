@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
 using CsIndex.Core.Model;
@@ -582,17 +583,251 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void OutputDestinationCommitReplacesExistingFileWithUtf8WithoutBom()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            destination.Writer.WriteLine("結果 payload");
+            destination.Commit();
+        }
+
+        var bytes = File.ReadAllBytes(outputPath);
+        Assert.Equal(new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes($"結果 payload{Environment.NewLine}"), bytes);
+        Assert.False(bytes.AsSpan().StartsWith(Encoding.UTF8.Preamble));
+    }
+
+    [Fact]
+    public void OutputDestinationDisposeBeforeCommitPreservesExistingFileAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            destination.Writer.Write("partial payload");
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationCreateDoesNotOpenTheDestinationUntilWriterIsRequested()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (OutputDestination.Create(outputPath, databasePath))
+        {
+            Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+            Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void OutputDestinationResolvesRelativePathsAgainstCurrentDirectory()
+    {
+        using var directory = new TemporaryDirectory();
+        var originalCurrentDirectory = Environment.CurrentDirectory;
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        File.WriteAllText(databasePath, "database sentinel");
+        try
+        {
+            Environment.CurrentDirectory = directory.Path;
+            using var destination = OutputDestination.Create("relative.txt", databasePath);
+            destination.Writer.Write("relative payload");
+            destination.Commit();
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalCurrentDirectory;
+        }
+
+        Assert.Equal("relative payload", File.ReadAllText(Path.Combine(directory.Path, "relative.txt")));
+    }
+
+    [Fact]
+    public void OutputDestinationRejectsNormalizedDatabasePathWithoutChangingDatabase()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var equivalentFileName = OperatingSystem.IsWindows() ? "INDEX.SQLITE" : "index.sqlite";
+        var equivalentOutputPath = Path.Combine(directory.Path, "unused", "..", equivalentFileName);
+        File.WriteAllText(databasePath, "database sentinel");
+
+        Assert.Throws<CliUsageException>(() => OutputDestination.Create(equivalentOutputPath, databasePath));
+
+        Assert.Equal("database sentinel", File.ReadAllText(databasePath));
+        Assert.Equal([databasePath], Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public void OutputDestinationRejectsMissingParentAsOutputErrorWithoutCreatingDirectories()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var missingParent = Path.Combine(directory.Path, "missing", "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+
+        var exception = Assert.Throws<OutputException>(() => OutputDestination.Create(missingParent, databasePath));
+
+        Assert.Contains("missing", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(missingParent)));
+        Assert.Equal([databasePath], Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public void OutputDestinationWithoutFileNeverClosesConsoleOut()
+    {
+        using var consoleOutput = new StringWriter();
+        var originalOutput = Console.Out;
+        try
+        {
+            Console.SetOut(consoleOutput);
+            using (var destination = OutputDestination.Create(outputPath: null, databasePath: "index.sqlite"))
+            {
+                destination.Writer.WriteLine("payload");
+                destination.Commit();
+            }
+
+            Console.Out.WriteLine("after dispose");
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
+
+        Assert.Equal($"payload{Environment.NewLine}after dispose{Environment.NewLine}", consoleOutput.ToString());
+    }
+
+    [Fact]
+    public void FormatterCancellationAfterPartialWritePreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+        var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
+        var child = CreateSymbol(AsyncRole.None, null, id: 102, displayName: "Example.Child()");
+        using var cancellation = new CancellationTokenSource();
+
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            var nodes = new CancelAfterFirstReadList<StoredSymbol>([root, child], cancellation);
+            var result = new AsyncPathResult(CreateProfile(), root, nodes, Found: true, Truncated: false);
+            var formatter = new GraphOutputFormatter(shortNames: false, destination.Writer);
+
+            Assert.Throws<OperationCanceledException>(() => formatter.WriteAsyncPath(
+                result,
+                "tree",
+                cancellation.Token));
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationWriteFailurePreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new WriteThenThrowTextWriter(stream)))
+        {
+            Assert.Throws<OutputException>(() => destination.Writer.WriteLine("partial payload"));
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationFlushFailurePreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (var destination = OutputDestination.Create(
+            outputPath,
+            databasePath,
+            stream => new FlushThrowingTextWriter(stream)))
+        {
+            destination.Writer.Write("partial payload");
+            Assert.Throws<OutputException>(destination.Commit);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void OutputDestinationReplaceFailurePreservesDestinationAndRemovesTemporaryFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "index.sqlite");
+        var outputPath = Path.Combine(directory.Path, "result.txt");
+        File.WriteAllText(databasePath, "database sentinel");
+        File.WriteAllText(outputPath, "output sentinel");
+
+        using (File.Open(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var destination = OutputDestination.Create(outputPath, databasePath))
+        {
+            destination.Writer.Write("replacement payload");
+            Assert.Throws<OutputException>(destination.Commit);
+        }
+
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Equal([databasePath, outputPath], Directory.GetFiles(directory.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void GraphOutputFormatterWritesPayloadOnlyToInjectedWriter()
+    {
+        var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
+        var result = new AsyncPathResult(CreateProfile(), root, [root], Found: true, Truncated: false);
+        using var payload = new StringWriter();
+        var formatter = new GraphOutputFormatter(shortNames: false, payload);
+
+        var consoleOutput = CaptureText(() => formatter.WriteAsyncPath(result, "tree"));
+
+        Assert.Equal(string.Empty, consoleOutput);
+        Assert.Equal($"Example.Root(){Environment.NewLine}", payload.ToString());
+    }
+
+    [Fact]
     public void GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
         var middle = CreateSymbol(AsyncRole.None, 1, id: 102, displayName: "Example.Middle()");
         var origin = CreateSymbol(AsyncRole.DeclaredAsync, 0, id: 103, displayName: "Example.EndAsync()");
         var result = new AsyncPathResult(CreateProfile(), root, [root, middle, origin], Found: true, Truncated: true);
-        var formatter = new GraphOutputFormatter(shortNames: false);
 
-        var tree = CaptureText(() => formatter.WriteAsyncPath(result, "tree"));
-        var line = CaptureText(() => formatter.WriteAsyncPath(result, "line"));
-        using var json = CaptureJson(() => formatter.WriteAsyncPath(result, "json"));
+        var tree = CaptureGraphText(formatter => formatter.WriteAsyncPath(result, "tree"));
+        var line = CaptureGraphText(formatter => formatter.WriteAsyncPath(result, "line"));
+        using var json = CaptureGraphJson(formatter => formatter.WriteAsyncPath(result, "json"));
 
         Assert.Equal(
             "Example.Root()" + Environment.NewLine +
@@ -612,11 +847,11 @@ public sealed class OutputFormatterTests
         var noPath = new AsyncPathResult(CreateProfile(), root, [], Found: false, Truncated: false);
         Assert.Equal(
             "No reachable asynchronous function: Example.Root()" + Environment.NewLine,
-            CaptureText(() => formatter.WriteAsyncPath(noPath, "tree")));
+            CaptureGraphText(formatter => formatter.WriteAsyncPath(noPath, "tree")));
         Assert.Equal(
             "No reachable asynchronous function: Example.Root()" + Environment.NewLine,
-            CaptureText(() => formatter.WriteAsyncPath(noPath, "line")));
-        using var noPathJson = CaptureJson(() => formatter.WriteAsyncPath(noPath, "json"));
+            CaptureGraphText(formatter => formatter.WriteAsyncPath(noPath, "line")));
+        using var noPathJson = CaptureGraphJson(formatter => formatter.WriteAsyncPath(noPath, "json"));
         Assert.False(noPathJson.RootElement.GetProperty("found").GetBoolean());
         Assert.Empty(noPathJson.RootElement.GetProperty("nodes").EnumerateArray());
     }
@@ -636,11 +871,10 @@ public sealed class OutputFormatterTests
             [new CallerTreeNode(root, 0), new CallerTreeNode(caller, 1)],
             [new CallerTreeEdge(caller.Id, root.Id), new CallerTreeEdge(caller.Id, root.Id)],
             Truncated: true);
-        var formatter = new GraphOutputFormatter(shortNames: false);
 
-        var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree"));
-        var mermaid = CaptureText(() => formatter.WriteCallerTree(result, "mermaid"));
-        using var json = CaptureJson(() => formatter.WriteCallerTree(result, "json"));
+        var tree = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "tree"));
+        var mermaid = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "mermaid"));
+        using var json = CaptureGraphJson(formatter => formatter.WriteCallerTree(result, "json"));
 
         Assert.Equal(
             "Example.Target()" + Environment.NewLine +
@@ -691,11 +925,10 @@ public sealed class OutputFormatterTests
                 new CallerTreeEdge(shared.Id, a.Id),
             ],
             Truncated: true);
-        var formatter = new GraphOutputFormatter(shortNames: false);
 
-        var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree"));
-        var mermaid = CaptureText(() => formatter.WriteCallerTree(result, "mermaid"));
-        using var json = CaptureJson(() => formatter.WriteCallerTree(result, "json"));
+        var tree = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "tree"));
+        var mermaid = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "mermaid"));
+        using var json = CaptureGraphJson(formatter => formatter.WriteCallerTree(result, "json"));
 
         Assert.Equal(
             "Example.Root()" + Environment.NewLine +
@@ -743,7 +976,7 @@ public sealed class OutputFormatterTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        Assert.Throws<OperationCanceledException>(() => new GraphOutputFormatter(shortNames: false).WriteAsyncPath(
+        Assert.Throws<OperationCanceledException>(() => new GraphOutputFormatter(shortNames: false, TextWriter.Null).WriteAsyncPath(
             new AsyncPathResult(CreateProfile(), root, [root], Found: true, Truncated: false),
             "tree",
             cancellation.Token));
@@ -922,6 +1155,18 @@ public sealed class OutputFormatterTests
 
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
 
+    private static JsonDocument CaptureGraphJson(Action<GraphOutputFormatter> write) =>
+        JsonDocument.Parse(CaptureGraphText(write));
+
+    private static string CaptureGraphText(Action<GraphOutputFormatter> write)
+    {
+        using var payload = new StringWriter();
+        var consoleOutput = CaptureText(() => write(new GraphOutputFormatter(shortNames: false, payload)));
+
+        Assert.Equal(string.Empty, consoleOutput);
+        return payload.ToString();
+    }
+
     private static JsonDocument CaptureInjectedJson(Action<OutputFormatter> write)
     {
         using var payload = new StringWriter();
@@ -971,6 +1216,105 @@ public sealed class OutputFormatterTests
         finally
         {
             Console.SetOut(original);
+        }
+    }
+
+    private sealed class CancelAfterFirstReadList<T>(IReadOnlyList<T> values, CancellationTokenSource cancellation)
+        : IReadOnlyList<T>
+    {
+        public int Count => values.Count;
+
+        public T this[int index]
+        {
+            get
+            {
+                var value = values[index];
+                if (index == 0)
+                {
+                    cancellation.Cancel();
+                }
+
+                return value;
+            }
+        }
+
+        public IEnumerator<T> GetEnumerator() => values.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class WriteThenThrowTextWriter(Stream stream) : TextWriter
+    {
+        private readonly StreamWriter _writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public override Encoding Encoding => _writer.Encoding;
+
+        public override void WriteLine(string? value)
+        {
+            _writer.Write(value);
+            _writer.Flush();
+            throw new IOException("Forced write failure.");
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _writer.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class FlushThrowingTextWriter(Stream stream) : TextWriter
+    {
+        private readonly StreamWriter _writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true);
+
+        public override Encoding Encoding => _writer.Encoding;
+
+        public override void Write(string? value) => _writer.Write(value);
+
+        public override void Flush() => throw new IOException("Forced flush failure.");
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _writer.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "csindex-output-tests",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
         }
     }
 
