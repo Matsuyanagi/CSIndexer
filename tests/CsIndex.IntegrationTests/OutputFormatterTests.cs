@@ -159,6 +159,16 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
+    public void GetPhysicalLinesPreservesInternalBlankLinesAndTrimsOnlyOneTrailingTerminator()
+    {
+        Assert.Equal(["first", "", "second"], GetPhysicalLines("first\r\n\r\nsecond\r\n"));
+        Assert.Equal(["first", "", "second"], GetPhysicalLines("first\n\nsecond\n"));
+        Assert.Equal(["first", ""], GetPhysicalLines("first\n\n"));
+        Assert.Equal([""], GetPhysicalLines("\n"));
+        Assert.Empty(GetPhysicalLines(string.Empty));
+    }
+
+    [Fact]
     public void WriteSymbolsMultiLineRetainsHeadingAndOneSanitizedSignatureAndSourceLinePerResult()
     {
         const string storedSource = "var raw=\"\"\"\r\nfirst\tline\u2028second\r\n\"\"\";";
@@ -202,6 +212,15 @@ public sealed class OutputFormatterTests
             "a b c d e f g h",
             TableTextSanitizer.Sanitize("a\r\nb\tc\rd\ne\u0085f\u2028g\u2029h"));
         Assert.Equal(string.Empty, TableTextSanitizer.Sanitize(null));
+    }
+
+    [Fact]
+    public void TableTextSanitizerPreservesLiteralBackslashEscapesWhileReplacingRealControls()
+    {
+        Assert.Equal(
+            @"\t|\n|\r|\u0085|\u2028|\u2029| | | | | |",
+            TableTextSanitizer.Sanitize(
+                @"\t|\n|\r|\u0085|\u2028|\u2029" + "|\t|\r\n|\u0085|\u2028|\u2029|"));
     }
 
     [Fact]
@@ -259,6 +278,83 @@ public sealed class OutputFormatterTests
         Assert.Contains("1 override(s):", output);
         Assert.Contains("Conditional symbols found:", output);
         Assert.Equal(string.Empty, diagnostics.ToString());
+    }
+
+    [Fact]
+    public void WriteDefinitionsJsonUsesInjectedPayloadWriter()
+    {
+        var symbol = CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null, id: 11);
+        var context = new QueryContext(CreateProfile(), [symbol]);
+
+        using var document = CaptureInjectedJson(formatter => formatter.WriteDefinitions(
+            new DefinitionResult(context, [symbol]),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
+        Assert.Equal(
+            symbol.Id,
+            Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray()).GetProperty("id").GetInt64());
+        Assert.Equal(
+            symbol.Id,
+            Assert.Single(document.RootElement.GetProperty("definitions").EnumerateArray()).GetProperty("id").GetInt64());
+    }
+
+    [Fact]
+    public void WriteCallsJsonUsesInjectedPayloadWriter()
+    {
+        var context = new QueryContext(CreateProfile(), [CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null)]);
+
+        using var document = CaptureInjectedJson(formatter => formatter.WriteCalls(
+            new CallResult(context, [CreateCall(AsyncUsageKind.Awaited)], [], []),
+            "call(s)",
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
+        var call = Assert.Single(document.RootElement.GetProperty("calls").EnumerateArray());
+        Assert.Equal(1, call.GetProperty("id").GetInt64());
+        Assert.Equal("Awaited", call.GetProperty("asyncUsageKind").GetString());
+        Assert.Empty(document.RootElement.GetProperty("callers").EnumerateArray());
+        Assert.Empty(document.RootElement.GetProperty("possibleRuntimeTargets").EnumerateArray());
+    }
+
+    [Fact]
+    public void WriteRelationsJsonUsesInjectedPayloadWriter()
+    {
+        var context = new QueryContext(CreateProfile(), [CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null)]);
+        var relation = new StoredRelation(
+            1,
+            "Example.Source()",
+            2,
+            "Example.Target()",
+            SymbolRelationKind.Overrides);
+
+        using var document = CaptureInjectedJson(formatter => formatter.WriteRelations(
+            new RelationResult(context, [relation]),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
+        var outputRelation = Assert.Single(document.RootElement.GetProperty("relations").EnumerateArray());
+        Assert.Equal(relation.SourceDisplayName, outputRelation.GetProperty("source").GetString());
+        Assert.Equal(relation.TargetDisplayName, outputRelation.GetProperty("target").GetString());
+        Assert.Equal("Overrides", outputRelation.GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public void WriteConditionsJsonUsesInjectedPayloadWriter()
+    {
+        var summary = new ConditionalSummary("FEATURE", 1, 2, IsDefined: true);
+
+        using var document = CaptureInjectedJson(formatter => formatter.WriteConditions(
+            new ConditionsResult(CreateProfile(), [summary]),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
+        Assert.Empty(document.RootElement.GetProperty("activeSymbols").EnumerateArray());
+        var outputSummary = Assert.Single(document.RootElement.GetProperty("conditionalSymbols").EnumerateArray());
+        Assert.Equal(summary.SymbolName, outputSummary.GetProperty("symbolName").GetString());
+        Assert.Equal(summary.FileCount, outputSummary.GetProperty("fileCount").GetInt32());
+        Assert.Equal(summary.OccurrenceCount, outputSummary.GetProperty("occurrenceCount").GetInt32());
+        Assert.True(outputSummary.GetProperty("isDefined").GetBoolean());
     }
 
     [Fact]
@@ -826,9 +922,35 @@ public sealed class OutputFormatterTests
 
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
 
-    private static string[] GetPhysicalLines(string output) => output
-        .ReplaceLineEndings("\n")
-        .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    private static JsonDocument CaptureInjectedJson(Action<OutputFormatter> write)
+    {
+        using var payload = new StringWriter();
+        using var diagnostics = new StringWriter();
+        var formatter = new OutputFormatter("json", false, SourceLayout.SingleLine, payload, diagnostics);
+
+        var consoleOutput = CaptureText(() => write(formatter));
+
+        Assert.Equal(string.Empty, consoleOutput);
+        Assert.Equal(string.Empty, diagnostics.ToString());
+        return JsonDocument.Parse(payload.ToString());
+    }
+
+    private static string[] GetPhysicalLines(string output)
+    {
+        if (output.Length == 0)
+        {
+            return [];
+        }
+
+        var withoutTrailingTerminator = output.EndsWith("\r\n", StringComparison.Ordinal)
+            ? output[..^2]
+            : output.EndsWith('\n')
+                ? output[..^1]
+                : output;
+        return withoutTrailingTerminator
+            .ReplaceLineEndings("\n")
+            .Split('\n', StringSplitOptions.None);
+    }
 
     private static IEnumerable<CallerTreeNode> CancelBeforeYieldingNode(CancellationTokenSource cancellation)
     {

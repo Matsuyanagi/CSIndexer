@@ -696,6 +696,16 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public void GetPhysicalLinesPreservesInternalBlankLinesAndTrimsOnlyOneTrailingTerminator()
+    {
+        Assert.Equal(["first", "", "second"], GetPhysicalLines("first\r\n\r\nsecond\r\n"));
+        Assert.Equal(["first", "", "second"], GetPhysicalLines("first\n\nsecond\n"));
+        Assert.Equal(["first", ""], GetPhysicalLines("first\n\n"));
+        Assert.Equal([""], GetPhysicalLines("\n"));
+        Assert.Empty(GetPhysicalLines(string.Empty));
+    }
+
+    [Fact]
     public async Task AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode()
     {
         await _fixture.BuildTask;
@@ -1343,9 +1353,22 @@ public sealed class CliCommandTests : IDisposable
             return $"  {syntax}{padding}{line[(optionEnd + 2)..]}";
         }));
 
-    private static string[] GetPhysicalLines(string output) => output
-        .ReplaceLineEndings("\n")
-        .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    private static string[] GetPhysicalLines(string output)
+    {
+        if (output.Length == 0)
+        {
+            return [];
+        }
+
+        var withoutTrailingTerminator = output.EndsWith("\r\n", StringComparison.Ordinal)
+            ? output[..^2]
+            : output.EndsWith('\n')
+                ? output[..^1]
+                : output;
+        return withoutTrailingTerminator
+            .ReplaceLineEndings("\n")
+            .Split('\n', StringSplitOptions.None);
+    }
 
     private async Task AssertCommandSucceedsAsync(string[] command, params string[] options)
     {
