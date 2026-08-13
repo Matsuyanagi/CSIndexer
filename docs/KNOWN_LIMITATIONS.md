@@ -60,15 +60,16 @@
   call/reference edges. Delegate `Invoke`, event subscription/callback
   execution, reflection, and runtime-flow references to a lambda are not
   indexed; `references` and `callers` can report only stored static facts.
-- `async tree` accepts an exact source-backed method root and follows the one
-  persisted async next-hop chain. It does not enumerate alternate equal paths
-  or dynamically infer another route.
+- `async tree` accepts one resolved source-backed executable root (method or
+  lambda) and follows the one persisted async next-hop chain. It does not
+  enumerate alternate equal paths or dynamically infer another route.
 - Awaitable classification recognizes the built-in Task/ValueTask families,
   UniTask families, and async-stream roles recorded by the indexer. An `Async`
   name suffix alone is never sufficient. A user-facing registry for additional
   awaitable types is reserved for future extension and is not currently a CLI
   option.
-- `callers tree` follows only resolved static invocation and object-creation
+- `callers tree` accepts one resolved source-backed executable root (method or
+  lambda) and follows only resolved static invocation and object-creation
   facts. It does not infer delegate `Invoke` targets, events, callbacks,
   reflection, receiver-value/data flow, or runtime virtual/interface dispatch.
   Lambda ownership is not a caller edge.

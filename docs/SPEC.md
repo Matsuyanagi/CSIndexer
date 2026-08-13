@@ -2839,7 +2839,7 @@ tableの`single-line` layoutでは、`symbol find`は2field（`signature<TAB>loc
 
 ## 33.5 非同期関数までの最短経路
 
-`csindex async tree <symbol>`は指定したsource-backed methodから呼び出し先方向へ進み、到達可能な非同期起点までの最短経路を1つ表示する。既定のtree出力に加えて`line`と`json`を提供する。lineは厳密に` -> `で接続する。root自身が非同期起点なら1nodeで終了し、到達不能なら成功結果として明示する。
+`csindex async tree <symbol>`は、一意に解決されたsource-backed executable root（methodまたはlambda）から呼び出し先方向へ進み、到達可能な非同期起点までの最短経路を1つ表示する。既定のtree出力に加えて`line`と`json`を提供する。lineは厳密に` -> `で接続する。root自身が非同期起点なら1nodeで終了し、到達不能なら成功結果として明示する。
 
 非同期起点は、宣言`async`、`Task`/`Task<T>`、`ValueTask`/`ValueTask<T>`、`UniTask`/`UniTask<T>`、`UniTaskVoid`、非同期stream、または登録済みawaitable型など、Roslynで得たdirect async roleに基づく。名前が`Async`で終わるだけでは起点にしない。非同期型の追加登録を可能にする拡張点は保持するが、未登録型を名前だけで推測しない。非同期ラムダも起点に含める。
 
@@ -2851,7 +2851,7 @@ query時は再探索せず保存済みnext chainだけを反復的にたどる�
 
 ## 33.6 呼び出し元グラフ
 
-`csindex callers tree <symbol>`は指定したsource-backed methodをrootとし、呼び出し元方向へprofile-scoped BFSを行う。rootのdepthは0、既定depthは3、`--depth 0`は深度無制限である。`--max-nodes`の既定は500でrootを含み、上限時は明示的にtruncateする。
+`csindex callers tree <symbol>`は、一意に解決されたsource-backed executable root（methodまたはlambda）をrootとして、呼び出し元方向へprofile-scoped BFSを行う。rootのdepthは0、既定depthは3、`--depth 0`は深度無制限である。`--max-nodes`の既定は500でrootを含み、上限時は明示的にtruncateする。
 
 対象edgeは解決済みinvocationとobject creationで、nodeはsource-backed method/lambdaに限定する。metadata-only・外部libraryの定義と`System`/`System.*` namespaceを除外する。source有無は文書・assembly情報で判定し、名前空間文字列だけで外部と決めない。同一depthの候補はcanonical display name、source path、source start、symbol IDで全体sortしてからnode上限を適用する。
 
