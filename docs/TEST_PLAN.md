@@ -204,24 +204,26 @@ covered only as a rejected historical option.
 
 ### Fresh verification record
 
-The final verification runs the four Release test projects, the full Release
-solution test, the Release build, formatting, diff, and status/hygiene checks
-after the implementation and documentation changes. The commands and results
-are recorded directly below rather than relying on an ignored task artifact.
+The final verification uses the completed implementation and documentation
+HEAD. The commands and results are recorded directly below rather than relying
+on an ignored task artifact.
 
-- `rtk dotnet test tests/CsIndex.Core.Tests/CsIndex.Core.Tests.csproj --configuration Release --no-restore`:
-  57 passed, 0 warnings.
-- `rtk dotnet test tests/CsIndex.Storage.Tests/CsIndex.Storage.Tests.csproj --configuration Release --no-restore`:
-  26 passed, 0 warnings.
-- `rtk dotnet test tests/CsIndex.Query.Tests/CsIndex.Query.Tests.csproj --configuration Release --no-restore`:
-  30 passed, 0 warnings.
-- `rtk dotnet test tests/CsIndex.IntegrationTests/CsIndex.IntegrationTests.csproj --configuration Release --no-restore`:
-  154 passed, 0 warnings.
-- `rtk dotnet test CsIndex.sln --configuration Release --no-restore`: 267 passed, 0
-  warnings.
-- `rtk dotnet build CsIndex.sln --configuration Release --no-restore`: 9 projects, 0
-  warnings, 0 errors.
-- `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`: exit 0.
-- `rtk git diff --check`: exit 0.
+- `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`: exit 0;
+  0 files required formatting.
+- `rtk dotnet build CsIndex.sln -c Release --no-restore`: the sandboxed first
+  attempt stopped before compilation with 8 `MSB4184` SDK-discovery access
+  errors; the identical approved rerun passed for 9 projects with 0 warnings
+  and 0 errors.
+- `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`: exit 0;
+  403 passed, 0 failed, 0 skipped, 0 warnings across 4 test projects (92.8 s).
+- Release `csindex.exe` global help and every command help: 14/14 passed;
+  function filters, source layout, output format, and output file are shown
+  only where accepted, and no active legacy `--output` entry is present.
+- Fresh directory-mode index plus JSON `symbol list --kind all --async-status all`:
+  stdout and `--output-file` payloads were byte-identical (48,271 bytes), file
+  mode stdout was empty, diagnostics were identical, JSON was valid, and the
+  output had no UTF-8 BOM. The verified temporary index/output were removed.
+- `rtk git diff --check`: exit 0; the branch diff contains no schema DDL or
+  `docs/DB_SCHEMA.md` change.
 
-Date: 2026-08-09.
+Date: 2026-08-13.

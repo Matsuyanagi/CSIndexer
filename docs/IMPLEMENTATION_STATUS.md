@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / CLI query and output contract revision（Tasks 1--8 completed; Task 9 fresh verification pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / CLI query and output contract revision（Tasks 1--9 completed）
 
 ## Last Completed Work
 
@@ -36,34 +36,40 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - active format optionを`--output-format`へ変更し、`-o` / `--output-file`によるBOMなしUTF-8の同一formatter payload出力を実装した。same-directory temporary file、成功時commit、失敗/cancel時cleanup、DB path同一拒否を含む。
 - source tableに既定`single-line`の固定record schemaと`multi-line`互換layoutを追加した。table表示だけでTAB、CRLF、CR、LF、U+0085、U+2028、U+2029をASCII spaceへsanitizeし、DB/hash/search/JSONはlosslessに保持する。
 - zero-width array-rank tokenを正規化およびseparator判定から除外し、schema v4を維持したまま`AnalysisCacheVersion = 2`でcache reuseを無効化した。次回index requestは自動再解析されるが、既存DBを直接queryする場合は`index --rebuild`で正規化ソースを更新する。
-- Task 8で、上記の正式仕様、CLI契約、decision、acceptance-test mapping、status、limitationを同期した。Task 9がfresh full-suite recordを置き換えるまで、下記の公式build/test recordは変更しない。
+- Task 8で、上記の正式仕様、CLI契約、decision、acceptance-test mapping、status、limitationを同期した。
+- Task 9で、最終diff、format、Release build、全test、全command help、stdout/file等価性をfresh runし、下記の公式検証recordを更新した。
 
 ## Currently Implementing
 
-- Task 9: revised CLI query/output contractのRelease build・full suite・format・hygieneをfresh runし、公式検証recordを更新する。
+- なし。
 
 ## Next Actions
 
-1. revised CLI query/output contractのfresh full-suite verification recordをTask 9で確定する
-2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
-3. Phase 3のUnityアセンブリ復元へ着手
+1. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
+2. Phase 3のUnityアセンブリ復元へ着手
 
 ## Build Status
 
-- Command: `rtk dotnet build CsIndex.sln --configuration Release --no-restore`
+- Command: `rtk dotnet build CsIndex.sln -c Release --no-restore`
 - Result: 9 projects; 0 warnings, 0 errors
-- Date: 2026-08-09
+- Date: 2026-08-13
+- Environment note: the sandboxed first attempt stopped before compilation with
+  8 `MSB4184` SDK-discovery access errors. The identical approved rerun produced
+  the successful result above.
 
 ## Test Status
 
-- Command: `rtk dotnet test CsIndex.sln --configuration Release --no-restore`
-- Passed: 267
+- Command: `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`
+- Passed: 403 across 4 test projects
 - Failed: 0
 - Skipped: 0
 - Warnings: 0
-- Date: 2026-08-09
-- Focused Release projects: Core 57 passed; Storage 26 passed; Query 30
-  passed; Integration 154 passed. Every project reported 0 warnings.
+- Date: 2026-08-13
+- Additional gates: `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`
+  exited 0; all 14 global/command help probes passed with no active legacy
+  `--output` entry; a fresh-index JSON smoke produced byte-identical stdout and
+  `--output-file` payloads (48,271 bytes), empty redirected stdout, identical
+  diagnostics, valid JSON, and no UTF-8 BOM.
 
 ## Known Broken Areas
 
