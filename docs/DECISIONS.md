@@ -408,3 +408,88 @@ deduplicated. Ambiguous graph-root diagnostics add document path and symbol ID
 when canonical display names alone cannot distinguish candidates.
 
 Date: 2026-08-09
+
+## DEC-0027: Common executable target filters
+
+Status: Accepted
+
+Context: `--kind` had command-specific behavior and `--async-involved` is a
+derived reachability value, not a direct declaration property. Lambda targets
+also need the same resolution grammar in flat queries and graph roots without
+changing the meaning of displayed callers, callees, or graph paths.
+
+Decision: Accept `--kind all|method|lambda` and
+`--async-status all|async|sync` on every command that resolves an executable
+target/root. Represent `all` as no kind/direct-async predicate; use stored
+`AsyncRole`, not `AsyncInvolvementDepth`, for direct async filtering; and
+apply the predicates only while resolving the target/root. Resolve canonical
+lambda grammar (`::<lambda#n>`, owner-qualified forms, and `::<lambda#*>`)
+through the common executable resolver. Expand real method overrides before
+applying the kind/direct-async predicate. Keep `index` and `conditions` out of
+the filter matrix because they have no executable target.
+
+Alternatives: Apply a display-wide graph filter, overload
+`--async-involved` with direct-async semantics, retain per-command lambda
+parsers, or infer lambda call/reference edges from delegate/event/runtime flow.
+
+Consequences: An `all` filter preserves legacy exact type-query behavior,
+while `async`/`sync` never include nonfunction symbols. Graph reachability and
+secondary caller/callee presentation remain intact. `--kind lambda` is invalid
+with method-only override expansion and with `overrides`; stored static facts
+remain the only lambda call/reference facts, so delegate `Invoke`, event,
+callback, reflection, and runtime-flow references are intentionally absent.
+
+Date: 2026-08-11
+
+## DEC-0028: Injected atomic result output
+
+Status: Accepted
+
+Context: Result redirection must not change formatter semantics, corrupt an
+existing output file on a failed query/cancel/write, or redirect diagnostics.
+The legacy output-format option name also conflicts with the distinct need to
+name an output destination.
+
+Decision: Rename the active format option to `--output-format` and reserve
+`-o` / `--output-file` for the destination. Inject a `TextWriter` into the
+normal, graph, JSON, and conditions formatters rather than changing
+process-global `Console.Out`. When a file is requested, allocate a same-
+directory temporary file only when payload writing begins; write BOM-less
+UTF-8; flush and observe cancellation; then atomically replace/move the final
+file. Keep stdout empty on a successful redirected payload and keep
+diagnostics on stderr.
+
+Alternatives: Keep `--output` as an alias, infer format from file extension,
+call `Console.SetOut`, truncate the final path before query execution, or
+write temporary files in a system temporary directory.
+
+Consequences: File bytes match the payload that the selected formatter would
+write to stdout, and failed query/format/database/write/cancel paths retain
+the previous output file. Missing parents are output errors rather than
+implicit directory creation. Normalized output/database path equality is
+rejected before I/O. The legacy `--output` spelling is deliberately a usage
+error, not a deprecation warning.
+
+Date: 2026-08-11
+
+## DEC-0029: Cache invalidation for zero-width array-rank normalization
+
+Status: Accepted
+
+Context: Roslyn omitted array-rank tokens have no source text, but allowing
+them to participate in separator decisions produced stale normalized source
+such as `string[  ]args`. The persisted schema already stores the corrected
+text and its hash, so a table migration is unnecessary.
+
+Decision: Omit missing/zero-width tokens from both normalized text and
+separator decisions, recompute the normalized-source SHA-256 hash, retain
+schema version 4, and set `AnalysisCacheVersion = 2` in the request hash.
+
+Alternatives: Raise the SQLite schema version, normalize only at display time,
+or reuse the existing cache and require every user to notice stale source.
+
+Consequences: The next matching index request automatically rebuilds because
+its request hash changes. A user who directly queries an already-built legacy
+DB must run `index --rebuild` before expecting refreshed normalized source.
+
+Date: 2026-08-11

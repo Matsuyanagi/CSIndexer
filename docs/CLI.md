@@ -42,7 +42,7 @@ csindex callers tree "Game.Player::Play()"
 csindex source show "Game.Player::Play()"
 csindex source search --include "PrintVar("
 csindex symbol list
-csindex symbol list --kind lambda --async-involved --output json
+csindex symbol list --kind lambda --async-involved --output-format json
 csindex definition "Player::Play()"
 csindex definition --at "src\Player.cs:120:17"
 csindex references "Player::Play(string)"
@@ -53,12 +53,13 @@ csindex overrides "BaseClass::Run()"
 csindex conditions
 ```
 
-Legacy flat-query options (where accepted; nested-command availability is
-specified exactly in the schema-v4 section below):
+共通の出力option（受理するcommandは後述のschema v4節のmatrixに従う）:
 
 - `--db <path>`。省略時はcurrent directoryの`.csindex/index.sqlite`。
 - `--profile <name>`
-- `--output table|json`
+- `--output-format <format>`。通常のquery/source/conditionsは`table|json`、
+  `async tree`は`tree|line|json`、`callers tree`は`tree|mermaid|json`。
+- `-o <path>` / `--output-file <path>`。結果payloadの出力先を指定する。
 - `--exclude-generated` / `--only-generated`
 - `--require-single`
 - callers固有: `--dispatch static|virtual|all`、`--caller-scope direct|containing|both`
@@ -78,7 +79,8 @@ csindex callers "IPlayable::Play()" --include-overrides
 csindex callees "IPlayable::Play()" --include-overrides
 ```
 
-The option requires a method query. A type-only query such as
+The option requires a method query. `--kind all`または`--kind method`は併用
+できるが、`--kind lambda`との併用は引数エラーである。type-only query such as
 `csindex symbol find "IPlayable" --include-overrides`, and the
 `definition --at` form, fail with:
 
@@ -87,8 +89,8 @@ The option requires a method query. A type-only query such as
 ```
 
 `symbol list`, `overrides`, `conditions`, and `index` reject the option as an
-unknown option. Without the option, every command keeps its exact-method
-lookup behavior.
+unknown option. `overrides --kind lambda`も明示的な非適用エラーとなる。Without
+the option, every command keeps its exact-method lookup behavior.
 
 Expansion returns only real declarations and is descendant-only. An interface
 query is scoped to that exact contract: `IPlayable::Play()` includes the
@@ -114,9 +116,12 @@ synthetic `D1::Play()` symbol or an override from another branch. A declared
 
 ### `symbol list`
 
-`symbol list`は、現在のprofile内の関数symbolを一覧します。既定では`method`と`lambda`の両方を返し、各table行には定義位置と、該当時は非同期解析の注釈を出力します。
+`symbol list`は、現在のprofile内の関数symbolを一覧します。既定では`method`と`lambda`の両方を返し、single-line tableの各recordは署名だけを出力します。該当する非同期解析の注釈は署名fieldに含まれます。
 
-- `--kind method|lambda`は結果を指定したkindだけに限定します。
+- `--kind all|method|lambda`は結果を指定したkindだけに限定します。既定の`all`は
+  kind述語を追加せず、`symbol list`では既存どおりmethodとlambdaの両方を返します。
+- `--async-status all|async|sync`は保存済みの直接`AsyncRole`で絞り込みます。
+  `async`と`sync`はmethod/lambdaだけを候補にし、型などを`sync`へ混入させません。
 - `--async-involved`は`asyncInvolvementDepth`を持つsymbolだけを返します。直接の非同期起点もdepth `0`として含まれます。
 - `--short-names`は表示名だけを短縮します。たとえば`Alpha.AClass::Play()`は`AClass::Play()`として表示されます。
 
@@ -134,8 +139,11 @@ csindex callees "Alpha.DescendantCallees::Execute()" --exclude-lambda-calls
 ### 非同期解析情報の出力
 
 既存の検索コマンドの結果へ非同期解析情報を追加します。schema v4では、これとは別に
-`csindex async tree`が永続化された非同期経路を表示します。`symbol list --async-involved`を
-除き、既存のフラット検索コマンドには新たな非同期専用フィルターは追加していません。
+`csindex async tree`が永続化された非同期経路を表示します。`--async-status`は直接の
+`AsyncRole`を対象とし、`symbol list --async-involved`は派生値
+`AsyncInvolvementDepth != null`を対象とします。両方を指定した場合はANDで結合します。
+したがって、直接roleを持たず非同期起点へ到達できる関数は
+`--async-status sync --async-involved`に一致します。
 
 symbolを含むJSON objectには次のpropertyを出力します。
 
@@ -163,95 +171,108 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 
 ## シンボル、ソース、グラフコマンド（schema v4）
 
-本節のコマンドは`--db <path>`（既定: current directory配下の`.csindex/index.sqlite`）と`--profile <name>`を受け付けます。`--short-names`は表示専用で、表示名、戻り値型、引数型だけを短縮し、保存済みcanonical値や検索意味を変更しません。各コマンドの`--help`は、受理する完全な構文、output値、既定値を表示します。
+本節のコマンドは`--db <path>`（既定: current directory配下の`.csindex/index.sqlite`）と`--profile <name>`を受け付けます。`--short-names`は表示専用で、表示名、戻り値型、引数型だけを短縮し、保存済みcanonical値や検索意味を変更しません。
 
-### `symbol find`
+### 共通の実行可能target filter
+
+`--kind all|method|lambda`と`--async-status all|async|sync`は、method/lambdaを候補またはrootとして解決する次のcommandで受理します。
+
+| command | `--kind` / `--async-status`の適用先 |
+| --- | --- |
+| `symbol find`、`symbol list` | 一致/一覧のsymbol |
+| `source show`、`source search` | source-backed実行可能symbol |
+| `definition`、`definition --at` | 解決対象とdefinition結果 |
+| `references`、`callers` | 検索対象となるcallee target |
+| `callees` | 検索対象となるcaller root |
+| `async tree`、`callers tree` | 一意に解決するsource-backed executable root |
+| `overrides` | method root。`--kind lambda`は非適用エラー |
+
+`index`と`conditions`はfunction targetを持たないため、両filterを未知optionとして拒否します。filterはtarget/rootの解決にだけ適用し、`references`/`callers`が返すcaller、`callees`が返すcallee、tree内の途中nodeやedgeを一律に削除しません。
+
+既定はどちらも`all`です。`--kind all`はkind predicateを追加しないため、exact `symbol find`が従来返していた型などを排除しません。`--async-status async`は`AsyncRole != None`、`sync`は`AsyncRole == None`のmethod/lambdaに限定し、`all`はdirect async predicateを追加しません。未知値は次のusage errorです。
+
+```text
+Unknown symbol kind: <value>. Use all, method, or lambda.
+Unknown async status: <value>. Use all, async, or sync.
+```
+
+ラムダtargetは、各対象commandで次のcanonical grammarを解決します。
+
+```text
+::<lambda#1>
+Owner()::<lambda#2>
+Namespace.Type::Owner()::<lambda#2>
+::<lambda#*>
+```
+
+複数targetを許すcommandは決定的順序ですべて処理します。`async tree`と`callers tree`は1件のsource-backed executable rootを必要とし、0件または複数件なら候補を含む`Query error`にします。同じcanonical display nameの候補はdocument pathとsymbol IDで区別します。
+
+`--include-overrides`はまず実在するmethod targetをdescendant方向に展開し、その後にkind/direct-async filterを適用します。`--kind all`と`--kind method`はexact method queryで併用でき、`--kind lambda`は拒否されます。ラムダの所有関係はcall edgeではなく、delegate `Invoke`、event、callback、reflection、runtime flowを補ってlambda targetへのcall/referenceを推測しません。
+
+### `symbol find`とsource command
 
 ```text
 csindex symbol find [<pattern>] [options]
+csindex source show <symbol> [options]
+csindex source search (--include <text> | --exclude <text>)... [options]
 ```
 
-`<pattern>`は位置引数を最大1つ受け付けます。省略する場合は、`--namespace`、`--type`、`--method`の少なくとも1つが必要です。
+`symbol find`の位置引数は最大1つで、省略時は`--namespace`、`--type`、`--method`の少なくとも1つを必要とします。component条件はANDで結合します。非regex modeでは`*`だけがwildcardで、それ以外はliteralです。`--regex`ではすべての名前conditionをculture-invariantな.NET regexとしてtimeout付きで評価し、`--ignore-case`は名前をculture-invariant ignore-case、source conditionをordinal ignore-caseにします。
+`--include`/`--exclude`は反復可能で、excludeをORで先に評価してからincludeをANDで評価します。`--show-source`は表示だけを変え、候補をsource-backedへ限定しません。
 
-- `--namespace <pattern>`、`--type <pattern>`、`--method <pattern>`はANDで結合します。
-- `--kind method|lambda`.
-- `--regex`は、すべての名前patternをculture-invariantな.NET正規表現として2秒のtimeout付きで評価します。既定はcase-sensitiveです。`--ignore-case`指定時、名前条件はculture-invariant ignore-case、ソース条件はordinal ignore-caseになります。regex modeの`*`は正規表現の一部であり、wildcardとして重ねて解釈しません。
-- `--regex`がなければ`*`だけが0文字以上に一致し、それ以外はliteralです。例: `*.Gamer::Play`、`Tokyo.*::Play`、`Tokyo.Gamer::P*l*y`。
-- 既存のexact resolverを使うのは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component条件、`--kind`、`--include`、`--exclude`を持たない場合だけです。`--show-source`は表示専用なのでexact pathを妨げません。引数リストを省略したmethod patternはoverloadを列挙し、引数リストを指定したpatternは完全signatureを照合します。
-- ラムダは`::<lambda#1>`、`Function()::<lambda#2>`、完全表示名、`::<lambda#*>`で検索できます。suffix、owner suffix、完全名のいずれもcanonical lambda display nameへ照合します。
-- `--include <text>`と`--exclude <text>`は複数回指定できます。excludeはORで先に短絡評価し、それを通過した候補にincludeをANDで評価します。ソース条件がある場合はsource-backed実行可能シンボルだけが候補です。`--show-source`は表示だけを変更し、filterを追加しません。
-- `--output table|json` (default `table`), `--require-single`, and
-  `--short-names`.
+`symbol find`は`::<lambda#1>`、`Owner()::<lambda#2>`、完全なowner-qualified名、`::<lambda#*>`でlambdaを検索できます。source showは一致するsource-backed executableとoverloadを返し、source searchは位置引数を受け付けず少なくとも1つのinclude/excludeを必要とします。metadata-onlyまたは非実行可能symbolはsource commandから返しません。
 
-`--include-overrides`はlegacy exact method-query modeだけで使用できます。component、kind、regex、case、source検索optionとは併用できませんが、`--show-source`は併用できます。不正な指定は`Argument error:` prefixとusage hintを伴って、次のエラーを返します。
+`symbol find`のexact queryでは、`--kind all`と`--async-status all`はpredicateを追加しないため、従来のexact type-query behaviorを維持します。`--async-status async|sync`を明示した場合は、exact候補に保存済み`AsyncRole`のdirect filterを適用します。
+
+### 出力形式と結果ファイル
+
+`--output-format`は形式を選ぶoptionであり、既定は通常commandでは`table`、`async tree`と`callers tree`では`tree`です。受理する値はcommandごとに次のとおりです。
+
+| command | format |
+| --- | --- |
+| `symbol find`、`symbol list`、`source show`、`source search`、`definition`、`references`、`callers`、`callees`、`overrides`、`conditions` | `table|json` |
+| `async tree` | `tree|line|json` |
+| `callers tree` | `tree|mermaid|json` |
+
+`-o <path>`と`--output-file <path>`は同義で、上表の結果payloadを持つすべてのcommandで使えます。`index`は結果payloadを持たないため受理しません。短縮形として認識するのは完全一致する`-o`だけであり、`-opath`と`-o=<path>`は位置引数です。file extensionからformatを推測せず、同じformatterがstdoutまたはfileへ同じpayloadを出力します。
+
+出力先を指定しない場合はpayloadをstdoutへ書きます。指定した場合は成功時のstdoutを空にし、diagnostic、warning、progress、argument/query/database/output errorはstderrのままにします。fileはBOMなしUTF-8で、relative pathはprocess current directoryから絶対化します。
+
+global helpと各commandの`--help`は通常どおりstdoutへ表示し、`--output-file`を併記しても結果fileを開いたりredirectしたりしません。
+
+file出力はlazyに出力先と同じdirectoryのtemporary fileを開き、formatterの完了・flush・cancellation checkに成功した場合だけ既存fileを置換または新規fileへcommitします。query/format/database/write/cancel失敗時は既存fileをtruncateせず、所有するtemporary fileをcleanupします。parent directoryは自動作成しません。正規化比較で出力先が使用中SQLite DB pathと同一ならusage error、存在しないparentまたはI/O failureなら`Output error:`で始まるanalysis failureです。空値、値なし、または`-o`/`--output-file`の重複はusage errorです。
+
+旧名`--output`はbreaking changeとして受理しません。指定すると`Unknown option(s): --output`のusage error（exit code 2）になります。
+
+### source table layout
+
+`--source-layout single-line|multi-line`の既定は`single-line`です。`symbol find`では`--show-source`と組み合わせる場合だけ、`source show`と`source search`では常に受理します。JSONとの併用、およびソースを表示しないcommandでの指定はusage errorです。
+
+未知値は次のusage errorです。
 
 ```text
-symbol find accepts at most one positional pattern.
-symbol find requires a pattern or at least one --namespace, --type, or --method condition.
-Unknown symbol kind: <value>. Use method or lambda.
---include-overrides cannot be combined with component, kind, regex, case, or source search options.
+Unknown source layout: <value>. Use single-line or multi-line.
 ```
 
-無効な正規表現とtimeoutは、対象patternを示す`Query error:`になります。未知または非対応optionは`Unknown option(s): ...`になります。
+single-line tableのstdoutにはrecordだけを出します。summaryはstderrへ出し、0件ならstdoutは空です。field separatorはTABで、同一実行中のfield数と順序は固定です。
 
-table出力は`Query matched <count> symbol(s):`で始まり、`accessibility static async return-type name(parameters)`の順でC#宣言に近い署名を表示します。`source: <normalized-source>`は`--show-source`指定時だけ出力します。JSONは`{ "profile": "...", "matched": [...] }`で、各symbol objectは`symbol list`と同じcanonical fieldを持ち、ソース表示を要求した場合だけ`normalizedSource`を追加します。
+| command | 1 record |
+| --- | --- |
+| `symbol find` | `<signature><TAB><path>:<line>:<column>`（metadata-onlyは空location） |
+| `symbol find --show-source` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>`（metadata-onlyは空location/source） |
+| `source show`、`source search` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>` |
+| `symbol list` | `<signature>` |
 
-ローカル関数、ラムダ、static constructorはaccessibilityを表示しません。コンストラクターは戻り値を表示せず、アクセサー、演算子、変換演算子も宣言kindに適用できるfieldだけを表示します。
+`multi-line`は互換layoutとしてheading、symbol行、`    source: <normalized-source>`行をstdoutへ維持します。single-lineの各field、およびmulti-lineのsignature/sourceは、実TAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ表示時だけ置換します。これにより各recordとsource行は1物理行になります。DBの`normalized_source`とhash、source search、JSONの`normalizedSource`はlosslessな保存値を維持します。
 
-### Source commands
+### graph command補足
+
+`async tree`と`callers tree`のrootはexact source-backed executable queryです。前者は保存済みの1本のasync next-hop chainを`tree|line|json`で、後者はprofile内のbounded static caller graphを`tree|mermaid|json`で出力します。root filterは適用しますが、途中nodeをfilterしてpath/edgeを切断しません。delegate `Invoke`、event、callback、reflection、runtime dispatch、およびlambda ownership edgeは推論しません。
 
 ```text
-csindex source show <symbol> [--output table|json] [--short-names]
-csindex source search (--include <text> | --exclude <text>)...
-    [--ignore-case] [--output table|json] [--short-names]
+csindex async tree <symbol> [--max-nodes <count>] [--output-format tree|line|json]
+csindex callers tree <symbol> [--depth <count>] [--max-nodes <count>]
+    [--output-format tree|mermaid|json]
 ```
 
-`source show`は一致するすべてのsource-backed実行可能シンボルとoverloadを返し、常に正規化ソースを表示します。対象はメソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子です。metadata-onlyまたは非実行可能symbolは返しません。`source search`は位置引数を受け付けず、少なくとも1つのincludeまたはexcludeを必須とします。
-
-```text
-source search does not accept positional arguments.
-source search requires at least one include or exclude condition.
-```
-
-両コマンドの既定出力はtableです。JSON shapeは`symbol find`と同じで`normalizedSource`を含みます。tableは署名、位置、indentした`source:`行を表示します。ソース照合は既定でordinal case-sensitive、`--ignore-case`指定時はordinal ignore-caseです。正規化ではliteral token外のlayout、コメント、directive、inactive branchを除きますが、各literal tokenの`Text`は保持するため、複数行raw literalの内部改行は表示結果に残り得ます。
-
-### Async shortest path
-
-```text
-csindex async tree <symbol> [--output tree|line|json] [--max-nodes 500]
-    [--short-names]
-```
-
-rootはexact query parserによってsource-backed method 1件へ解決される必要があります。既定出力は`tree`です。`line`はnode間を厳密に` -> `で接続し、`json`は`profile`、`found`、`truncated`、`root`、`nodes`を出力します。非同期起点は`async <name>`と表示します。到達可能な起点がなければ、tree/lineは`No reachable asynchronous function: <root>`、JSONは`found: false`と空の`nodes`を返します。正の`--max-nodes`は既定500でrootを含み、打ち切り時はtree/lineへ`<truncated>`、JSONへ`truncated: true`を出力します。
-
-表示経路はindex時に決定した1つの最短next-hop chainであり、query時に別経路を再選択しません。同距離の候補が複数あっても最初に決定的順序で記録した1経路だけを返します。root自身が非同期起点なら1nodeです。宣言`async`、Task/ValueTask/UniTask系、非同期streamなどのRoslyn direct roleで起点を判定し、名前の`Async` suffixだけでは判定しません。
-
-### Caller tree
-
-```text
-csindex callers tree <symbol> [--depth 3] [--max-nodes 500]
-    [--output tree|mermaid|json] [--short-names]
-```
-
-rootのdepthは0です。`--depth 0`は深度制限なし、それ以外の既定は3です。正の`--max-nodes`は既定500でrootを含みます。既定の`tree`はspanning treeを表示し、non-spanning/cycle edgeがあれば`Additional edges:`を追加します。`mermaid`は`flowchart TD`、`n<symbol-id>`のnode ID、escape済み表示名label（既定canonical、`--short-names`で短縮）、callerからcalleeへの矢印、打ち切り時の`%% truncated`を出力します。JSONは`profile`、`truncated`、`root` symbol、`depth`付き`nodes`、caller/callee symbol IDを持つ`edges`を出力します。
-
-caller探索はprofile内のBFSで、同じdepthではdisplay name、source path、source offset、ID順です。解決済みinvocation/object-creation edgeを使用し、source-backed method/lambdaだけを含め、metadata-only・外部libraryと`System`/`System.*`を除外します。cycleでもnodeを重複させず、両端が含まれるedgeを保持します。ラムダownerからcall edgeを合成せず、delegate `Invoke`、event、callback、reflection、runtime dispatchの実行を推論しません。
-
-Graph validation errors include:
-
-```text
-This command requires exactly one symbol query.
-Depth must be an integer.
-Depth cannot be negative.
-Maximum node count must be an integer.
-Maximum node count must be positive.
-Graph queries require an exact source-backed method query.
-No source-backed method matches graph query: <query>
-Graph query is ambiguous for '<query>'. Candidates: <canonical candidates>
-Unknown async tree output: <value>. Use tree, line, json.
-Unknown callers tree output: <value>. Use tree, mermaid, json.
-```
-
-候補順は決定的です。2件以上の候補が同じcanonical display nameなら、`<display-name> [document: <path>; symbol ID: <id>]`として区別します。
-
-保存済みasync pathが破損している場合は、黙って別経路を選ばずdatabase errorにし、messageは`Async path integrity failure:`で始めます。profile不存在、非対応schema、破損DBも明示的なerrorとし、終了コードは本書の「Exit codes」に従います。
+`async tree`の`--max-nodes`は正の値で既定500、`callers tree`の`--depth`は既定3（`0`は無制限）、`--max-nodes`は正の値で既定500です。両commandのambiguous rootは決定的順の候補を示す`Query error`になります。保存済みasync pathの整合性違反は、別経路を推測せずdatabase errorにします。

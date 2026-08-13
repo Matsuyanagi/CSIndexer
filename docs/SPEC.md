@@ -1027,6 +1027,8 @@ enum ReferenceKind
 
 伝播方向は「非同期関数へ到達する呼び出し元方向」のみである。非同期起点から呼ばれる同期関数へは伝播せず、非同期起点へ到達しない循環のdepthはnullのままとする。
 
+CLIの`--async-status all|async|sync`はこの派生depthではなく直接`AsyncRole`にだけ適用する。`async`は`AsyncRole != None`、`sync`は`AsyncRole == None`のmethod/lambdaを対象にし、型などの非関数symbolを`sync`へ含めない。既存の`symbol list --async-involved`は`AsyncInvolvementDepth != null`による派生条件のまま維持し、両optionの併用はAND条件とする。
+
 Coreモデルとschema version 4のSQLite列は次の対応とする。
 
 | Coreモデル | SQLite列 |
@@ -1142,6 +1144,17 @@ M:X.Play(System.Int32)
 Game.Player::Update()::<lambda#1>
 Game.Player::Update()::<lambda#2>
 ```
+
+ラムダをtargetとして扱うquery commandは、少なくとも次の表記を共通に解決する。
+
+```text
+::<lambda#1>
+Owner()::<lambda#2>
+Namespace.Type::Owner()::<lambda#2>
+::<lambda#*>
+```
+
+複数targetを扱えるcommandは決定的順序ですべて処理する。一意rootが必要な`async tree`と`callers tree`は、filter適用後に0件または複数件なら候補を含む明示的なquery errorにする。候補は同一canonical display nameであればdocument pathとsymbol IDを併記する。
 
 通し番号だけを永続キーにしない。
 
@@ -1967,21 +1980,70 @@ Undefined in current profile:
   USE_ADDRESSABLES
 ```
 
-## 21.9 出力形式
+## 21.9 共通の実行可能target条件
 
-現在の正式な出力形式は、通常のシンボル・ソース検索が`table|json`、`async tree`が`tree|line|json`、`callers tree`が`tree|mermaid|json`である。次のうち未実装の形式は将来拡張用に予約する。
+method/lambdaを候補またはrootとして解決するquery commandは、次のoptionを共通に受理する。
 
 ```text
---output table
---output json
---output jsonl
---output yaml
---output dot
+--kind all|method|lambda
+--async-status all|async|sync
 ```
 
-主DBはSQLiteのままにし、JSON、JSONL、YAML、DOTは出力形式として実装する。
+どちらも既定は`all`である。`--kind all`はkind predicateを追加しないため、exact `symbol find`では従来返していた型などを排除しない。`--async-status all`もdirect async predicateを追加しない。`async`と`sync`は保存済み`AsyncRole`を使い、method/lambdaだけを候補にする。
 
-JSONL、YAML、Graphviz DOTは未実装であり、対応commandで明示されるまで受理しない。
+| command | filterを適用する対象 |
+|---|---|
+| `symbol find`、`symbol list` | 一致/一覧symbol |
+| `source show`、`source search` | source-backed実行可能symbol |
+| `definition`、`definition --at` | 解決targetとdefinition結果 |
+| `references`、`callers` | 検索対象のcallee target |
+| `callees` | 検索対象のcaller root |
+| `async tree`、`callers tree` | 一意に解決するsource-backed executable root |
+| `overrides` | method root。`--kind lambda`は非適用エラー |
+
+filterはtarget/rootの解決にだけ使う。二次的に表示するcaller/callee、graph途中node、edgeを一律にfilterして既存の到達性を変えてはならない。`index`と`conditions`はfunction targetを持たないため、両optionを未知optionとして拒否する。
+
+未知値は次のusage errorとする。
+
+```text
+Unknown symbol kind: <value>. Use all, method, or lambda.
+Unknown async status: <value>. Use all, async, or sync.
+```
+
+## 21.10 出力形式、source layout、結果ファイル
+
+通常のシンボル・ソース・query・`conditions`出力の`--output-format`は`table|json`、`async tree`は`tree|line|json`、`callers tree`は`tree|mermaid|json`である。既定は前者が`table`、tree commandが`tree`である。JSONL、YAML、Graphviz DOTは未実装であり、受理しない。
+
+`-o <path>`と`--output-file <path>`は同義で、結果payloadを持つcommandの出力先を指定する。`index`は検索結果payloadを持たないため受理しない。短縮形として特別扱いするのは完全一致する`-o`だけであり、file extensionからformatを推測しない。output-fileを指定した場合は、stdoutへ出るはずだったformatter payloadをBOMなしUTF-8でfileへ書き、成功時のstdoutは空にする。diagnostic、warning、progress、errorはstderrのままとする。
+
+global helpと各commandの`--help`はstdoutへ表示し、`--output-file`を併記しても結果fileを開いたりredirectしたりしない。
+
+file outputは出力先と同じdirectoryのtemporary fileをlazyに開き、payloadの成功、flush、cancellation checkの後だけ既存fileを置換またはcommitする。argument/query/database/output error、cancel、write failure時は既存fileをtruncateせず、temporary fileをcleanupする。relative pathはprocess current directoryから絶対化し、parent directoryを自動作成しない。正規化比較で出力先が使用中SQLite DB pathと同一ならusage error、parent不足またはI/O failureは`Output error:`で始まるanalysis failureにする。空値、値なし、重複指定もusage errorである。
+
+旧名`--output`は後方互換aliasではない。指定時は`Unknown option(s): --output`のusage error（exit code 2）にする。
+
+正規化ソースをtableで表示するcommandは次を受理する。
+
+```text
+--source-layout single-line|multi-line
+```
+
+既定は`single-line`である。`symbol find`では`--show-source`と併用するときだけ、`source show`と`source search`では常に有効である。JSONとの併用、およびソースを表示しないcommandでの指定はusage errorとする。single-lineのrecord schemaは次のとおりで、同じ実行中にfield数を変えてはならない。
+
+未知のlayout値は次のusage errorとする。
+
+```text
+Unknown source layout: <value>. Use single-line or multi-line.
+```
+
+| command | 1 record |
+|---|---|
+| `symbol find` | `<signature><TAB><path>:<line>:<column>`（metadata-onlyは空location） |
+| `symbol find --show-source` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>`（metadata-onlyは空location/source） |
+| `source show`、`source search` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>` |
+| `symbol list` | `<signature>` |
+
+single-lineのstdoutはrecordだけとし、件数summaryはstderrへ出す。`multi-line`はheading、symbol行、`    source: <normalized-source>`行を維持する。single-lineの各fieldとmulti-lineのsignature/sourceは、TAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ表示時だけ置換し、各record/source行を1物理行にする。この表示変換はDBの`normalized_source`とhash、source search、JSONの`normalizedSource`を変更してはならない。
 
 Schema version 4 retains the existing async-analysis fields and adds persisted
 async next-hop, executable metadata, normalized-source, and graph-query
@@ -1994,21 +2056,24 @@ support described in section 33.
 
 ---
 
-## 21.10 Override-aware method-query option
+## 21.11 Override-aware method-query option
 
 The five method-query commands listed in section 18.7 accept
-`--include-overrides`; its default is off. `symbol find`, `definition`, and
-the call-oriented commands report only real stored declarations in their
-matched or expanded target sets. `references` and `callers` then search calls
-to those real callee IDs, while `callees` searches calls made by each expanded
-real method.
+`--include-overrides`; its default is off. Exact method queryでは`--kind all`または
+`--kind method`を併用できる。`symbol find`, `definition`, and the call-oriented
+commands report only real stored declarations in their matched or expanded
+target sets. `references` and `callers` then search calls to those real callee
+IDs, while `callees` searches calls made by each expanded real method.
 
 The expansion is query-time, profile-scoped, deterministic, and cycle-safe.
 It travels only to descendant implementations: interface searches use the
 exact interface contract's bindings, while class and abstract-class searches
-follow only descendant override branches. This option does not alter the
-independent `--dispatch` presentation mode and never performs upward,
-sibling-branch, or runtime-flow expansion.
+follow only descendant override branches. Expand real methods first, then
+apply the kind/direct-async target filter. `--kind lambda` cannot be combined
+with `--include-overrides`, and `overrides --kind lambda` is an explicit
+non-applicable argument error. This option does not alter the independent
+`--dispatch` presentation mode and never performs upward, sibling-branch, or
+runtime-flow expansion.
 
 ---
 
@@ -2686,7 +2751,7 @@ Cache reused / rebuilt
 
 ## 33.2 ラムダの検索、採番、所有関係
 
-`symbol find`は次のいずれでもラムダを検索できる。
+`symbol find`、`source show`、`definition`、`references`、`callers`、`callees`、`async tree`、`callers tree`は、該当するtarget/root位置で次のいずれでもラムダを検索できる。
 
 ```text
 ::<lambda#1>
@@ -2696,6 +2761,8 @@ Namespace.Type::Function()::<lambda#2>
 ```
 
 検索はラムダsuffix、owner付きsuffix、正式な完全表示名に対応し、`--kind lambda`と組み合わせられる。同じ番号を持つ別ownerのラムダが複数一致した場合は、すべてを決定的な順序で列挙する。
+
+`async tree`と`callers tree`は単一のsource-backed executable rootだけを受理する。filter適用後に複数のラムダtargetが残る場合は、既存のgraph ambiguity契約に従って決定的順の候補を列挙して失敗する。ラムダownerの包含関係はcall edgeではなく、delegate `Invoke`、event、callback、reflection、runtime flowからlambdaのcall/reference edgeを推測しない。
 
 ラムダの表示番号は、最寄りの非ラムダ実行可能ownerごとにソース順で`<lambda#1>`から開始する。ネストしたラムダも同じ非ラムダownerの連番を使用し、内側のラムダで番号をリセットしない。ラムダを追加または削除したときに番号が変わり得るのは、同じowner内でその位置より後ろにあるラムダだけである。
 
@@ -2742,7 +2809,7 @@ Tokyo.Gamer::P*l*y
 
 `--regex`では各名前条件をculture-invariantな.NET正規表現として評価し、有限のtimeoutを設定する。`*`は正規表現の一部でありwildcard modeと重ねて解釈しない。既定はcase-sensitiveで、`--ignore-case`指定時だけ名前はculture-invariant ignore-case、ソースはordinal ignore-caseにする。無効な正規表現またはtimeoutは部分結果ではなくquery errorにする。
 
-既存のexact resolverを使うのは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component、kind、include、excludeの各検索modifierを持たない場合だけである。`--show-source`は表示専用なのでexact pathを妨げない。引数リストを省略したメソッドpatternはoverloadを列挙し、完全な引数リストを指定したpatternは完全signatureを照合する。`--include-overrides`との併用範囲は第18.7節と`docs/CLI.md`に従う。
+`symbol find`のexact pathは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component、kind predicate、include、excludeの各検索modifierを持たない場合に使用できる。`--kind all`と`--async-status all`はpredicateを追加しないためexact type-query behaviorを維持し、`--async-status async|sync`はexact候補へ保存済み`AsyncRole`のdirect filterを適用する。`--show-source`は表示専用なのでexact pathを妨げない。引数リストを省略したメソッドpatternはoverloadを列挙し、完全な引数リストを指定したpatternは完全signatureを照合する。`--include-overrides`との併用範囲は第18.7節と`docs/CLI.md`に従う。
 
 結果はcanonical display name、source path、source start、numeric symbol IDの順で安定化する。
 
@@ -2758,11 +2825,17 @@ public static int Func(){var a=1;PrintVar(a);return a;}
 
 `publicstaticintFunc(){vara=1;...}`のような文字列は生成しない。補間式の内部でもtoken境界を維持する。DBにはprofile、symbol ID、正規化文字列、SHA-256 hash、元ファイルとソース範囲を保持する。metadata-only symbolには正規化ソースを持たせない。
 
+source幅0のmissing/omitted tokenは正規化文字列へ追加せず、その前後のseparator判定にも使わない。したがってarray rankの不要な空白は保持せず、`string[]args`、`int[,]matrix`、`int[][]values`、`string?[]items`のように正規化する。literal tokenまたは実source文字を持つtokenは削除しない。正規化文字列を更新した場合は、その値からSHA-256 hashを再計算する。
+
 ### 33.4.3 ソース表示と検索
 
 `symbol find`は反復可能な`--include`と`--exclude`を名前条件と組み合わせられ、これらを1つも指定しなくてもよい。名前・属性で候補を絞った後、source-less候補を除き、excludeをORで先に短絡評価し、それを通過した候補にincludeをANDで短絡評価する。includeがなければexcludeを通過した候補を採用する。`--show-source`は表示だけを変更し、候補集合を変更しない。
 
 `source show <symbol>`は一致するsource-backed実行可能シンボルとoverloadの正規化ソースを表示する。`source search`は位置引数を受け付けず、少なくとも1つの`--include`または`--exclude`を必須とする。両コマンドはtableとJSONを提供し、正式名、適用可能な属性、ファイル、位置、正規化ソースを返す。実装上、DB optimizerが述語順を変更しても意味を変えてはならず、アプリケーション層ではexcludeによる早期除外を維持する。
+
+tableの`single-line` layoutでは、`symbol find`は2field（`signature<TAB>location`）、`symbol find --show-source`と`source show`/`source search`は3field（`signature<TAB>location<TAB>normalized-source`）、`symbol list`はsignatureだけの1fieldを出力する。metadata-only `symbol find`候補も空fieldで同じfield数を保つ。summary、warning、progress、errorはrecord-only stdoutへ混在させず、summaryはstderrへ出す。`multi-line` layoutでは既存のheadingと`source:`行を維持する。
+
+いずれのtable layoutでも、表示直前にTAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ置換し、signatureとsource行を1物理行にする。これは表示層だけの変換であり、DB、hash、source search、JSONの保存値はlosslessに維持する。
 
 ## 33.5 非同期関数までの最短経路
 
@@ -2789,6 +2862,8 @@ nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界
 ## 33.7 スキーマと更新の原子性
 
 schema version 4は、属性、method kind、owner、初期化子、return type、source presence、正規化ソース/hash、async depth/nextを`symbols`と関連tableへ保存する。自己参照する`containing_symbol_id`と`async_next_symbol_id`はsymbol rowのnumeric ID確定後に解決する。profile、kind、名前component、owner、async depth/next、source-backed executableを効率よく検索できるprofile-prefix indexを持つ。正確なDDLは`docs/DB_SCHEMA.md`を正式なschema定義とする。
+
+array rankの正規化修正はschema形状を変えないためschema versionは4のままとする。一方、旧正規化ソースをcache reuseしないようrequest hashへ含める`AnalysisCacheVersion`は2とする。次回の同一index requestはhash不一致により自動再解析されるが、既に構築済みのlegacy DBへ直接queryする場合は、更新済み正規化ソースを得るため`index --rebuild`を実行しなければならない。
 
 更新は1つのSQLite transactionで行い、全symbol row、自己参照、parameter/call/relation/interface binding/conditional symbolを保存して`PRAGMA foreign_key_check`に成功した場合だけcommitする。例外またはcancel時はrollbackして直前のindexを保持する。旧schema、未知schema、`schema_info`のない非空DBはWALやDDLを変更する前に拒否する。
 

@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / CLI query and output contract revision（Tasks 1--8 completed; Task 9 fresh verification pending）
 
 ## Last Completed Work
 
@@ -31,15 +31,22 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Graph-root ambiguity reports deterministic canonical candidates, duplicate names include document path and ID, and global/command help is snapshot-tested against the accepted grammar.
 - Added direct acceptance coverage for nested/all-same-ordinal lambda search, reverse insertion ties, final numeric-ID ordering, duplicate projects, excluded reverse callers, all executable declaration signature kinds, literal variants, corruption, and in-flight cancellation.
 - 承認済みのsymbol/source/graph要件を役割別の永続文書へ統合した。`SPEC.md`第33章を正式仕様、`CLI.md`をコマンド契約、`DB_SCHEMA.md`をDB契約、`DECISIONS.md`を判断履歴、`TEST_PLAN.md`を正式な受け入れmatrixとし、独立していた旧要求仕様ファイルを廃止した。
+- 実行可能targetを扱うcommandへ共通の`--kind all|method|lambda`と`--async-status all|async|sync`を追加した。filterはdirect `AsyncRole`とtarget/root解決へだけ適用し、`--async-involved`の派生到達性およびgraph/caller/calleeの二次表示とは区別する。
+- ラムダtarget grammarをflat queryとgraph rootへ共通化し、method overrideを展開した後にkind/direct-async filterを適用する。delegate `Invoke`、event、callback、reflection、runtime flowからlambda call/reference edgeは生成しない。
+- active format optionを`--output-format`へ変更し、`-o` / `--output-file`によるBOMなしUTF-8の同一formatter payload出力を実装した。same-directory temporary file、成功時commit、失敗/cancel時cleanup、DB path同一拒否を含む。
+- source tableに既定`single-line`の固定record schemaと`multi-line`互換layoutを追加した。table表示だけでTAB、CRLF、CR、LF、U+0085、U+2028、U+2029をASCII spaceへsanitizeし、DB/hash/search/JSONはlosslessに保持する。
+- zero-width array-rank tokenを正規化およびseparator判定から除外し、schema v4を維持したまま`AnalysisCacheVersion = 2`でcache reuseを無効化した。次回index requestは自動再解析されるが、既存DBを直接queryする場合は`index --rebuild`で正規化ソースを更新する。
+- Task 8で、上記の正式仕様、CLI契約、decision、acceptance-test mapping、status、limitationを同期した。Task 9がfresh full-suite recordを置き換えるまで、下記の公式build/test recordは変更しない。
 
 ## Currently Implementing
 
-- なし
+- Task 9: revised CLI query/output contractのRelease build・full suite・format・hygieneをfresh runし、公式検証recordを更新する。
 
 ## Next Actions
 
-1. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
-2. Phase 3のUnityアセンブリ復元へ着手
+1. revised CLI query/output contractのfresh full-suite verification recordをTask 9で確定する
+2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
+3. Phase 3のUnityアセンブリ復元へ着手
 
 ## Build Status
 
@@ -69,6 +76,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - src/CsIndex.Core/Analysis/AsyncOperationClassifier.cs
 - src/CsIndex.Core/Analysis/AsyncInvolvementPropagator.cs
 - src/CsIndex.Core/Analysis/SourceNormalizer.cs
+- src/CsIndex.Core/Caching/RequestHasher.cs
 - src/CsIndex.Core/Input/WorkspaceLoader.cs
 - src/CsIndex.Storage/SqliteIndex.cs
 - src/CsIndex.Storage/Schema/SchemaMigrator.cs
@@ -78,16 +86,22 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - src/CsIndex.Query/Symbols/SymbolPatternMatcher.cs
 - src/CsIndex.Query/Symbols/SourceTextFilter.cs
 - src/CsIndex.Cli/Program.cs
+- src/CsIndex.Cli/CliArguments.cs
 - src/CsIndex.Cli/OutputFormatter.cs
 - src/CsIndex.Cli/GraphOutputFormatter.cs
+- src/CsIndex.Cli/OutputDestination.cs
+- src/CsIndex.Cli/TableTextSanitizer.cs
+- src/CsIndex.Cli/SourceLayout.cs
 - tests/CsIndex.Core.Tests/AsyncSemanticExtractorTests.cs
 - tests/CsIndex.Core.Tests/AsyncInvolvementPropagatorTests.cs
 - tests/CsIndex.Core.Tests/ExecutableSymbolExtractionTests.cs
 - tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
+- tests/CsIndex.Core.Tests/RequestHasherTests.cs
 - tests/CsIndex.Core.Tests/ProjectScopedSourceSymbolIdentityTests.cs
 - tests/CsIndex.Core.Tests/SemanticExtractorCancellationTests.cs
 - tests/CsIndex.IntegrationTests/CliCommandTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
+- tests/CsIndex.IntegrationTests/FunctionTargetFilterTests.cs
 - tests/CsIndex.IntegrationTests/PhaseOneAcceptanceTests.cs
 - tests/CsIndex.IntegrationTests/SymbolSourceQueryTests.cs
 - tests/CsIndex.IntegrationTests/GraphQueryTests.cs
@@ -100,10 +114,11 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - docs/DECISIONS.md
 - docs/TEST_PLAN.md
 - docs/KNOWN_LIMITATIONS.md
+- docs/IMPLEMENTATION_STATUS.md
 
 ## Database Schema Version
 
-- 4
+- 4（schema形状は不変。正規化source修正のcache invalidationは`AnalysisCacheVersion = 2`で行う）
 
 ## CLI Commands Implemented
 
@@ -120,6 +135,8 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - `callees`
 - `overrides`
 - `conditions`
+
+`index`以外の結果payload commandは`--output-format`と`-o` / `--output-file`を受理する。`--kind`と`--async-status`は実行可能target/rootを持つcommandだけに適用し、`conditions`と`index`は拒否する。
 
 ## Pending Decisions
 

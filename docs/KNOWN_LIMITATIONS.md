@@ -40,6 +40,7 @@
 ## Symbol, source, and graph expansion
 
 - Version 3 and every older/unknown database version must be rebuilt. There is no automatic migration or compatibility reader for those databases.
+- array-rank normalization correction後もschema version 4（v4）のままです。`AnalysisCacheVersion = 2`により次回の同一index requestは自動再解析されますが、legacy normalized sourceを持つ既構築v4 DBを直接queryする場合は、更新済みsource/hashを得る前に`index --rebuild`が必要です。
 - Normalized-source matching is an arbitrary substring predicate over
   source-backed executable candidates. It can scan candidates because neither
   a B-tree index nor FTS is used for arbitrary substrings.
@@ -52,6 +53,13 @@
   symbols: methods, constructors, local functions, lambdas, accessors,
   operators, and conversions. Metadata-only symbols, external decompilation,
   and Source Link retrieval are not provided.
+- `--kind` and `--async-status` filter only the resolved executable target/root.
+  They intentionally do not remove secondary callers/callees or graph-path
+  nodes, so they cannot be used as a display-wide graph pruning feature.
+- Lambda queries resolve stored executable targets, but do not create inferred
+  call/reference edges. Delegate `Invoke`, event subscription/callback
+  execution, reflection, and runtime-flow references to a lambda are not
+  indexed; `references` and `callers` can report only stored static facts.
 - `async tree` accepts an exact source-backed method root and follows the one
   persisted async next-hop chain. It does not enumerate alternate equal paths
   or dynamically infer another route.
@@ -67,6 +75,13 @@
 - Caller trees exclude metadata-only callers and `System`/`System.*` callers.
   A source-backed external-looking namespace other than `System` remains in
   scope because source definition is the primary filter.
+- `single-line`/`multi-line` table output replaces real TAB, CRLF, CR, LF,
+  U+0085, U+2028, and U+2029 with ASCII spaces to preserve physical-record
+  boundaries. This table representation is not lossless; use JSON or the
+  stored normalized source when the original literal control characters matter.
+- Output-path comparison normalizes extended Windows drive/UNC spellings before
+  rejecting an output path equal to the active DB. Extended UNC comparison is
+  covered without network access; live UNC share I/O behavior is not verified.
 
 ## Unity / Phase 3
 
