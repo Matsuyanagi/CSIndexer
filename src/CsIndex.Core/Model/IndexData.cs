@@ -39,6 +39,7 @@ public sealed record MethodParameterData
     public required int Ordinal { get; init; }
     public string? Name { get; init; }
     public required string TypeKey { get; init; }
+    public string TypeDisplay { get; init; } = string.Empty;
     public required int RefKind { get; init; }
     public required bool IsOptional { get; init; }
 }
@@ -71,6 +72,9 @@ public sealed record SymbolData
     public int? SourceStart { get; init; }
     public int? SourceLength { get; init; }
     public string? ReturnTypeKey { get; init; }
+    public string? ReturnTypeDisplay { get; init; }
+    public string? ConversionTypeKey { get; init; }
+    public string? ConversionTypeDisplay { get; init; }
     public string? NormalizedSource { get; init; }
     public byte[]? NormalizedSourceHash { get; init; }
     public bool IsGenerated { get; init; }

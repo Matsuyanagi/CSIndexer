@@ -61,6 +61,11 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
         Assert.Equal("Generic", genericDefinition.Name);
         Assert.Equal("CrossProjectTarget", genericDefinition.TypeSimpleName);
         Assert.Equal(firstProjectKey, genericDefinition.ProjectKey);
+        var genericParameter = Assert.Single(genericDefinition.Parameters);
+        Assert.Equal("^0", genericParameter.TypeKey);
+        Assert.Equal("T", genericParameter.TypeDisplay);
+        Assert.Equal("System.Void", genericDefinition.ReturnTypeKey);
+        Assert.Equal("void", genericDefinition.ReturnTypeDisplay);
 
         var consumerType = Assert.Single(snapshot.Symbols.Values, symbol =>
             symbol.Kind == IndexedSymbolKind.Type &&
@@ -94,7 +99,7 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
 
             public static class CrossProjectTarget
             {
-                public static void Generic<T>() { }
+                public static void Generic<T>(T value) { }
             }
 
             public sealed class Twin
@@ -130,7 +135,7 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             {
                 public void Execute()
                 {
-                    CrossProjectTarget.Generic<int>();
+                    CrossProjectTarget.Generic(1);
                 }
             }
             """;

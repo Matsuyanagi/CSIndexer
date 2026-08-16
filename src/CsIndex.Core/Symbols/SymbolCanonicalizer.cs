@@ -96,6 +96,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             ? GetTargetStableKey(method, projectKey)
             : GetDefinitionStableKey(method, projectKey);
         var containingType = method.ContainingType;
+        var methodSignature = SymbolSignatureCanonicalizer.CanonicalizeMethod(method);
         return new SymbolData
         {
             StableKey = stableKey,
@@ -114,9 +115,10 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             Arity = method.Arity,
             ParameterCount = method.Parameters.Length,
             MethodKind = (int)method.MethodKind,
-            ReturnTypeKey = method.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor
-                ? null
-                : FormatType(method.ReturnType),
+            ReturnTypeKey = methodSignature.ReturnType?.IdentityKey,
+            ReturnTypeDisplay = methodSignature.ReturnType?.DisplayText,
+            ConversionTypeKey = methodSignature.ConversionTargetType?.IdentityKey,
+            ConversionTypeDisplay = methodSignature.ConversionTargetType?.DisplayText,
             Accessibility = method.MethodKind is MethodKind.LocalFunction or MethodKind.StaticConstructor
                 ? (int)Microsoft.CodeAnalysis.Accessibility.NotApplicable
                 : (int)method.DeclaredAccessibility,
@@ -128,11 +130,12 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             SourceStart = sourceStart,
             SourceLength = sourceLength,
             IsGenerated = isGenerated,
-            Parameters = method.Parameters.Select(parameter => new MethodParameterData
+            Parameters = method.Parameters.Select((parameter, ordinal) => new MethodParameterData
             {
-                Ordinal = parameter.Ordinal,
+                Ordinal = ordinal,
                 Name = parameter.Name,
-                TypeKey = FormatType(parameter.Type),
+                TypeKey = methodSignature.Parameters[ordinal].Type.IdentityKey,
+                TypeDisplay = methodSignature.Parameters[ordinal].Type.DisplayText,
                 RefKind = (int)parameter.RefKind,
                 IsOptional = parameter.IsOptional,
             }).ToArray(),
