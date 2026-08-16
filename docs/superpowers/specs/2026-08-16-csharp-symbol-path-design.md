@@ -30,6 +30,11 @@ path and differ only in presentation of the namespace/type boundary.
   nested-type segment.
 - Support a human-oriented explicit rendering for users who want the
   namespace/type boundary visible.
+- Let namespace, type, method, file, and source conditions independently
+  choose strict or case-insensitive comparison.
+- Let each condition use a simple glob by default, while providing separately
+  named literal and regular-expression conditions where their extra precision
+  is needed.
 
 ## Non-goals
 
@@ -148,6 +153,116 @@ Namespace1.Namespace2::Class1.Class2::Method1()
 Here the first double colon is the namespace/type boundary. The namespace and
 type are therefore known without consulting symbol names.
 
+## Flexible matcher conditions
+
+The default matcher for every user-supplied name, file, and source condition
+is glob. This is a deliberate breaking replacement for the current global
+regex and ignore-case switches. A plain name with no wildcard characters still
+behaves as an exact name match, so every emitted display path remains directly
+searchable.
+
+The shared conditions and their default glob options are:
+
+~~~
+--namespace <glob>
+--type <glob>
+--method <glob>
+--file <glob>
+--include <glob>
+--exclude <glob>
+~~~
+
+Each has corresponding explicit literal and regular-expression forms:
+
+~~~
+--namespace-literal <text>    --namespace-regex <expression>
+--type-literal <text>         --type-regex <expression>
+--method-literal <text>       --method-regex <expression>
+--file-literal <text>         --file-regex <expression>
+--include-literal <text>      --include-regex <expression>
+--exclude-literal <text>      --exclude-regex <expression>
+~~~
+
+The base options are intentionally concise for routine searches. The literal
+forms make a character such as an asterisk searchable as text, particularly
+in source conditions. The regex forms are never inferred from punctuation;
+they are explicit so a user can safely choose glob for one condition and regex
+for another in the same command.
+
+Each category has independent case behavior:
+
+~~~
+--namespace-case strict|ignore
+--type-case strict|ignore
+--method-case strict|ignore
+--file-case strict|ignore
+--source-case strict|ignore
+~~~
+
+Every category defaults to strict. A category case option applies to all of
+that category's literal, glob, and regex conditions, without affecting any
+other category. For example, a user can ignore case for a method name while
+requiring exact spelling for its namespace and source text.
+
+The legacy global --regex and --ignore-case options are removed, not retained
+as aliases.
+
+### Glob semantics
+
+Glob syntax has no regular-expression metacharacter behavior.
+
+- An asterisk matches zero or more characters within one structural component.
+- A double asterisk recursively spans structural hierarchy components.
+- Neither wildcard crosses a double-colon executable ownership boundary.
+
+For namespace and type paths, a structural component is a dot-separated
+identifier. Thus Game.* matches one immediate child component, and Game.**
+matches descendant namespace or nested-type paths at every depth. An
+unqualified wildcard over every namespace or type depth uses double asterisk.
+For a method name, source text, or another non-hierarchical value, double
+asterisk is accepted as an equivalent spelling of asterisk.
+
+For project-relative file paths, paths are normalized to forward slashes
+before matching. Asterisk does not cross a slash; double asterisk spans zero
+or more directory components:
+
+~~~
+src/*/Player.cs       # exactly one directory level
+src/**/Player.cs      # any directory depth, including none
+~~~
+
+The positional structured selector also uses glob for its name components:
+
+~~~
+**::**::Get*()
+~~~
+
+This selects every namespace, every type path, and every method whose name
+starts with Get. The three structural components are required; a form such as
+::*:: is malformed rather than treated as an implicit empty wildcard.
+
+Wildcard matching does not reinterpret C# parameter type syntax. Parameter
+lists remain C# type syntax so that a signature such as Method(int*) denotes a
+pointer parameter rather than a wildcard. To search every overload, omit the
+parameter list. Regular-expression method-name matching is available only
+through the explicit method-regex condition.
+
+### Composition and command scope
+
+Conditions in different categories are ANDed. Repeated namespace, type,
+method, or file alternatives are ORed within their own category. Source
+includes remain ANDed, while source excludes remain ORed and reject a candidate
+before includes are evaluated. Each repeated source condition may use its own
+base, literal, or regex option.
+
+Project-relative file conditions evaluate the source document path of a
+candidate symbol. Name, file, and source conditions select roots before
+definition, reference, caller, callee, override, or graph traversal begins;
+they do not silently filter later edge or graph results. Commands whose
+contract requires exactly one root report ambiguity when the selector returns
+multiple candidates. List and search commands return every selected candidate
+in deterministic order.
+
 ## Method signatures and type spelling
 
 Emitted member and local-function signatures always include parentheses. An
@@ -231,6 +346,12 @@ The parser rejects malformed separators, unmatched generic or parameter
 delimiters, an empty type selector, an empty callable segment, and a child
 whose form is not a local-function signature or lambda marker.
 
+It also rejects a malformed glob hierarchy and an invalid regular expression.
+Regular-expression compilation and evaluation are culture-invariant and
+timeout-bounded. A failure is a query error with no partial result. The removed
+global --regex and --ignore-case options are unknown options, not compatibility
+aliases.
+
 The resolver reports no match, rather than a parse error, when a syntactically
 valid full or suffix type path has no indexed candidates. A dotted spelling
 never fails merely because its namespace/type boundary is not lexically
@@ -249,6 +370,12 @@ only. Display-name construction must walk stored lexical containment for local
 functions and lambdas. The existing formatting path must expose the selected
 style consistently across text, JSON, graph, and source output.
 
+The current single matcher mode will be replaced by typed condition records
+that carry category, literal/glob/regex kind, and strict/ignore case mode.
+File paths will be normalized to project-relative forward-slash paths before
+their matcher runs. Query routing must apply conditions only to roots for
+relationship and graph commands, as specified above.
+
 Focused tests will cover:
 
 - both styles parsing to equivalent semantic paths;
@@ -260,6 +387,14 @@ Focused tests will cover:
 - generic and ref-kind signatures;
 - malformed balanced syntax and invalid child containment;
 - deterministic ordering and unchanged stable identity across styles.
+- independent strict/ignore modes for namespace, type, method, file, and
+  source conditions;
+- default glob, explicit literal, and explicit regex conditions in one query;
+- single- and recursive-component glob behavior for namespace/type and files;
+- source literals containing an asterisk, invalid regexes, timeout behavior,
+  and removal of the legacy global matcher options;
+- root-only filtering, multiple-root ambiguity, and deterministic result
+  ordering.
 
 ## Approved product choices
 
@@ -271,5 +406,10 @@ Focused tests will cover:
 - Output uses C# aliases where available.
 - The prior grammar is intentionally replaced rather than supported as a
   compatibility mode.
+- All unqualified name, file, and source conditions use glob by default.
+- Literal and regex conditions use the dedicated --<field>-literal and
+  --<field>-regex options.
+- Case sensitivity is independently configured per namespace, type, method,
+  file, and source category, and defaults to strict.
 - No implementation work begins until a separate implementation plan is
   approved.
