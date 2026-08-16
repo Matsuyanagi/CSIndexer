@@ -35,6 +35,10 @@ path and differ only in presentation of the namespace/type boundary.
 - Let each condition use a simple glob by default, while providing separately
   named literal and regular-expression conditions where their extra precision
   is needed.
+- Store all persisted filesystem locations as portable paths relative to the
+  indexed source root, rather than repeating machine-specific absolute paths.
+- Resolve stored paths to absolute paths at query time, with an explicit
+  query-only base-directory override for relocated projects.
 
 ## Non-goals
 
@@ -59,6 +63,13 @@ path, not as a parser guess about where its namespace begins.
 An executable path begins at a member method and follows lexical ownership
 through local functions and lambdas. Every child segment is an immediate
 lexical child of its preceding executable segment.
+
+A storage root is the resolved input root used during indexing. It is the
+directory that contains .csindex for the default database layout.
+
+An index-root anchor is the portable relative path from the database directory
+to the storage root. It is saved once for an index run so a custom database
+location can still find the root without persisting an absolute path.
 
 ## Public syntax
 
@@ -222,7 +233,7 @@ unqualified wildcard over every namespace or type depth uses double asterisk.
 For a method name, source text, or another non-hierarchical value, double
 asterisk is accepted as an equivalent spelling of asterisk.
 
-For project-relative file paths, paths are normalized to forward slashes
+For storage-root-relative file paths, paths are normalized to forward slashes
 before matching. Asterisk does not cross a slash; double asterisk spans zero
 or more directory components:
 
@@ -255,13 +266,113 @@ includes remain ANDed, while source excludes remain ORed and reject a candidate
 before includes are evaluated. Each repeated source condition may use its own
 base, literal, or regex option.
 
-Project-relative file conditions evaluate the source document path of a
-candidate symbol. Name, file, and source conditions select roots before
+Storage-root-relative file conditions evaluate the stored source document path
+of a candidate symbol. Name, file, and source conditions select roots before
 definition, reference, caller, callee, override, or graph traversal begins;
 they do not silently filter later edge or graph results. Commands whose
 contract requires exactly one root report ambiguity when the selector returns
 multiple candidates. List and search commands return every selected candidate
 in deterministic order.
+
+## Portable path storage and presentation
+
+Every persisted filesystem location uses a forward-slash path relative to the
+storage root. The standard layout is:
+
+~~~
+database:     D:/Work/Game/.csindex/index.sqlite
+storage root: D:/Work/Game
+document:     D:/Work/Game/src/play.cs
+
+stored document path: src/play.cs
+stored root anchor:   ..
+~~~
+
+The database directory is D:/Work/Game/.csindex. The root anchor therefore
+resolves its parent as the storage root. A custom database uses the same rule:
+the index run stores the relative route from that database's directory to the
+storage root. For example, a database at D:/Indexes/Game.sqlite that indexes
+D:/Work/Game stores ../Work/Game as its root anchor and src/play.cs as the
+document path.
+
+At query time, without an override, the effective base directory is:
+
+~~~
+effective base = FullPath(database directory + stored root anchor)
+absolute path  = FullPath(effective base + stored relative path)
+~~~
+
+If the database and source root move while retaining their relative layout,
+the same saved anchor resolves from the database's new location. In the
+default layout, moving a project with its .csindex directory keeps the anchor
+as .. and automatically resolves its new source-root location.
+
+Documents outside the storage root, such as linked shared source files, use
+an allowed leading ../ path. The resolver normalizes that path only after
+combining it with the effective base, so linked source remains addressable.
+
+This rule applies to every persisted filesystem-derived value: document path,
+project path, input-root representation, and any source-derived path component
+in a stable key. The index-root anchor itself is also relative; no persisted
+path field contains a machine-specific absolute path.
+
+Schema version 5 replaces the schema-4 absolute-path representation. Version
+4 and older databases are rejected and rebuilt; there is no data migration.
+
+### Base directory override
+
+All query and source commands that open an existing database accept:
+
+~~~
+--base-dir <path>
+~~~
+
+The option is query-time only. It replaces the effective base directory for
+that invocation:
+
+~~~
+effective base = FullPath(--base-dir)
+absolute path  = FullPath(effective base + stored relative path)
+~~~
+
+For example, a database containing src/play.cs can be queried after its source
+tree has independently moved:
+
+~~~
+csindex source show "..." --db D:/Indexes/Game.sqlite --base-dir E:/Moved/Game
+~~~
+
+The result location and source-file read resolve to E:/Moved/Game/src/play.cs.
+The override does not rewrite database rows, stable keys, cache identity,
+stored anchors, or the --db location. It is invalid for index because index
+always establishes a new storage root from its resolved input.
+
+Base-dir input accepts either slash style and is normalized to an absolute path
+for the process. It need not exist merely to format stored locations; commands
+that must open a source file report their normal missing-file error if it is
+absent.
+
+### Path display and path inputs
+
+Path-bearing query output accepts:
+
+~~~
+--path-style absolute    # default
+--path-style relative
+~~~
+
+Absolute output uses the effective base directory, including a --base-dir
+override. Relative output emits the root-relative stored path exactly, such as
+src/play.cs, and does not change when --base-dir is present. This selection
+applies consistently to table location fields, JSON location.path values,
+source headers, graph locations, and diagnostics that expose a source path.
+
+File filters match the root-relative stored form. Inputs that name a source
+location, including definition --at, accept either a root-relative path or an
+absolute path. A relative input is resolved from the effective base; an
+absolute input is converted to a root-relative form before it is compared to
+the stored value. Both slash styles are accepted at input, while stored and
+relative output paths use forward slashes.
 
 ## Method signatures and type spelling
 
@@ -352,6 +463,10 @@ timeout-bounded. A failure is a query error with no partial result. The removed
 global --regex and --ignore-case options are unknown options, not compatibility
 aliases.
 
+An empty base-dir value, or base-dir passed to index, is a usage error. A
+missing source file after path resolution is reported by the command that
+requires that file; it does not change the stored portable path.
+
 The resolver reports no match, rather than a parse error, when a syntactically
 valid full or suffix type path has no indexed candidates. A dotted spelling
 never fails merely because its namespace/type boundary is not lexically
@@ -372,9 +487,12 @@ style consistently across text, JSON, graph, and source output.
 
 The current single matcher mode will be replaced by typed condition records
 that carry category, literal/glob/regex kind, and strict/ignore case mode.
-File paths will be normalized to project-relative forward-slash paths before
-their matcher runs. Query routing must apply conditions only to roots for
-relationship and graph commands, as specified above.
+File paths will be normalized to storage-root-relative forward-slash paths
+before their matcher runs. A single path resolver will own persistence,
+anchor-based reconstruction, base-dir overrides, display style, source-file
+reads, and source-location input conversion. Query routing must apply
+conditions only to roots for relationship and graph commands, as specified
+above.
 
 Focused tests will cover:
 
@@ -395,6 +513,13 @@ Focused tests will cover:
   and removal of the legacy global matcher options;
 - root-only filtering, multiple-root ambiguity, and deterministic result
   ordering.
+- root-relative persistence for documents, projects, input roots, and
+  source-derived stable keys;
+- standard .csindex anchor reconstruction, custom-database anchors, and
+  relocation that preserves their relative layout;
+- base-dir override without DB mutation, including linked ../ source paths;
+- absolute and relative table, JSON, graph, source-header, diagnostic, and
+  --at path behavior.
 
 ## Approved product choices
 
@@ -411,5 +536,12 @@ Focused tests will cover:
   --<field>-regex options.
 - Case sensitivity is independently configured per namespace, type, method,
   file, and source category, and defaults to strict.
+- Persisted filesystem paths are storage-root-relative with forward slashes;
+  absolute paths are reconstructed only at query time.
+- The default display style for locations is absolute; --path-style relative
+  shows the stored root-relative path.
+- --base-dir overrides path reconstruction for query/source commands only and
+  never changes the database.
+- Schema version 5 requires a rebuild of older databases.
 - No implementation work begins until a separate implementation plan is
   approved.
