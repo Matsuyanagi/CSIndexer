@@ -2,6 +2,7 @@ using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace CsIndex.Core.Tests;
 
@@ -83,6 +84,50 @@ public sealed class SymbolSignatureCanonicalizerTests
             SymbolSignatureCanonicalizer.ParseSelectorType("TOuter", placeholders),
             SymbolSignatureCanonicalizer.ParseSelectorType("TInner", placeholders),
             SymbolSignatureCanonicalizer.ParseSelectorType("TMethod", placeholders),
+        };
+
+        for (var selectorIndex = 0; selectorIndex < selectors.Length; selectorIndex++)
+        {
+            for (var candidateIndex = 0; candidateIndex < candidates.Length; candidateIndex++)
+            {
+                Assert.Equal(
+                    selectorIndex == candidateIndex,
+                    SymbolSignatureCanonicalizer.IsMatch(selectors[selectorIndex], candidates[candidateIndex]));
+            }
+        }
+    }
+
+    [Fact]
+    public void CanonicalizeType_FlattensNestedExecutableMethodOrdinals()
+    {
+        var (outerType, middleType, innerType) = GetNestedExecutablePlaceholderParameterTypes();
+
+        Assert.Equal("^0", SymbolSignatureCanonicalizer.CanonicalizeType(outerType).IdentityKey);
+        Assert.Equal("^1", SymbolSignatureCanonicalizer.CanonicalizeType(middleType).IdentityKey);
+        Assert.Equal("^2", SymbolSignatureCanonicalizer.CanonicalizeType(innerType).IdentityKey);
+    }
+
+    [Fact]
+    public void ParseSelectorType_MatchesNestedExecutableMethodOrdinalsExactly()
+    {
+        var (outerType, middleType, innerType) = GetNestedExecutablePlaceholderParameterTypes();
+        var candidates = new[]
+        {
+            SymbolSignatureCanonicalizer.CanonicalizeType(outerType),
+            SymbolSignatureCanonicalizer.CanonicalizeType(middleType),
+            SymbolSignatureCanonicalizer.CanonicalizeType(innerType),
+        };
+        var placeholders = new Dictionary<string, CanonicalGenericPlaceholder>(StringComparer.Ordinal)
+        {
+            ["TOuter"] = new(CanonicalGenericPlaceholderScope.Method, 0),
+            ["TMiddle"] = new(CanonicalGenericPlaceholderScope.Method, 1),
+            ["TInner"] = new(CanonicalGenericPlaceholderScope.Method, 2),
+        };
+        var selectors = new[]
+        {
+            SymbolSignatureCanonicalizer.ParseSelectorType("TOuter", placeholders),
+            SymbolSignatureCanonicalizer.ParseSelectorType("TMiddle", placeholders),
+            SymbolSignatureCanonicalizer.ParseSelectorType("TInner", placeholders),
         };
 
         for (var selectorIndex = 0; selectorIndex < selectors.Length; selectorIndex++)
@@ -192,6 +237,105 @@ public sealed class SymbolSignatureCanonicalizerTests
         Assert.Equal(tuple.IdentityKey, valueTuple.IdentityKey);
         Assert.True(SymbolSignatureCanonicalizer.IsMatch(tupleSelector, valueTuple));
         Assert.True(SymbolSignatureCanonicalizer.IsMatch(valueTupleSelector, tuple));
+    }
+
+    [Theory]
+    [InlineData("(int,int)", "System.ValueTuple<int,int>")]
+    [InlineData("(int,int,int)", "System.ValueTuple<int,int,int>")]
+    [InlineData("(int,int,int,int)", "System.ValueTuple<int,int,int,int>")]
+    [InlineData("(int,int,int,int,int)", "System.ValueTuple<int,int,int,int,int>")]
+    [InlineData("(int,int,int,int,int,int)", "System.ValueTuple<int,int,int,int,int,int>")]
+    [InlineData("(int,int,int,int,int,int,int)", "System.ValueTuple<int,int,int,int,int,int,int>")]
+    [InlineData(
+        "(int,int,int,int,int,int,int,int)",
+        "System.ValueTuple<int,int,int,int,int,int,int,System.ValueTuple<int>>")]
+    [InlineData(
+        "(int,int,int,int,int,int,int,int,int,int,int,int,int,int,int)",
+        "System.ValueTuple<int,int,int,int,int,int,int,System.ValueTuple<int,int,int,int,int,int,int,System.ValueTuple<int>>>")]
+    public void CanonicalizeType_NormalizesFrameworkValueTupleChains(
+        string tupleText,
+        string frameworkText)
+    {
+        var tuple = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(tupleText));
+        var framework = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(frameworkText));
+        var tupleSelector = SymbolSignatureCanonicalizer.ParseSelectorType(tupleText, EmptyPlaceholders());
+        var frameworkSelector = SymbolSignatureCanonicalizer.ParseSelectorType(frameworkText, EmptyPlaceholders());
+
+        Assert.Equal(tuple.IdentityKey, framework.IdentityKey);
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(tupleSelector, framework));
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(frameworkSelector, tuple));
+    }
+
+    [Fact]
+    public void CanonicalizeType_DoesNotCollapseNonTupleArityEightValueTuple()
+    {
+        const string tupleText = "(int,int,int,int,int,int,int,int)";
+        const string nonTupleText = "System.ValueTuple<int,int,int,int,int,int,int,int>";
+        var tuple = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(tupleText));
+        var nonTuple = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(nonTupleText));
+        var tupleSelector = SymbolSignatureCanonicalizer.ParseSelectorType(tupleText, EmptyPlaceholders());
+        var nonTupleSelector = SymbolSignatureCanonicalizer.ParseSelectorType(nonTupleText, EmptyPlaceholders());
+
+        Assert.NotEqual(tuple.IdentityKey, nonTuple.IdentityKey);
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(tupleSelector, nonTuple));
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(nonTupleSelector, tuple));
+    }
+
+    [Fact]
+    public void CanonicalizeType_KeepsTopLevelArityOneValueTupleNamed()
+    {
+        const string typeText = "System.ValueTuple<int>";
+        var candidate = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(typeText));
+        var selector = SymbolSignatureCanonicalizer.ParseSelectorType(typeText, EmptyPlaceholders());
+
+        Assert.Equal("valuetype:System::ValueTuple<System::Int32>", candidate.IdentityKey);
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(selector, candidate));
+    }
+
+    [Theory]
+    [InlineData(
+        "(int,int)",
+        "system.ValueTuple<int,int>",
+        "System.valuetuple<int,int>")]
+    [InlineData(
+        "(int,int,int,int,int,int,int,int)",
+        "system.ValueTuple<int,int,int,int,int,int,int,system.ValueTuple<int>>",
+        "System.valuetuple<int,int,int,int,int,int,int,System.valuetuple<int>>")]
+    public void IsMatch_AppliesCasePoliciesToFrameworkValueTupleRecognition(
+        string tupleText,
+        string namespaceCaseSelectorText,
+        string typeCaseSelectorText)
+    {
+        var candidate = SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(tupleText));
+        var namespaceCaseSelector = SymbolSignatureCanonicalizer.ParseSelectorType(
+            namespaceCaseSelectorText,
+            EmptyPlaceholders());
+        var typeCaseSelector = SymbolSignatureCanonicalizer.ParseSelectorType(
+            typeCaseSelectorText,
+            EmptyPlaceholders());
+
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(namespaceCaseSelector, candidate));
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(
+            namespaceCaseSelector,
+            candidate,
+            StringComparison.OrdinalIgnoreCase,
+            StringComparison.Ordinal));
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(
+            namespaceCaseSelector,
+            candidate,
+            StringComparison.Ordinal,
+            StringComparison.OrdinalIgnoreCase));
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(typeCaseSelector, candidate));
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(
+            typeCaseSelector,
+            candidate,
+            StringComparison.Ordinal,
+            StringComparison.OrdinalIgnoreCase));
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(
+            typeCaseSelector,
+            candidate,
+            StringComparison.OrdinalIgnoreCase,
+            StringComparison.Ordinal));
     }
 
     [Fact]
@@ -765,6 +909,47 @@ public sealed class SymbolSignatureCanonicalizerTests
             .GetTypeMembers("Inner").Single()
             .GetMembers("Method").OfType<IMethodSymbol>().Single();
         return (method.Parameters[0].Type, method.Parameters[1].Type, method.Parameters[2].Type);
+    }
+
+    private static (ITypeSymbol Outer, ITypeSymbol Middle, ITypeSymbol Inner)
+        GetNestedExecutablePlaceholderParameterTypes()
+    {
+        const string source = """
+            public static class Container
+            {
+                public static void Outer<TOuter>(TOuter value)
+                {
+                    void Middle<TMiddle>(TOuter outer, TMiddle middle)
+                    {
+                        void Inner<TInner>(TOuter outer, TMiddle middle, TInner inner) { }
+                    }
+                }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(
+            source,
+            new CSharpParseOptions(LanguageVersion.Preview),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var compilation = CSharpCompilation.Create(
+            "NestedExecutablePlaceholderSignatureTests",
+            [tree],
+            GetPlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(TestContext.Current.CancellationToken),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var semanticModel = compilation.GetSemanticModel(tree);
+        var localFunctions = tree.GetRoot(TestContext.Current.CancellationToken)
+            .DescendantNodes()
+            .OfType<LocalFunctionStatementSyntax>()
+            .ToDictionary(
+                syntax => syntax.Identifier.ValueText,
+                syntax => (IMethodSymbol)semanticModel.GetDeclaredSymbol(
+                    syntax,
+                    TestContext.Current.CancellationToken)!);
+        var middle = localFunctions["Middle"];
+        var inner = localFunctions["Inner"];
+        return (middle.Parameters[0].Type, middle.Parameters[1].Type, inner.Parameters[2].Type);
     }
 
     private static (ITypeSymbol Simple, ITypeSymbol Generic) GetCasePolicyParameterTypes()

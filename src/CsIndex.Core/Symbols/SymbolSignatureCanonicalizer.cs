@@ -204,6 +204,15 @@ public static class SymbolSignatureCanonicalizer
                     ordinal += containingType.Arity;
                 }
             }
+            else
+            {
+                for (var containingMethod = typeParameter.DeclaringMethod?.ContainingSymbol as IMethodSymbol;
+                     containingMethod is not null;
+                     containingMethod = containingMethod.ContainingSymbol as IMethodSymbol)
+                {
+                    ordinal += containingMethod.Arity;
+                }
+            }
 
             var classification = typeParameter.HasValueTypeConstraint || typeParameter.HasUnmanagedTypeConstraint
                 ? TypeClassification.Value
@@ -228,11 +237,6 @@ public static class SymbolSignatureCanonicalizer
             return CreateFunctionPointerNode(functionPointer);
         }
 
-        if (type is INamedTypeSymbol named && named.IsTupleType)
-        {
-            return new TupleTypeNode(named.TupleElements.Select(element => CreateNode(element.Type)).ToArray());
-        }
-
         if (type is INamedTypeSymbol namedType)
         {
             if (TryCreateValueTupleNode(namedType, out var tupleNode))
@@ -255,24 +259,65 @@ public static class SymbolSignatureCanonicalizer
     private static bool TryCreateValueTupleNode(INamedTypeSymbol type, out TupleTypeNode tupleNode)
     {
         tupleNode = null!;
-        if (type.Name != "ValueTuple" ||
-            type.Arity is < 2 or > 8 ||
-            type.ContainingType is not null ||
-            !type.ContainingNamespace.ToDisplayString().Equals("System", StringComparison.Ordinal))
+        var elements = new List<TypeNode>();
+        if (!TryAppendValueTupleElements(type, allowSingleElementRest: false, elements))
         {
             return false;
-        }
-
-        var elements = type.TypeArguments.Select(CreateNode).ToList();
-        if (type.Arity == 8 && elements[^1] is TupleTypeNode rest)
-        {
-            elements.RemoveAt(elements.Count - 1);
-            elements.AddRange(rest.Elements);
         }
 
         tupleNode = new TupleTypeNode(elements);
         return true;
     }
+
+    private static bool TryAppendValueTupleElements(
+        INamedTypeSymbol type,
+        bool allowSingleElementRest,
+        List<TypeNode> elements)
+    {
+        if (!IsSystemValueTuple(type))
+        {
+            return false;
+        }
+
+        if (type.Arity == 1)
+        {
+            if (!allowSingleElementRest)
+            {
+                return false;
+            }
+
+            elements.Add(CreateNode(type.TypeArguments[0]));
+            return true;
+        }
+
+        if (type.Arity is >= 2 and <= 7)
+        {
+            elements.AddRange(type.TypeArguments.Select(CreateNode));
+            return true;
+        }
+
+        if (type.Arity != 8 || type.TypeArguments[7] is not INamedTypeSymbol rest)
+        {
+            return false;
+        }
+
+        var flattened = type.TypeArguments.Take(7).Select(CreateNode).ToList();
+        if (!TryAppendValueTupleElements(rest, allowSingleElementRest: true, flattened))
+        {
+            return false;
+        }
+
+        elements.AddRange(flattened);
+        return true;
+    }
+
+    private static bool IsSystemValueTuple(INamedTypeSymbol type) =>
+        type.IsTupleType &&
+        type.Name == "ValueTuple" &&
+        type.Arity is >= 1 and <= 8 &&
+        type.ContainingType is null &&
+        type.ContainingNamespace.Name == "System" &&
+        type.ContainingNamespace.ContainingNamespace.IsGlobalNamespace;
 
     private static FunctionPointerTypeNode CreateFunctionPointerNode(IFunctionPointerTypeSymbol functionPointer)
     {
@@ -468,11 +513,6 @@ public static class SymbolSignatureCanonicalizer
     {
         var segments = ParseNamedTypeSegments(syntax, genericPlaceholders);
         var qualifiedName = string.Join('.', segments.Select(segment => segment.Name));
-        if (TryCreateValueTupleNode(segments, out var tupleNode))
-        {
-            return tupleNode;
-        }
-
         return new NamedTypeNode(
             segments,
             NamespaceSegmentCount: null,
@@ -480,27 +520,90 @@ public static class SymbolSignatureCanonicalizer
     }
 
     private static bool TryCreateValueTupleNode(
-        IReadOnlyList<NamedTypeSegment> segments,
+        NamedTypeNode type,
+        StringComparison namespaceComparison,
+        StringComparison typeComparison,
         out TupleTypeNode tupleNode)
     {
         tupleNode = null!;
-        if (segments.Count != 2 ||
-            segments[0].Name != "System" ||
-            segments[0].Arguments.Count != 0 ||
-            segments[1].Name != "ValueTuple" ||
-            segments[1].Arguments.Count is < 2 or > 8)
+        var elements = new List<TypeNode>();
+        if (!TryAppendValueTupleElements(
+                type.Segments,
+                allowSingleElementRest: false,
+                namespaceComparison,
+                typeComparison,
+                elements))
         {
             return false;
         }
 
-        var elements = segments[1].Arguments.ToList();
-        if (elements.Count == 8 && elements[^1] is TupleTypeNode rest)
+        tupleNode = new TupleTypeNode(elements);
+        return true;
+    }
+
+    private static bool TryAppendValueTupleElements(
+        IReadOnlyList<NamedTypeSegment> segments,
+        bool allowSingleElementRest,
+        StringComparison namespaceComparison,
+        StringComparison typeComparison,
+        List<TypeNode> elements)
+    {
+        if (segments.Count != 2 ||
+            !string.Equals(segments[0].Name, "System", namespaceComparison) ||
+            segments[0].Arguments.Count != 0 ||
+            !string.Equals(segments[1].Name, "ValueTuple", typeComparison))
         {
-            elements.RemoveAt(elements.Count - 1);
-            elements.AddRange(rest.Elements);
+            return false;
         }
 
-        tupleNode = new TupleTypeNode(elements);
+        var arguments = segments[1].Arguments;
+        if (arguments.Count == 1)
+        {
+            if (!allowSingleElementRest)
+            {
+                return false;
+            }
+
+            elements.Add(arguments[0]);
+            return true;
+        }
+
+        if (arguments.Count is >= 2 and <= 7)
+        {
+            elements.AddRange(arguments);
+            return true;
+        }
+
+        if (arguments.Count != 8)
+        {
+            return false;
+        }
+
+        var flattened = arguments.Take(7).ToList();
+        var restMatched = arguments[7] switch
+        {
+            TupleTypeNode tupleRest => AddTupleElements(tupleRest, flattened),
+            NamedTypeNode namedRest =>
+                TryAppendValueTupleElements(
+                    namedRest.Segments,
+                    allowSingleElementRest: true,
+                    namespaceComparison,
+                    typeComparison,
+                    flattened),
+            _ => false,
+        };
+        if (!restMatched)
+        {
+            return false;
+        }
+
+        elements.AddRange(flattened);
+        return true;
+    }
+
+    private static bool AddTupleElements(TupleTypeNode tuple, List<TypeNode> elements)
+    {
+        elements.AddRange(tuple.Elements);
         return true;
     }
 
@@ -676,6 +779,13 @@ public static class SymbolSignatureCanonicalizer
         {
             (PlaceholderTypeNode left, PlaceholderTypeNode right) =>
                 left.Scope == right.Scope && left.Ordinal == right.Ordinal,
+            (NamedTypeNode left, TupleTypeNode right) =>
+                TryCreateValueTupleNode(
+                    left,
+                    namespaceComparison,
+                    typeComparison,
+                    out var normalizedLeft) &&
+                Matches(normalizedLeft, right, namespaceComparison, typeComparison),
             (NamedTypeNode left, NamedTypeNode right) =>
                 NamedTypesMatch(left, right, namespaceComparison, typeComparison),
             (ArrayTypeNode left, ArrayTypeNode right) =>
