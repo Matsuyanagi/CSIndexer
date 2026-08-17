@@ -11,6 +11,7 @@ namespace CsIndex.Core.Symbols;
 public static class SymbolSignatureCanonicalizer
 {
     private const string ValueTypeIdentityPrefix = "valuetype:";
+    private const string ReferenceTypeIdentityPrefix = "reftype:";
 
     private static readonly SymbolDisplayFormat TypeDisplayFormat = new(
         globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Omitted,
@@ -95,7 +96,7 @@ public static class SymbolSignatureCanonicalizer
 
     public static CanonicalTypeSelector ParseSelectorType(
         string syntaxText,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(syntaxText);
         ArgumentNullException.ThrowIfNull(genericPlaceholders);
@@ -112,24 +113,64 @@ public static class SymbolSignatureCanonicalizer
     }
 
     public static bool IsMatch(CanonicalTypeSelector selector, CanonicalTypeSignature candidate)
+        => IsMatch(
+            selector,
+            candidate,
+            StringComparison.Ordinal,
+            StringComparison.Ordinal);
+
+    public static bool IsMatch(
+        CanonicalTypeSelector selector,
+        CanonicalTypeSignature candidate,
+        StringComparison namespaceComparison,
+        StringComparison typeComparison)
     {
         ArgumentNullException.ThrowIfNull(selector);
         ArgumentNullException.ThrowIfNull(candidate);
+        ValidateIdentifierComparison(namespaceComparison, nameof(namespaceComparison));
+        ValidateIdentifierComparison(typeComparison, nameof(typeComparison));
 
         var selectorNode = ParseSelectorNode(
             SyntaxFactory.ParseTypeName(selector.SyntaxText),
             selector.GenericPlaceholders);
         var candidateNode = ParseIdentityNode(candidate.IdentityKey);
-        return Matches(selectorNode, candidateNode);
+        return Matches(selectorNode, candidateNode, namespaceComparison, typeComparison);
     }
 
-    private static void ValidateGenericPlaceholders(IReadOnlyDictionary<string, int> genericPlaceholders)
+    private static void ValidateIdentifierComparison(StringComparison comparison, string parameterName)
     {
-        foreach (var (name, ordinal) in genericPlaceholders)
+        if (comparison is not StringComparison.Ordinal and not StringComparison.OrdinalIgnoreCase)
         {
-            if (string.IsNullOrWhiteSpace(name) || ordinal < 0)
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                comparison,
+                "Only Ordinal and OrdinalIgnoreCase comparisons are supported.");
+        }
+    }
+
+    private static void ValidateGenericPlaceholders(
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
+    {
+        var bindings = new HashSet<CanonicalGenericPlaceholder>();
+        foreach (var (name, placeholder) in genericPlaceholders)
+        {
+            if (string.IsNullOrWhiteSpace(name) || placeholder is null || placeholder.Ordinal < 0)
             {
                 throw new ArgumentException("Generic placeholder names and ordinals must be non-empty and non-negative.", nameof(genericPlaceholders));
+            }
+
+            if (!Enum.IsDefined(placeholder.Scope))
+            {
+                throw new ArgumentException(
+                    "Generic placeholder scopes must be Type or Method.",
+                    nameof(genericPlaceholders));
+            }
+
+            if (!bindings.Add(placeholder))
+            {
+                throw new ArgumentException(
+                    "Generic placeholder scope and ordinal bindings must be unique.",
+                    nameof(genericPlaceholders));
             }
         }
     }
@@ -145,12 +186,31 @@ public static class SymbolSignatureCanonicalizer
     {
         if (type is IDynamicTypeSymbol)
         {
-            return CreateSimpleNamedTypeNode("System.Object", false);
+            return CreateSimpleNamedTypeNode("System.Object", TypeClassification.Reference);
         }
 
         if (type is ITypeParameterSymbol typeParameter)
         {
-            return new PlaceholderTypeNode(typeParameter.Ordinal, typeParameter.TypeParameterKind == TypeParameterKind.Method);
+            var scope = typeParameter.TypeParameterKind == TypeParameterKind.Method
+                ? CanonicalGenericPlaceholderScope.Method
+                : CanonicalGenericPlaceholderScope.Type;
+            var ordinal = typeParameter.Ordinal;
+            if (scope == CanonicalGenericPlaceholderScope.Type)
+            {
+                for (var containingType = typeParameter.DeclaringType?.ContainingType;
+                     containingType is not null;
+                     containingType = containingType.ContainingType)
+                {
+                    ordinal += containingType.Arity;
+                }
+            }
+
+            var classification = typeParameter.HasValueTypeConstraint || typeParameter.HasUnmanagedTypeConstraint
+                ? TypeClassification.Value
+                : typeParameter.HasReferenceTypeConstraint
+                    ? TypeClassification.Reference
+                    : TypeClassification.Unknown;
+            return new PlaceholderTypeNode(scope, ordinal, classification);
         }
 
         if (type is IArrayTypeSymbol array)
@@ -175,6 +235,11 @@ public static class SymbolSignatureCanonicalizer
 
         if (type is INamedTypeSymbol namedType)
         {
+            if (TryCreateValueTupleNode(namedType, out var tupleNode))
+            {
+                return tupleNode;
+            }
+
             return CreateNamedTypeNode(namedType);
         }
 
@@ -184,7 +249,29 @@ public static class SymbolSignatureCanonicalizer
             fallbackName = fallbackName["global::".Length..];
         }
 
-        return ParseNamedTypeIdentity(fallbackName, type.IsValueType);
+        return ParseNamedTypeIdentity(fallbackName, GetTypeClassification(type));
+    }
+
+    private static bool TryCreateValueTupleNode(INamedTypeSymbol type, out TupleTypeNode tupleNode)
+    {
+        tupleNode = null!;
+        if (type.Name != "ValueTuple" ||
+            type.Arity is < 2 or > 8 ||
+            type.ContainingType is not null ||
+            !type.ContainingNamespace.ToDisplayString().Equals("System", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var elements = type.TypeArguments.Select(CreateNode).ToList();
+        if (type.Arity == 8 && elements[^1] is TupleTypeNode rest)
+        {
+            elements.RemoveAt(elements.Count - 1);
+            elements.AddRange(rest.Elements);
+        }
+
+        tupleNode = new TupleTypeNode(elements);
+        return true;
     }
 
     private static FunctionPointerTypeNode CreateFunctionPointerNode(IFunctionPointerTypeSymbol functionPointer)
@@ -236,13 +323,16 @@ public static class SymbolSignatureCanonicalizer
     private static NamedTypeNode CreateNamedTypeNode(INamedTypeSymbol type)
     {
         var segments = new List<NamedTypeSegment>();
-        if (type.ContainingNamespace is { IsGlobalNamespace: false } containingNamespace)
+        var namespaces = new Stack<string>();
+        for (var current = type.ContainingNamespace;
+             current is { IsGlobalNamespace: false };
+             current = current.ContainingNamespace)
         {
-            segments.AddRange(containingNamespace
-                .ToDisplayString()
-                .Split('.', StringSplitOptions.RemoveEmptyEntries)
-                .Select(name => new NamedTypeSegment(name, [])));
+            namespaces.Push(current.Name);
         }
+
+        segments.AddRange(namespaces.Select(name => new NamedTypeSegment(name, [])));
+        var namespaceSegmentCount = segments.Count;
 
         var containingTypes = new Stack<INamedTypeSymbol>();
         for (var current = type; current is not null; current = current.ContainingType)
@@ -257,16 +347,26 @@ public static class SymbolSignatureCanonicalizer
                 GetOwnTypeArguments(current).Select(CreateNode).ToArray()));
         }
 
-        return new NamedTypeNode(segments, type.IsValueType);
+        return new NamedTypeNode(segments, namespaceSegmentCount, GetTypeClassification(type));
     }
 
-    private static NamedTypeNode CreateSimpleNamedTypeNode(string qualifiedName, bool? isValueType) =>
-        new(
-            qualifiedName
-                .Split('.', StringSplitOptions.RemoveEmptyEntries)
-                .Select(name => new NamedTypeSegment(name, []))
-                .ToArray(),
-            isValueType);
+    private static NamedTypeNode CreateSimpleNamedTypeNode(
+        string qualifiedName,
+        TypeClassification classification)
+    {
+        var segments = qualifiedName
+            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(name => new NamedTypeSegment(name, []))
+            .ToArray();
+        return new NamedTypeNode(segments, Math.Max(segments.Length - 1, 0), classification);
+    }
+
+    private static TypeClassification GetTypeClassification(ITypeSymbol type) =>
+        type.IsValueType
+            ? TypeClassification.Value
+            : type.IsReferenceType
+                ? TypeClassification.Reference
+                : TypeClassification.Unknown;
 
     private static string GetNamedTypeName(INamedTypeSymbol type)
     {
@@ -275,12 +375,12 @@ public static class SymbolSignatureCanonicalizer
 
     private static TypeNode ParseSelectorNode(
         TypeSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         return syntax switch
         {
             PredefinedTypeSyntax predefined => ParsePredefinedType(predefined),
-            IdentifierNameSyntax identifier => ParseIdentifier(identifier.Identifier.ValueText, genericPlaceholders),
+            IdentifierNameSyntax identifier => ParseIdentifier(identifier.Identifier, genericPlaceholders),
             GenericNameSyntax generic => ParseGenericName(generic, genericPlaceholders),
             QualifiedNameSyntax qualified => ParseQualifiedName(qualified, genericPlaceholders),
             AliasQualifiedNameSyntax aliasQualified => ParseAliasQualifiedName(aliasQualified, genericPlaceholders),
@@ -297,27 +397,35 @@ public static class SymbolSignatureCanonicalizer
     {
         var text = syntax.Keyword.ValueText;
         return PredefinedTypeNames.TryGetValue(text, out var identity)
-            ? CreateSimpleNamedTypeNode(identity, ValueTypeNames.Contains(identity))
+            ? CreateSimpleNamedTypeNode(
+                identity,
+                ValueTypeNames.Contains(identity) ? TypeClassification.Value : TypeClassification.Reference)
             : throw new ArgumentException($"Unsupported C# predefined type: {text}", nameof(syntax));
     }
 
     private static TypeNode ParseIdentifier(
-        string name,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        SyntaxToken identifier,
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
-        if (genericPlaceholders.TryGetValue(name, out var ordinal))
+        var name = identifier.ValueText;
+        if (genericPlaceholders.TryGetValue(name, out var placeholder))
         {
-            return new PlaceholderTypeNode(ordinal, false);
+            return new PlaceholderTypeNode(
+                placeholder.Scope,
+                placeholder.Ordinal,
+                TypeClassification.Unknown);
         }
 
-        if (PredefinedTypeNames.TryGetValue(name, out var predefined))
+        if (!IsEscapedIdentifier(identifier) && PredefinedTypeNames.TryGetValue(name, out var predefined))
         {
-            return CreateSimpleNamedTypeNode(predefined, ValueTypeNames.Contains(predefined));
+            return CreateSimpleNamedTypeNode(
+                predefined,
+                ValueTypeNames.Contains(predefined) ? TypeClassification.Value : TypeClassification.Reference);
         }
 
-        if (string.Equals(name, "dynamic", StringComparison.Ordinal))
+        if (!IsEscapedIdentifier(identifier) && string.Equals(name, "dynamic", StringComparison.Ordinal))
         {
-            return CreateSimpleNamedTypeNode("System.Object", false);
+            return CreateSimpleNamedTypeNode("System.Object", TypeClassification.Reference);
         }
 
         throw new ArgumentException($"Named selector types must be fully qualified: {name}", nameof(name));
@@ -325,10 +433,11 @@ public static class SymbolSignatureCanonicalizer
 
     private static TypeNode ParseGenericName(
         GenericNameSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         var name = syntax.Identifier.ValueText;
-        if (genericPlaceholders.ContainsKey(name) || PredefinedTypeNames.ContainsKey(name))
+        if (genericPlaceholders.ContainsKey(name) ||
+            (!IsEscapedIdentifier(syntax.Identifier) && PredefinedTypeNames.ContainsKey(name)))
         {
             throw new ArgumentException($"Generic selector type is not a named type: {name}", nameof(syntax));
         }
@@ -338,14 +447,14 @@ public static class SymbolSignatureCanonicalizer
 
     private static TypeNode ParseQualifiedName(
         QualifiedNameSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders) =>
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders) =>
         ParseQualifiedNamedType(syntax, genericPlaceholders);
 
     private static TypeNode ParseAliasQualifiedName(
         AliasQualifiedNameSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
-        if (!string.Equals(syntax.Alias.Identifier.ValueText, "global", StringComparison.Ordinal))
+        if (!string.Equals(syntax.Alias.Identifier.Text, "global", StringComparison.Ordinal))
         {
             throw new ArgumentException($"Unsupported type alias: {syntax.Alias}", nameof(syntax));
         }
@@ -353,20 +462,51 @@ public static class SymbolSignatureCanonicalizer
         return ParseQualifiedNamedType(syntax, genericPlaceholders);
     }
 
-    private static NamedTypeNode ParseQualifiedNamedType(
+    private static TypeNode ParseQualifiedNamedType(
         NameSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         var segments = ParseNamedTypeSegments(syntax, genericPlaceholders);
         var qualifiedName = string.Join('.', segments.Select(segment => segment.Name));
+        if (TryCreateValueTupleNode(segments, out var tupleNode))
+        {
+            return tupleNode;
+        }
+
         return new NamedTypeNode(
             segments,
-            ValueTypeNames.Contains(qualifiedName) ? true : null);
+            NamespaceSegmentCount: null,
+            ValueTypeNames.Contains(qualifiedName) ? TypeClassification.Value : TypeClassification.Unknown);
+    }
+
+    private static bool TryCreateValueTupleNode(
+        IReadOnlyList<NamedTypeSegment> segments,
+        out TupleTypeNode tupleNode)
+    {
+        tupleNode = null!;
+        if (segments.Count != 2 ||
+            segments[0].Name != "System" ||
+            segments[0].Arguments.Count != 0 ||
+            segments[1].Name != "ValueTuple" ||
+            segments[1].Arguments.Count is < 2 or > 8)
+        {
+            return false;
+        }
+
+        var elements = segments[1].Arguments.ToList();
+        if (elements.Count == 8 && elements[^1] is TupleTypeNode rest)
+        {
+            elements.RemoveAt(elements.Count - 1);
+            elements.AddRange(rest.Elements);
+        }
+
+        tupleNode = new TupleTypeNode(elements);
+        return true;
     }
 
     private static IReadOnlyList<NamedTypeSegment> ParseNamedTypeSegments(
         NameSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         switch (syntax)
         {
@@ -401,17 +541,24 @@ public static class SymbolSignatureCanonicalizer
                     .. ParseNamedTypeSegments(qualified.Left, genericPlaceholders),
                     .. ParseNamedTypeSegments(qualified.Right, genericPlaceholders),
                 ];
-            case AliasQualifiedNameSyntax aliasQualified
-                when aliasQualified.Alias.Identifier.ValueText == "global":
+            case AliasQualifiedNameSyntax aliasQualified:
+                if (aliasQualified.Alias.Identifier.Text != "global")
+                {
+                    throw new ArgumentException($"Unsupported type alias: {aliasQualified.Alias}", nameof(syntax));
+                }
+
                 return ParseNamedTypeSegments(aliasQualified.Name, genericPlaceholders);
             default:
                 throw new ArgumentException($"Unsupported qualified selector type: {syntax}", nameof(syntax));
         }
     }
 
+    private static bool IsEscapedIdentifier(SyntaxToken identifier) =>
+        identifier.Text.StartsWith('@');
+
     private static TypeNode ParseArrayType(
         ArrayTypeSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         var node = ParseSelectorNode(syntax.ElementType, genericPlaceholders);
         foreach (var rankSpecifier in syntax.RankSpecifiers)
@@ -425,7 +572,7 @@ public static class SymbolSignatureCanonicalizer
 
     private static FunctionPointerTypeNode ParseFunctionPointerType(
         FunctionPointerTypeSyntax syntax,
-        IReadOnlyDictionary<string, int> genericPlaceholders)
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
     {
         var convention = GetSelectorCallingConvention(syntax);
         var parameters = syntax.ParameterList.Parameters
@@ -446,20 +593,22 @@ public static class SymbolSignatureCanonicalizer
 
     private static string GetSelectorCallingConvention(FunctionPointerTypeSyntax syntax)
     {
-        var convention = syntax.CallingConvention?.ToString() ?? string.Empty;
-        if (string.Equals(convention, "managed", StringComparison.Ordinal))
+        var callingConvention = syntax.CallingConvention;
+        if (callingConvention is null ||
+            callingConvention.ManagedOrUnmanagedKeyword.ValueText == "managed")
         {
             return string.Empty;
         }
 
-        const string customPrefix = "unmanaged[";
-        if (!convention.StartsWith(customPrefix, StringComparison.Ordinal) || !convention.EndsWith(']'))
+        var conventionList = callingConvention.UnmanagedCallingConventionList;
+        if (conventionList is null)
         {
-            return convention;
+            return callingConvention.ManagedOrUnmanagedKeyword.ValueText;
         }
 
-        var shortNames = convention[customPrefix.Length..^1]
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var shortNames = conventionList.CallingConventions
+            .Select(convention => convention.Name.ValueText)
+            .ToArray();
         if (shortNames.Length == 1 && shortNames[0] is "Cdecl" or "Stdcall" or "Thiscall" or "Fastcall")
         {
             return shortNames[0].ToLowerInvariant();
@@ -493,7 +642,11 @@ public static class SymbolSignatureCanonicalizer
             : (int)RefKind.None;
     }
 
-    private static bool Matches(TypeNode selector, TypeNode candidate)
+    private static bool Matches(
+        TypeNode selector,
+        TypeNode candidate,
+        StringComparison namespaceComparison,
+        StringComparison typeComparison)
     {
         if (selector is NullableTypeNode nullableSelector)
         {
@@ -501,10 +654,15 @@ public static class SymbolSignatureCanonicalizer
                 nullableCandidate.HasQualifiedName("System.Nullable") &&
                 nullableCandidate.Arguments.Count == 1)
             {
-                return Matches(nullableSelector.Element, nullableCandidate.Arguments[0]);
+                return Matches(
+                    nullableSelector.Element,
+                    nullableCandidate.Arguments[0],
+                    namespaceComparison,
+                    typeComparison);
             }
 
-            return candidate is not NamedTypeNode { IsValueType: true } && Matches(nullableSelector.Element, candidate);
+            return candidate.Classification != TypeClassification.Value &&
+                   Matches(nullableSelector.Element, candidate, namespaceComparison, typeComparison);
         }
 
         if (candidate is NamedTypeNode namedCandidate &&
@@ -516,32 +674,46 @@ public static class SymbolSignatureCanonicalizer
 
         return (selector, candidate) switch
         {
-            (PlaceholderTypeNode left, PlaceholderTypeNode right) => left.Ordinal == right.Ordinal,
-            (NamedTypeNode left, NamedTypeNode right) => NamedTypesMatch(left, right),
+            (PlaceholderTypeNode left, PlaceholderTypeNode right) =>
+                left.Scope == right.Scope && left.Ordinal == right.Ordinal,
+            (NamedTypeNode left, NamedTypeNode right) =>
+                NamedTypesMatch(left, right, namespaceComparison, typeComparison),
             (ArrayTypeNode left, ArrayTypeNode right) =>
-                left.Rank == right.Rank && Matches(left.Element, right.Element),
-            (PointerTypeNode left, PointerTypeNode right) => Matches(left.Element, right.Element),
+                left.Rank == right.Rank &&
+                Matches(left.Element, right.Element, namespaceComparison, typeComparison),
+            (PointerTypeNode left, PointerTypeNode right) =>
+                Matches(left.Element, right.Element, namespaceComparison, typeComparison),
             (TupleTypeNode left, TupleTypeNode right) =>
                 left.Elements.Count == right.Elements.Count &&
-                left.Elements.Zip(right.Elements).All(pair => Matches(pair.First, pair.Second)),
+                left.Elements.Zip(right.Elements).All(pair =>
+                    Matches(pair.First, pair.Second, namespaceComparison, typeComparison)),
             (FunctionPointerTypeNode left, FunctionPointerTypeNode right) =>
                 string.Equals(left.CallingConvention, right.CallingConvention, StringComparison.Ordinal) &&
                 left.Parameters.Count == right.Parameters.Count &&
                 left.Parameters.Zip(right.Parameters).All(pair =>
-                    pair.First.RefKind == pair.Second.RefKind && Matches(pair.First.Type, pair.Second.Type)) &&
+                    pair.First.RefKind == pair.Second.RefKind &&
+                    Matches(pair.First.Type, pair.Second.Type, namespaceComparison, typeComparison)) &&
                 left.ReturnRefKind == right.ReturnRefKind &&
-                Matches(left.ReturnType, right.ReturnType),
+                Matches(left.ReturnType, right.ReturnType, namespaceComparison, typeComparison),
             _ => false,
         };
     }
 
-    private static bool NamedTypesMatch(NamedTypeNode left, NamedTypeNode right) =>
+    private static bool NamedTypesMatch(
+        NamedTypeNode left,
+        NamedTypeNode right,
+        StringComparison namespaceComparison,
+        StringComparison typeComparison) =>
         left.Segments.Count == right.Segments.Count &&
-        left.Segments.Zip(right.Segments).All(pair =>
-            string.Equals(pair.First.Name, pair.Second.Name, StringComparison.Ordinal) &&
-            pair.First.Arguments.Count == pair.Second.Arguments.Count &&
-            pair.First.Arguments.Zip(pair.Second.Arguments).All(arguments =>
-                Matches(arguments.First, arguments.Second)));
+        right.NamespaceSegmentCount is { } namespaceSegmentCount &&
+        left.Segments.Zip(right.Segments).Select((pair, index) => (pair, index)).All(item =>
+            string.Equals(
+                item.pair.First.Name,
+                item.pair.Second.Name,
+                item.index < namespaceSegmentCount ? namespaceComparison : typeComparison) &&
+            item.pair.First.Arguments.Count == item.pair.Second.Arguments.Count &&
+            item.pair.First.Arguments.Zip(item.pair.Second.Arguments).All(arguments =>
+                Matches(arguments.First, arguments.Second, namespaceComparison, typeComparison)));
 
     private static TypeNode ParseIdentityNode(string identity)
     {
@@ -569,21 +741,51 @@ public static class SymbolSignatureCanonicalizer
 
         if (identity.StartsWith('!') && int.TryParse(identity[1..], out var typeOrdinal))
         {
-            return new PlaceholderTypeNode(typeOrdinal, false);
+            return new PlaceholderTypeNode(
+                CanonicalGenericPlaceholderScope.Type,
+                typeOrdinal,
+                TypeClassification.Unknown);
         }
 
         if (identity.StartsWith('^') && int.TryParse(identity[1..], out var methodOrdinal))
         {
-            return new PlaceholderTypeNode(methodOrdinal, true);
+            return new PlaceholderTypeNode(
+                CanonicalGenericPlaceholderScope.Method,
+                methodOrdinal,
+                TypeClassification.Unknown);
         }
 
-        if (identity.StartsWith(ValueTypeIdentityPrefix, StringComparison.Ordinal))
+        if (HasClassificationPrefix(identity, ValueTypeIdentityPrefix))
         {
-            return ParseNamedTypeIdentity(identity[ValueTypeIdentityPrefix.Length..], true);
+            return WithClassification(
+                ParseIdentityNode(identity[ValueTypeIdentityPrefix.Length..]),
+                TypeClassification.Value);
+        }
+
+        if (HasClassificationPrefix(identity, ReferenceTypeIdentityPrefix))
+        {
+            return WithClassification(
+                ParseIdentityNode(identity[ReferenceTypeIdentityPrefix.Length..]),
+                TypeClassification.Reference);
         }
 
         return ParseNamedTypeIdentity(identity);
     }
+
+    private static bool HasClassificationPrefix(string identity, string prefix) =>
+        identity.StartsWith(prefix, StringComparison.Ordinal) &&
+        (!identity.StartsWith(prefix + ':', StringComparison.Ordinal) ||
+         identity.StartsWith(prefix + "::", StringComparison.Ordinal));
+
+    private static TypeNode WithClassification(TypeNode node, TypeClassification classification) =>
+        node switch
+        {
+            NamedTypeNode named => named with { TypeKind = classification },
+            PlaceholderTypeNode placeholder => placeholder with { TypeKind = classification },
+            _ => throw new ArgumentException(
+                $"Type classification prefix is not valid for identity: {node.IdentityKey}",
+                nameof(node)),
+        };
 
     private static FunctionPointerTypeNode ParseFunctionPointerIdentityNode(string identity)
     {
@@ -620,15 +822,39 @@ public static class SymbolSignatureCanonicalizer
         return (ParseIdentityNode(part[(separator + 1)..]), refKind);
     }
 
-    private static NamedTypeNode ParseNamedTypeIdentity(string identity, bool? isValueType = null)
+    private static NamedTypeNode ParseNamedTypeIdentity(
+        string identity,
+        TypeClassification classification = TypeClassification.Unknown)
     {
-        var segments = SplitTopLevel(identity, '.')
+        var boundary = identity.IndexOf("::", StringComparison.Ordinal);
+        if (boundary < 0)
+        {
+            throw new ArgumentException($"Named-type identity has no namespace/type boundary: {identity}", nameof(identity));
+        }
+
+        var namespaceSegments = identity[..boundary]
+            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(name => new NamedTypeSegment(name, []))
+            .ToArray();
+        var typeIdentity = identity[(boundary + 2)..];
+        var typeSegments = SplitTopLevel(typeIdentity, '.')
             .Select(ParseNamedTypeIdentitySegment)
             .ToArray();
+        if (typeSegments.Length == 0 || typeSegments.Any(segment => string.IsNullOrEmpty(segment.Name)))
+        {
+            throw new ArgumentException($"Named-type identity has no type component: {identity}", nameof(identity));
+        }
+
+        var segments = namespaceSegments.Concat(typeSegments).ToArray();
         var qualifiedName = string.Join('.', segments.Select(segment => segment.Name));
         return new NamedTypeNode(
             segments,
-            isValueType ?? (ValueTypeNames.Contains(qualifiedName) ? true : null));
+            namespaceSegments.Length,
+            classification != TypeClassification.Unknown
+                ? classification
+                : ValueTypeNames.Contains(qualifiedName)
+                    ? TypeClassification.Value
+                    : TypeClassification.Unknown);
     }
 
     private static NamedTypeSegment ParseNamedTypeIdentitySegment(string segment)
@@ -698,6 +924,15 @@ public static class SymbolSignatureCanonicalizer
     private abstract record TypeNode
     {
         public abstract string IdentityKey { get; }
+
+        public abstract TypeClassification Classification { get; }
+    }
+
+    private enum TypeClassification
+    {
+        Unknown,
+        Value,
+        Reference,
     }
 
     private sealed record NamedTypeSegment(
@@ -706,20 +941,28 @@ public static class SymbolSignatureCanonicalizer
 
     private sealed record NamedTypeNode(
         IReadOnlyList<NamedTypeSegment> Segments,
-        bool? IsValueType) : TypeNode
+        int? NamespaceSegmentCount,
+        TypeClassification TypeKind) : TypeNode
     {
         public IReadOnlyList<TypeNode> Arguments => Segments[^1].Arguments;
+
+        public override TypeClassification Classification => TypeKind;
 
         public override string IdentityKey
         {
             get
             {
-                var identity = string.Join(
+                var namespaceSegmentCount = NamespaceSegmentCount ?? Math.Max(Segments.Count - 1, 0);
+                var namespaceIdentity = string.Join(
                     '.',
-                    Segments.Select(segment => segment.Arguments.Count == 0
+                    Segments.Take(namespaceSegmentCount).Select(segment => segment.Name));
+                var typeIdentity = string.Join(
+                    '.',
+                    Segments.Skip(namespaceSegmentCount).Select(segment => segment.Arguments.Count == 0
                         ? segment.Name
                         : $"{segment.Name}<{string.Join(',', segment.Arguments.Select(argument => argument.IdentityKey))}>"));
-                return IsValueType == true && !ValueTypeNames.Contains(GetQualifiedName())
+                var identity = $"{namespaceIdentity}::{typeIdentity}";
+                return Classification == TypeClassification.Value && !ValueTypeNames.Contains(GetQualifiedName())
                     ? ValueTypeIdentityPrefix + identity
                     : identity;
             }
@@ -732,28 +975,53 @@ public static class SymbolSignatureCanonicalizer
             string.Join('.', Segments.Select(segment => segment.Name));
     }
 
-    private sealed record PlaceholderTypeNode(int Ordinal, bool IsMethod) : TypeNode
+    private sealed record PlaceholderTypeNode(
+        CanonicalGenericPlaceholderScope Scope,
+        int Ordinal,
+        TypeClassification TypeKind) : TypeNode
     {
-        public override string IdentityKey => IsMethod ? $"^{Ordinal}" : $"!{Ordinal}";
+        public override TypeClassification Classification => TypeKind;
+
+        public override string IdentityKey
+        {
+            get
+            {
+                var identity = Scope == CanonicalGenericPlaceholderScope.Method ? $"^{Ordinal}" : $"!{Ordinal}";
+                return Classification switch
+                {
+                    TypeClassification.Value => ValueTypeIdentityPrefix + identity,
+                    TypeClassification.Reference => ReferenceTypeIdentityPrefix + identity,
+                    _ => identity,
+                };
+            }
+        }
     }
 
     private sealed record ArrayTypeNode(TypeNode Element, int Rank) : TypeNode
     {
+        public override TypeClassification Classification => TypeClassification.Reference;
+
         public override string IdentityKey => $"{Element.IdentityKey}[{new string(',', Rank - 1)}]";
     }
 
     private sealed record PointerTypeNode(TypeNode Element) : TypeNode
     {
+        public override TypeClassification Classification => TypeClassification.Value;
+
         public override string IdentityKey => $"{Element.IdentityKey}*";
     }
 
     private sealed record TupleTypeNode(IReadOnlyList<TypeNode> Elements) : TypeNode
     {
+        public override TypeClassification Classification => TypeClassification.Value;
+
         public override string IdentityKey => $"({string.Join(',', Elements.Select(element => element.IdentityKey))})";
     }
 
     private sealed record NullableTypeNode(TypeNode Element) : TypeNode
     {
+        public override TypeClassification Classification => TypeClassification.Value;
+
         public override string IdentityKey => $"{Element.IdentityKey}?";
     }
 
@@ -765,6 +1033,8 @@ public static class SymbolSignatureCanonicalizer
         TypeNode ReturnType,
         int ReturnRefKind) : TypeNode
     {
+        public override TypeClassification Classification => TypeClassification.Value;
+
         public override string IdentityKey =>
             $"delegate*{(string.IsNullOrEmpty(CallingConvention) ? string.Empty : $" {CallingConvention}")}<" +
             $"{string.Join(',', Parameters.Select(parameter => $"{parameter.RefKind}:{parameter.Type.IdentityKey}"))}," +

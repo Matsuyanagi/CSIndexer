@@ -64,7 +64,7 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
         var genericParameter = Assert.Single(genericDefinition.Parameters);
         Assert.Equal("^0", genericParameter.TypeKey);
         Assert.Equal("T", genericParameter.TypeDisplay);
-        Assert.Equal("System.Void", genericDefinition.ReturnTypeKey);
+        Assert.Equal("System::Void", genericDefinition.ReturnTypeKey);
         Assert.Equal("void", genericDefinition.ReturnTypeDisplay);
 
         var consumerType = Assert.Single(snapshot.Symbols.Values, symbol =>

@@ -2,9 +2,19 @@ namespace CsIndex.Core.Symbols;
 
 public sealed record CanonicalTypeSignature(string IdentityKey, string DisplayText);
 
+public enum CanonicalGenericPlaceholderScope
+{
+    Type,
+    Method,
+}
+
+public sealed record CanonicalGenericPlaceholder(
+    CanonicalGenericPlaceholderScope Scope,
+    int Ordinal);
+
 public sealed record CanonicalTypeSelector(
     string SyntaxText,
-    IReadOnlyDictionary<string, int> GenericPlaceholders);
+    IReadOnlyDictionary<string, CanonicalGenericPlaceholder> GenericPlaceholders);
 
 public sealed record CanonicalParameterSignature(
     CanonicalTypeSignature Type,
