@@ -28,6 +28,26 @@ public sealed class IndexPathResolverTests
         Assert.Equal("src/play.cs", resolver.ToStoredPath(@"D:\Work\Game\src\play.cs"));
     }
 
+    [Theory]
+    [InlineData(@"C:\index.sqlite", @"C:\\\", @"C:\", @"C:\src\play.cs")]
+    [InlineData(
+        @"\\server\share\index.sqlite",
+        @"\\server\share\\\",
+        @"\\server\share",
+        @"\\server\share\src\play.cs")]
+    public void RootTrailingSeparators_AreNormalizedWithoutChangingRootIdentity(
+        string databasePath,
+        string storageRoot,
+        string expectedBaseDirectory,
+        string sourcePath)
+    {
+        var resolver = IndexPathResolver.CreateForIndex(databasePath, storageRoot);
+
+        Assert.Equal(expectedBaseDirectory, resolver.EffectiveBaseDirectory);
+        Assert.Equal(".", resolver.IndexRootAnchor);
+        Assert.Equal("src/play.cs", resolver.ToStoredPath(sourcePath));
+    }
+
     [Fact]
     public void TemporaryPath_RoundTripsAbsoluteAndRelativeRepresentations()
     {

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Input;
@@ -29,6 +31,41 @@ public sealed class PortableAnalysisPathTests
             }
         }
         """;
+
+    [Fact]
+    public void IndexSnapshot_DefaultAnchorDoesNotDisableRequiredMemberEnforcement()
+    {
+        var snapshotType = typeof(IndexSnapshot);
+        var constructor = Assert.IsAssignableFrom<System.Reflection.ConstructorInfo>(
+            snapshotType.GetConstructor(Type.EmptyTypes));
+
+        Assert.False(constructor.IsDefined(typeof(SetsRequiredMembersAttribute), inherit: false));
+        foreach (var propertyName in new[]
+                 {
+                     nameof(IndexSnapshot.Profile),
+                     nameof(IndexSnapshot.InputRoot),
+                     nameof(IndexSnapshot.InputFingerprint),
+                     nameof(IndexSnapshot.RequestHash),
+                 })
+        {
+            var property = Assert.IsAssignableFrom<System.Reflection.PropertyInfo>(
+                snapshotType.GetProperty(propertyName));
+            Assert.True(property.IsDefined(typeof(RequiredMemberAttribute), inherit: false), propertyName);
+        }
+
+        var anchor = Assert.IsAssignableFrom<System.Reflection.PropertyInfo>(
+            snapshotType.GetProperty(nameof(IndexSnapshot.IndexRootAnchor)));
+        Assert.False(anchor.IsDefined(typeof(RequiredMemberAttribute), inherit: false));
+
+        var snapshot = new IndexSnapshot
+        {
+            Profile = CreateProfile(),
+            InputRoot = ".",
+            InputFingerprint = [],
+            RequestHash = [],
+        };
+        Assert.Equal(".", snapshot.IndexRootAnchor);
+    }
 
     [Fact]
     public async Task PreparedAnalysis_LoadsWorkspaceOnceAndAnalyzeReusesIt()
@@ -230,6 +267,7 @@ public sealed class PortableAnalysisPathTests
         var secondResult = await AnalyzeLayoutAsync(second);
 
         Assert.Equal(firstResult.InputFingerprint, secondResult.InputFingerprint);
+        Assert.Equal(firstResult.Snapshot.Profile.ProfileHash, secondResult.Snapshot.Profile.ProfileHash);
         Assert.Equal(".", firstResult.Snapshot.InputRoot);
         Assert.Equal(".", secondResult.Snapshot.InputRoot);
         Assert.Equal(

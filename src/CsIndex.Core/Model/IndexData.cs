@@ -1,5 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
-
 namespace CsIndex.Core.Model;
 
 public sealed record AnalysisProfileData
@@ -156,19 +154,9 @@ public sealed record CompilationSummary
 
 public sealed class IndexSnapshot
 {
-    [SetsRequiredMembers]
-    public IndexSnapshot()
-    {
-        Profile = null!;
-        InputRoot = null!;
-        IndexRootAnchor = ".";
-        InputFingerprint = null!;
-        RequestHash = null!;
-    }
-
     public required AnalysisProfileData Profile { get; init; }
     public required string InputRoot { get; set; }
-    public required string IndexRootAnchor { get; set; }
+    public string IndexRootAnchor { get; set; } = ".";
     public required byte[] InputFingerprint { get; init; }
     public required byte[] RequestHash { get; init; }
     public List<ProjectData> Projects { get; } = [];

@@ -67,13 +67,17 @@ public sealed class AnalysisProfileBuilder
             ? "generic-windows-x64"
             : $"{options.Configuration ?? "Debug"}-windows-x64");
         var referenceIdentities = new List<string>();
-        foreach (var reference in metadataReferences.Order(StringComparer.OrdinalIgnoreCase))
+        foreach (var reference in metadataReferences)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var fileName = Path.GetFileName(reference);
+            var portableName = string.IsNullOrEmpty(fileName) ? "unnamed" : fileName;
             referenceIdentities.Add(File.Exists(reference)
-                ? $"{reference}|{HashUtilities.ToHex(await HashUtilities.HashFileAsync(reference, cancellationToken))}"
-                : $"{reference}|unavailable");
+                ? $"file:{portableName}|sha256:{HashUtilities.ToHex(await HashUtilities.HashFileAsync(reference, cancellationToken))}"
+                : $"file:{portableName}|unavailable");
         }
+
+        referenceIdentities.Sort(StringComparer.Ordinal);
 
         var hashInput = new
         {
