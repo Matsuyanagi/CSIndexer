@@ -65,6 +65,16 @@ public enum IndexedSymbolKind
     TopLevelStatements = 5,
 }
 
+public enum CallablePathSegmentKind
+{
+    Named = 1,
+    Special = 2,
+    Lambda = 3,
+    AnonymousMethod = 4,
+    Initializer = 5,
+    TopLevelStatements = 6,
+}
+
 public enum IndexedTypeKind
 {
     Unknown = 0,

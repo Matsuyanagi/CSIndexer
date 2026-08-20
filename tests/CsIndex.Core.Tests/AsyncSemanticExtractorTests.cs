@@ -356,21 +356,59 @@ public sealed class AsyncSemanticExtractorTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_AssignsDirectAsyncRolesWithoutSyntheticOwnerLeakage()
+    {
+        const string source = """
+            using System;
+            using System.Threading.Tasks;
+
+            await Task.Yield();
+            Func<Task> nested = async delegate
+            {
+                await Task.Yield();
+            };
+            await nested();
+
+            public interface IBodyless
+            {
+                Task LoadAsync();
+                Task Pending { get; }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(source);
+        var topLevel = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.TopLevelStatements);
+        var anonymousMethod = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Path?.SegmentKind == CallablePathSegmentKind.AnonymousMethod);
+        var bodyless = GetMethod(snapshot, "LoadAsync", "IBodyless");
+        var bodylessAccessor = GetMethod(snapshot, "get_Pending", "IBodyless");
+
+        Assert.Equal(AsyncRole.ContainsAwait, topLevel.AsyncRole);
+        Assert.Equal(
+            AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable | AsyncRole.ContainsAwait,
+            anonymousMethod.AsyncRole);
+        Assert.Equal(AsyncRole.ReturnsAwaitable, bodyless.AsyncRole);
+        Assert.Equal(AsyncRole.ReturnsAwaitable, bodylessAccessor.AsyncRole);
+        Assert.Equal("<top-level-statements>.<anonymous-method#1>", anonymousMethod.Path!.ExecutableDisplayPath);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_NumbersLambdasByNearestNonLambdaOwner()
     {
         var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
 
-        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
-        var updateSecond = GetLambda(snapshot, "Player::Update()::<lambda#3>");
-        var doFirst = GetLambda(snapshot, "Player::Do()::<lambda#1>");
-        var doSecond = GetLambda(snapshot, "Player::Do()::<lambda#2>");
-        var nested = GetLambda(snapshot, "Player::Update()::<lambda#2>");
+        var updateFirst = GetLambda(snapshot, "Player::Update().<lambda#1>");
+        var updateSecond = GetLambda(snapshot, "Player::Update().<lambda#2>");
+        var doFirst = GetLambda(snapshot, "Player::Do().<lambda#1>");
+        var doSecond = GetLambda(snapshot, "Player::Do().<lambda#2>");
+        var nested = GetLambda(snapshot, "Player::Update().<lambda#1>.<lambda#1>");
 
-        Assert.Equal("Player::Update()::<lambda#1>", updateFirst.DisplayName);
-        Assert.Equal("Player::Update()::<lambda#3>", updateSecond.DisplayName);
-        Assert.Equal("Player::Do()::<lambda#1>", doFirst.DisplayName);
-        Assert.Equal("Player::Do()::<lambda#2>", doSecond.DisplayName);
-        Assert.Equal("Player::Update()::<lambda#2>", nested.DisplayName);
+        Assert.Equal("Player::Update().<lambda#1>", updateFirst.DisplayName);
+        Assert.Equal("Player::Update().<lambda#2>", updateSecond.DisplayName);
+        Assert.Equal("Player::Do().<lambda#1>", doFirst.DisplayName);
+        Assert.Equal("Player::Do().<lambda#2>", doSecond.DisplayName);
+        Assert.Equal("Player::Update().<lambda#1>.<lambda#1>", nested.DisplayName);
         Assert.Equal(updateFirst.StableKey, nested.ContainingSymbolKey);
     }
 
@@ -378,9 +416,9 @@ public sealed class AsyncSemanticExtractorTests
     public async Task AnalyzeAsync_AssignsNestedLambdaCallsToTheirNearestLambdaOwner()
     {
         var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
-        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
-        var updateSecond = GetLambda(snapshot, "Player::Update()::<lambda#3>");
-        var nested = GetLambda(snapshot, "Player::Update()::<lambda#2>");
+        var updateFirst = GetLambda(snapshot, "Player::Update().<lambda#1>");
+        var updateSecond = GetLambda(snapshot, "Player::Update().<lambda#2>");
+        var nested = GetLambda(snapshot, "Player::Update().<lambda#1>.<lambda#1>");
         var update = GetMethod(snapshot, "Update", "Player");
 
         AssertCallOwner(snapshot, "Play", updateFirst);
@@ -396,15 +434,15 @@ public sealed class AsyncSemanticExtractorTests
     {
         var snapshot = await AnalyzeAsync(LambdaOwnershipSource);
         var update = GetMethod(snapshot, "Update", "Player");
-        var updateFirst = GetLambda(snapshot, "Player::Update()::<lambda#1>");
-        var nested = GetLambda(snapshot, "Player::Update()::<lambda#2>");
+        var updateFirst = GetLambda(snapshot, "Player::Update().<lambda#1>");
+        var nested = GetLambda(snapshot, "Player::Update().<lambda#1>.<lambda#1>");
 
         AssertInvokeOwner(snapshot, update);
         AssertInvokeOwner(snapshot, updateFirst);
         AssertInvokeOwner(snapshot, nested);
 
         AssertCallOwner(snapshot, "Play", updateFirst);
-        AssertCallOwner(snapshot, "CreateCallbackInnerObj", GetLambda(snapshot, "Player::Update()::<lambda#3>"));
+        AssertCallOwner(snapshot, "CreateCallbackInnerObj", GetLambda(snapshot, "Player::Update().<lambda#2>"));
         AssertCallOwner(snapshot, "Calc", nested);
     }
 

@@ -44,6 +44,16 @@ public sealed record MethodParameterData
     public required bool IsOptional { get; init; }
 }
 
+public sealed record SymbolPathData(
+    string NamespacePath,
+    string TypeDisplayPath,
+    string TypeIdentityPath,
+    string ExecutableDisplayPath,
+    string ExecutableIdentityPath,
+    string SegmentDisplay,
+    string SegmentIdentity,
+    CallablePathSegmentKind SegmentKind);
+
 public sealed record SymbolData
 {
     public required string StableKey { get; init; }
@@ -55,6 +65,7 @@ public sealed record SymbolData
     public string? TypeMetadataName { get; init; }
     public required string FullyQualifiedName { get; init; }
     public required string DisplayName { get; init; }
+    public SymbolPathData? Path { get; init; }
     public string? ContainingSymbolKey { get; init; }
     public int Arity { get; init; }
     public int? ParameterCount { get; init; }

@@ -222,34 +222,13 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 projectState.Compilation,
                 cancellationToken);
 
-            foreach (var localNode in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
-            {
-                if (semanticModel.GetDeclaredSymbol(localNode, cancellationToken) is not IMethodSymbol method)
-                {
-                    continue;
-                }
-
-                var containingKey = documentState.FindOwner(localNode, includeSelf: false) ??
-                                    EnsureType(method.ContainingType);
-                var normalizedSource = SourceNormalizer.Normalize(localNode, cancellationToken);
-                var data = _canonicalizer.CreateMethod(
-                    method,
-                    actualTarget: false,
-                    projectState.Data.Key,
-                    documentKey,
-                    localNode.SpanStart,
-                    localNode.Span.Length,
-                    generated.IsGenerated,
-                    containingKey) with
-                {
-                    AsyncRole = AsyncSymbolClassifier.Classify(method, projectState.Compilation),
-                    NormalizedSource = normalizedSource.Text,
-                    NormalizedSourceHash = normalizedSource.Hash,
-                };
-                UpsertSymbol(data);
-                RegisterSourceSymbol(projectState.Data.Key, method, data.StableKey);
-                documentState.LocalFunctionOwners[localNode.SpanStart] = data.StableKey;
-            }
+            CreatePrimaryConstructorOwners(
+                root,
+                semanticModel,
+                documentState,
+                projectState.Data.Key,
+                projectState.Compilation,
+                cancellationToken);
 
             CreateInitializerOwners(
                 root,
@@ -257,8 +236,19 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 documentState,
                 projectState.Data.Key,
                 cancellationToken);
-            CreateTopLevelOwner(root, documentState, projectState.Data.Key);
-            CreateLambdaOwners(root, documentState, semanticModel, projectState.Data.Key, cancellationToken);
+            CreateTopLevelOwner(
+                root,
+                documentState,
+                semanticModel,
+                projectState.Data.Key,
+                cancellationToken);
+            CreateNestedExecutableOwners(
+                root,
+                documentState,
+                semanticModel,
+                projectState.Data.Key,
+                projectState.Compilation,
+                cancellationToken);
 
             foreach (var pair in ConditionalDirectiveScanner.Scan(root))
             {
@@ -626,6 +616,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 }
 
                 implementation = ResolveContextualImplementation(type, implementation);
+                if (implementation.IsImplicitlyDeclared && ResolveSourceProjectKey(implementation) is not null)
+                {
+                    continue;
+                }
 
                 var interfaceMethodKey = EnsureMethod(
                     _canonicalizer.NormalizeMethod(interfaceMethod),
@@ -672,6 +666,56 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         return implementation;
     }
 
+    private void CreatePrimaryConstructorOwners(
+        CompilationUnitSyntax root,
+        SemanticModel semanticModel,
+        DocumentAnalysisState documentState,
+        string projectKey,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        foreach (var declaration in root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+                     .Where(candidate => candidate.ParameterList is not null))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (semanticModel.GetDeclaredSymbol(declaration, cancellationToken) is not INamedTypeSymbol type)
+            {
+                continue;
+            }
+
+            var constructor = type.InstanceConstructors.FirstOrDefault(candidate =>
+                !candidate.IsImplicitlyDeclared &&
+                candidate.DeclaringSyntaxReferences.Any(reference =>
+                    ReferenceEquals(reference.SyntaxTree, declaration.SyntaxTree) &&
+                    reference.Span == declaration.Span));
+            if (constructor is null || declaration.ParameterList is not { } parameterList)
+            {
+                continue;
+            }
+
+            var containingKey = EnsureType(type);
+            var normalizedSource = SourceNormalizer.Normalize(parameterList, cancellationToken);
+            var sourceStart = declaration.Identifier.SpanStart;
+            var sourceLength = parameterList.Span.End - sourceStart;
+            var data = _canonicalizer.CreateMethod(
+                constructor.OriginalDefinition,
+                actualTarget: false,
+                projectKey,
+                documentState.Data.Key,
+                sourceStart,
+                sourceLength,
+                documentState.Data.IsGenerated,
+                containingKey) with
+            {
+                AsyncRole = AsyncSymbolClassifier.Classify(constructor.OriginalDefinition, compilation),
+                NormalizedSource = normalizedSource.Text,
+                NormalizedSourceHash = normalizedSource.Hash,
+            };
+            UpsertSymbol(data);
+            RegisterSourceSymbol(projectKey, constructor.OriginalDefinition, data.StableKey);
+        }
+    }
+
     private void CreateInitializerOwners(
         CompilationUnitSyntax root,
         SemanticModel semanticModel,
@@ -714,13 +758,26 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 PropertyDeclarationSyntax property => property.Identifier.ValueText,
                 _ => "initializer",
             };
+            var memberDisplayName = declaration switch
+            {
+                VariableDeclaratorSyntax variable => variable.Identifier.Text,
+                PropertyDeclarationSyntax property => property.Identifier.Text,
+                _ => "initializer",
+            };
             var isStatic = initializer.Ancestors().OfType<MemberDeclarationSyntax>().FirstOrDefault()
                 ?.Modifiers.Any(modifier => modifier.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StaticKeyword)) == true;
-            var display = $"{containingType.DisplayName}::<initializer:{memberName}>";
+            var segmentDisplay = $"<initializer:{memberDisplayName}>";
+            var segmentIdentity = $"<initializer:{memberName}>";
+            var path = _canonicalizer.CreateSyntheticPath(
+                typeSymbol,
+                segmentDisplay,
+                segmentIdentity,
+                CallablePathSegmentKind.Initializer);
+            var display = SymbolCanonicalizer.FormatDisplayName(path);
             var stableKey = _canonicalizer.GetSyntheticStableKey(
                 containingTypeKey,
                 documentState.Data.NormalizedPath,
-                display,
+                segmentIdentity,
                 initializer.SpanStart,
                 initializer.Span.Length,
                 documentState.Data.ContentHash);
@@ -735,6 +792,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 TypeMetadataName = containingType.TypeMetadataName,
                 FullyQualifiedName = display,
                 DisplayName = display,
+                Path = path,
                 ContainingSymbolKey = containingTypeKey,
                 ParameterCount = 0,
                 SourceDocumentKey = documentState.Data.Key,
@@ -797,7 +855,9 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private void CreateTopLevelOwner(
         CompilationUnitSyntax root,
         DocumentAnalysisState documentState,
-        string projectKey)
+        SemanticModel semanticModel,
+        string projectKey,
+        CancellationToken cancellationToken)
     {
         var statements = root.Members.OfType<GlobalStatementSyntax>().ToArray();
         if (statements.Length == 0)
@@ -807,8 +867,13 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
         var start = statements[0].SpanStart;
         var end = statements[^1].Span.End;
+        var programType = semanticModel.Compilation.GetEntryPoint(cancellationToken)?.ContainingType ??
+                          semanticModel.Compilation.GetTypeByMetadataName("Program");
+        var containingTypeKey = programType is null ? null : EnsureType(programType, projectKey);
+        var path = SymbolCanonicalizer.CreateTopLevelPath();
+        var display = SymbolCanonicalizer.FormatDisplayName(path);
         var stableKey = _canonicalizer.GetSyntheticStableKey(
-            $"project:{projectKey}",
+            containingTypeKey ?? $"project:{projectKey}",
             documentState.Data.NormalizedPath,
             "top-level-statements",
             start,
@@ -821,8 +886,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             Kind = IndexedSymbolKind.TopLevelStatements,
             Name = "<top-level-statements>",
             NamespaceName = string.Empty,
-            FullyQualifiedName = "Program::<top-level-statements>",
-            DisplayName = "Program::<top-level-statements>",
+            TypeSimpleName = "Program",
+            TypeMetadataName = "Program",
+            FullyQualifiedName = display,
+            DisplayName = display,
+            Path = path,
+            ContainingSymbolKey = containingTypeKey,
             ParameterCount = 0,
             SourceDocumentKey = documentState.Data.Key,
             SourceStart = start,
@@ -832,80 +901,141 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         documentState.TopLevelOwner = stableKey;
     }
 
-    private void CreateLambdaOwners(
+    private void CreateNestedExecutableOwners(
         CompilationUnitSyntax root,
         DocumentAnalysisState documentState,
         SemanticModel semanticModel,
         string projectKey,
+        Compilation compilation,
         CancellationToken cancellationToken)
     {
         var counters = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var lambda in OrderLambdas(
-                     root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>(),
-                     cancellationToken))
+        foreach (var node in root.DescendantNodes().Where(candidate =>
+                     candidate is LocalFunctionStatementSyntax or AnonymousFunctionExpressionSyntax))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var outerOwner = documentState.FindOwner(lambda, includeSelf: false);
-            if (outerOwner is null)
+            if (node is LocalFunctionStatementSyntax localFunction)
             {
+                CreateLocalFunctionOwner(
+                    localFunction,
+                    documentState,
+                    semanticModel,
+                    projectKey,
+                    compilation,
+                    cancellationToken);
                 continue;
             }
 
-            var counterOwner = FindNonLambdaOwner(outerOwner);
-            counters.TryGetValue(counterOwner, out var count);
-            count++;
-            counters[counterOwner] = count;
-            _snapshot.Symbols.TryGetValue(outerOwner, out var immediateOwnerSymbol);
-            var displayOwner = _snapshot.Symbols.TryGetValue(counterOwner, out var counterOwnerSymbol)
-                ? counterOwnerSymbol.DisplayName
-                : counterOwner;
-            var display = $"{displayOwner}::<lambda#{count}>";
-            var stableKey = _canonicalizer.GetSyntheticStableKey(
-                outerOwner,
-                documentState.Data.NormalizedPath,
-                lambda.Kind().ToString(),
-                lambda.SpanStart,
-                lambda.Span.Length,
-                documentState.Data.ContentHash);
-            var operation = semanticModel.GetOperation(lambda, cancellationToken) as IAnonymousFunctionOperation;
-            var normalizedSource = SourceNormalizer.Normalize(lambda, cancellationToken);
-            UpsertSymbol(new SymbolData
-            {
-                StableKey = stableKey,
-                ProjectKey = projectKey,
-                Kind = IndexedSymbolKind.Lambda,
-                Name = $"<lambda#{count}>",
-                NamespaceName = immediateOwnerSymbol?.NamespaceName ?? counterOwnerSymbol?.NamespaceName ?? string.Empty,
-                TypeSimpleName = immediateOwnerSymbol?.TypeSimpleName ?? counterOwnerSymbol?.TypeSimpleName,
-                TypeMetadataName = immediateOwnerSymbol?.TypeMetadataName ?? counterOwnerSymbol?.TypeMetadataName,
-                FullyQualifiedName = display,
-                DisplayName = display,
-                ContainingSymbolKey = outerOwner,
-                ParameterCount = operation?.Symbol.Parameters.Length ?? 0,
-                MethodKind = operation is null ? null : (int)operation.Symbol.MethodKind,
-                Accessibility = (int)Microsoft.CodeAnalysis.Accessibility.NotApplicable,
-                IsStatic = operation?.Symbol.IsStatic ?? false,
-                ReturnTypeKey = operation is null ? null : SymbolCanonicalizer.FormatType(operation.Symbol.ReturnType),
-                SourceDocumentKey = documentState.Data.Key,
-                SourceStart = lambda.SpanStart,
-                SourceLength = lambda.Span.Length,
-                NormalizedSource = normalizedSource.Text,
-                NormalizedSourceHash = normalizedSource.Hash,
-                IsGenerated = documentState.Data.IsGenerated,
-                AsyncRole = operation is null
-                    ? AsyncRole.None
-                    : AsyncSymbolClassifier.Classify(operation.Symbol, semanticModel.Compilation),
-                Parameters = operation?.Symbol.Parameters.Select(parameter => new MethodParameterData
-                {
-                    Ordinal = parameter.Ordinal,
-                    Name = parameter.Name,
-                    TypeKey = SymbolCanonicalizer.FormatType(parameter.Type),
-                    RefKind = (int)parameter.RefKind,
-                    IsOptional = parameter.IsOptional,
-                }).ToArray() ?? [],
-            });
-            documentState.LambdaOwners[lambda.SpanStart] = stableKey;
+            CreateAnonymousFunctionOwner(
+                (AnonymousFunctionExpressionSyntax)node,
+                documentState,
+                semanticModel,
+                projectKey,
+                counters,
+                cancellationToken);
         }
+    }
+
+    private void CreateLocalFunctionOwner(
+        LocalFunctionStatementSyntax localFunction,
+        DocumentAnalysisState documentState,
+        SemanticModel semanticModel,
+        string projectKey,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        if (semanticModel.GetDeclaredSymbol(localFunction, cancellationToken) is not IMethodSymbol method)
+        {
+            return;
+        }
+
+        var containingKey = documentState.FindOwner(localFunction, includeSelf: false) ??
+                            EnsureType(method.ContainingType);
+        if (!_snapshot.Symbols.TryGetValue(containingKey, out var containingSymbol) ||
+            containingSymbol.Path is not { } containingPath)
+        {
+            return;
+        }
+
+        var normalizedSource = SourceNormalizer.Normalize(localFunction, cancellationToken);
+        var data = _canonicalizer.CreateMethod(
+            method,
+            actualTarget: false,
+            projectKey,
+            documentState.Data.Key,
+            localFunction.SpanStart,
+            localFunction.Span.Length,
+            documentState.Data.IsGenerated,
+            containingKey,
+            containingPath) with
+        {
+            AsyncRole = AsyncSymbolClassifier.Classify(method, compilation),
+            NormalizedSource = normalizedSource.Text,
+            NormalizedSourceHash = normalizedSource.Hash,
+        };
+        UpsertSymbol(data);
+        RegisterSourceSymbol(projectKey, method, data.StableKey);
+        documentState.LocalFunctionOwners[localFunction.SpanStart] = data.StableKey;
+    }
+
+    private void CreateAnonymousFunctionOwner(
+        AnonymousFunctionExpressionSyntax anonymousFunction,
+        DocumentAnalysisState documentState,
+        SemanticModel semanticModel,
+        string projectKey,
+        Dictionary<string, int> counters,
+        CancellationToken cancellationToken)
+    {
+        var outerOwner = documentState.FindOwner(anonymousFunction, includeSelf: false);
+        if (outerOwner is null ||
+            !_snapshot.Symbols.TryGetValue(outerOwner, out var immediateOwnerSymbol) ||
+            immediateOwnerSymbol.Path is not { } containingPath)
+        {
+            return;
+        }
+
+        counters.TryGetValue(outerOwner, out var count);
+        count++;
+        counters[outerOwner] = count;
+        var isAnonymousMethod = anonymousFunction is AnonymousMethodExpressionSyntax;
+        var segmentKind = isAnonymousMethod
+            ? CallablePathSegmentKind.AnonymousMethod
+            : CallablePathSegmentKind.Lambda;
+        var marker = isAnonymousMethod
+            ? $"<anonymous-method#{count}>"
+            : $"<lambda#{count}>";
+        var stableKey = _canonicalizer.GetSyntheticStableKey(
+            outerOwner,
+            documentState.Data.NormalizedPath,
+            anonymousFunction.Kind().ToString(),
+            anonymousFunction.SpanStart,
+            anonymousFunction.Span.Length,
+            documentState.Data.ContentHash);
+        if (semanticModel.GetOperation(anonymousFunction, cancellationToken) is not IAnonymousFunctionOperation operation)
+        {
+            return;
+        }
+
+        var normalizedSource = SourceNormalizer.Normalize(anonymousFunction, cancellationToken);
+        var data = _canonicalizer.CreateAnonymousFunction(
+            operation.Symbol,
+            stableKey,
+            outerOwner,
+            containingPath,
+            marker,
+            segmentKind,
+            projectKey,
+            documentState.Data.Key,
+            anonymousFunction.SpanStart,
+            anonymousFunction.Span.Length,
+            documentState.Data.IsGenerated) with
+        {
+            NormalizedSource = normalizedSource.Text,
+            NormalizedSourceHash = normalizedSource.Hash,
+            AsyncRole = AsyncSymbolClassifier.Classify(operation.Symbol, semanticModel.Compilation),
+        };
+        UpsertSymbol(data);
+        documentState.LambdaOwners[anonymousFunction.SpanStart] = stableKey;
     }
 
     internal static IReadOnlyList<AnonymousFunctionExpressionSyntax> OrderLambdas(
@@ -943,19 +1073,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
         cancellationToken.ThrowIfCancellationRequested();
         return ordered;
-    }
-
-    private string FindNonLambdaOwner(string immediateOwner)
-    {
-        var ownerKey = immediateOwner;
-        while (_snapshot.Symbols.TryGetValue(ownerKey, out var owner) &&
-               owner.Kind == IndexedSymbolKind.Lambda &&
-               owner.ContainingSymbolKey is { } containingOwner)
-        {
-            ownerKey = containingOwner;
-        }
-
-        return ownerKey;
     }
 
     private void ExtractNameOfReference(
@@ -1070,6 +1187,13 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             TryGetSourceSymbolKey(sourceProjectKey, normalized, out var sourceKey))
         {
             return sourceKey;
+        }
+
+        if (sourceProjectKey is not null && normalized.IsImplicitlyDeclared)
+        {
+            return actualTarget
+                ? _canonicalizer.GetTargetStableKey(normalized, sourceProjectKey)
+                : _canonicalizer.GetDefinitionStableKey(normalized, sourceProjectKey);
         }
 
         var data = _canonicalizer.CreateMethod(normalized, actualTarget, sourceProjectKey) with

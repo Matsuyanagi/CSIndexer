@@ -39,8 +39,8 @@ public sealed class ExecutableSymbolExtractionTests
                 public void Host()
                 {
                     int Local() => 2;
-                    Func<int> callback = static () => 2;
-                    _ = callback();
+                    Func<int, int> callback = static value => value + 2;
+                    _ = callback(1);
                 }
             }
             """;
@@ -52,7 +52,11 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.Null(Find(snapshot, ".cctor").ReturnTypeKey);
         Assert.Equal((int)IndexedAccessibility.NotApplicable, Find(snapshot, ".cctor").Accessibility);
         Assert.True(Find(snapshot, ".cctor").IsStatic);
-        Assert.Equal("System.Int32", FindLambda(snapshot).ReturnTypeKey);
+        Assert.Equal("System::Int32", FindLambda(snapshot).ReturnTypeKey);
+        Assert.Equal("int", FindLambda(snapshot).ReturnTypeDisplay);
+        var lambdaParameter = Assert.Single(FindLambda(snapshot).Parameters);
+        Assert.Equal("System::Int32", lambdaParameter.TypeKey);
+        Assert.Equal("int", lambdaParameter.TypeDisplay);
         Assert.Equal((int)IndexedAccessibility.NotApplicable, FindLambda(snapshot).Accessibility);
         Assert.True(FindLambda(snapshot).IsStatic);
         Assert.Equal("System::Int32", Find(snapshot, "get_Value").ReturnTypeKey);
@@ -120,7 +124,7 @@ public sealed class ExecutableSymbolExtractionTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment()
+    public async Task AnalyzeAsync_NamesLambdasByImmediateOwnerAndKeepsImmediateContainment()
     {
         const string declarations = """
             using System;
@@ -158,25 +162,25 @@ public sealed class ExecutableSymbolExtractionTests
 
         var snapshot = await AnalyzeAsync(("Declarations.cs", declarations), ("Implementation.cs", implementation));
 
-        var expectedNames = new[]
+        var expectedPaths = new[]
         {
-            "Test.A::<initializer:member1>::<lambda#1>",
-            "Test.A::<initializer:member2>::<lambda#1>",
-            "Test.A::<initializer:Property>::<lambda#1>",
-            "Test.A::<initializer:Changed>::<lambda#1>",
-            "Test.A::Run()::<lambda#1>",
-            "Test.A::Run()::<lambda#2>",
-            "Test.A::Run()::<lambda#3>",
+            "<initializer:member1>.<lambda#1>",
+            "<initializer:member2>.<lambda#1>",
+            "<initializer:Property>.<lambda#1>",
+            "<initializer:Changed>.<lambda#1>",
+            "Run().<lambda#1>",
+            "Run().<lambda#2>",
+            "Run().<lambda#2>.<lambda#1>",
         };
-        var actualNames = snapshot.Symbols.Values
+        var actualPaths = snapshot.Symbols.Values
             .Where(symbol => symbol.Kind == IndexedSymbolKind.Lambda)
-            .Select(symbol => symbol.DisplayName)
+            .Select(symbol => symbol.Path!.ExecutableDisplayPath)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(expectedNames.OrderBy(name => name, StringComparer.Ordinal), actualNames);
+        Assert.Equal(expectedPaths.OrderBy(name => name, StringComparer.Ordinal), actualPaths);
 
-        var runSecond = FindLambda(snapshot, "Test.A::Run()::<lambda#2>");
-        var nested = FindLambda(snapshot, "Test.A::Run()::<lambda#3>");
+        var runSecond = FindLambda(snapshot, "Run().<lambda#2>");
+        var nested = FindLambda(snapshot, "Run().<lambda#2>.<lambda#1>");
         Assert.Equal(runSecond.StableKey, nested.ContainingSymbolKey);
 
         var target = Find(snapshot, "Target");
@@ -255,13 +259,13 @@ public sealed class ExecutableSymbolExtractionTests
         var afterOtherFirst = FindLambdaWithNormalizedSource(afterSnapshot, "()=>OtherFirstMarker()");
         var afterOtherSecond = FindLambdaWithNormalizedSource(afterSnapshot, "()=>OtherSecondMarker()");
 
-        Assert.Equal("Test.Owners::SameOwner()::<lambda#1>", beforeEarlier.DisplayName);
-        Assert.Equal(beforeEarlier.DisplayName, afterEarlier.DisplayName);
-        Assert.Equal("Test.Owners::SameOwner()::<lambda#2>", beforeLater.DisplayName);
-        Assert.Equal("Test.Owners::SameOwner()::<lambda#3>", afterLater.DisplayName);
-        Assert.Equal("Test.Owners::SameOwner()::<lambda#2>", afterInserted.DisplayName);
-        Assert.Equal(beforeOtherFirst.DisplayName, afterOtherFirst.DisplayName);
-        Assert.Equal(beforeOtherSecond.DisplayName, afterOtherSecond.DisplayName);
+        Assert.Equal("SameOwner().<lambda#1>", beforeEarlier.Path!.ExecutableDisplayPath);
+        Assert.Equal(beforeEarlier.Path.ExecutableDisplayPath, afterEarlier.Path!.ExecutableDisplayPath);
+        Assert.Equal("SameOwner().<lambda#2>", beforeLater.Path!.ExecutableDisplayPath);
+        Assert.Equal("SameOwner().<lambda#3>", afterLater.Path!.ExecutableDisplayPath);
+        Assert.Equal("SameOwner().<lambda#2>", afterInserted.Path!.ExecutableDisplayPath);
+        Assert.Equal(beforeOtherFirst.Path!.ExecutableDisplayPath, afterOtherFirst.Path!.ExecutableDisplayPath);
+        Assert.Equal(beforeOtherSecond.Path!.ExecutableDisplayPath, afterOtherSecond.Path!.ExecutableDisplayPath);
     }
 
     [Fact]
@@ -290,20 +294,20 @@ public sealed class ExecutableSymbolExtractionTests
 
         var snapshot = await AnalyzeAsync(("First.cs", firstPart), ("Later.cs", laterPart));
 
-        var expectedNames = new[]
+        var expectedPaths = new[]
         {
-            "Test.A::<initializer:LaterField>::<lambda#1>",
-            "Test.A::<initializer:LaterProperty>::<lambda#1>",
-            "Test.A::<initializer:LaterEvent>::<lambda#1>",
+            "<initializer:LaterField>.<lambda#1>",
+            "<initializer:LaterProperty>.<lambda#1>",
+            "<initializer:LaterEvent>.<lambda#1>",
         };
-        var actualNames = snapshot.Symbols.Values
+        var actualPaths = snapshot.Symbols.Values
             .Where(symbol => symbol.Kind == IndexedSymbolKind.Lambda)
-            .Select(symbol => symbol.DisplayName)
+            .Select(symbol => symbol.Path!.ExecutableDisplayPath)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(expectedNames.OrderBy(name => name, StringComparer.Ordinal), actualNames);
+        Assert.Equal(expectedPaths.OrderBy(name => name, StringComparer.Ordinal), actualPaths);
 
-        var eventLambda = FindLambda(snapshot, "Test.A::<initializer:LaterEvent>::<lambda#1>");
+        var eventLambda = FindLambda(snapshot, "<initializer:LaterEvent>.<lambda#1>");
         var target = Find(snapshot, "Target");
         Assert.Single(snapshot.Calls, call =>
             call.CallerSymbolKey == eventLambda.StableKey &&
@@ -352,8 +356,12 @@ public sealed class ExecutableSymbolExtractionTests
         var indexerLambda = FindLambdaOwnedBy(snapshot, indexerGetter);
         Assert.Equal("()=>Target()", factoryLambda.NormalizedSource);
         Assert.Equal("()=>Target()", indexerLambda.NormalizedSource);
-        Assert.Equal("System.Int32", factoryLambda.ReturnTypeKey);
-        Assert.Equal("System.Int32", indexerLambda.ReturnTypeKey);
+        Assert.Equal("System::Int32", factoryLambda.ReturnTypeKey);
+        Assert.Equal("System::Int32", indexerLambda.ReturnTypeKey);
+        Assert.Equal("int", factoryLambda.ReturnTypeDisplay);
+        Assert.Equal("int", indexerLambda.ReturnTypeDisplay);
+        Assert.Equal("[get:Factory]().<lambda#1>", factoryLambda.Path!.ExecutableDisplayPath);
+        Assert.Equal("[get:Item](int).<lambda#1>", indexerLambda.Path!.ExecutableDisplayPath);
         Assert.Equal(factoryGetter.StableKey, factoryLambda.ContainingSymbolKey);
         Assert.Equal(indexerGetter.StableKey, indexerLambda.ContainingSymbolKey);
 
@@ -373,9 +381,10 @@ public sealed class ExecutableSymbolExtractionTests
     private static SymbolData FindLambda(IndexSnapshot snapshot) =>
         Assert.Single(snapshot.Symbols.Values, symbol => symbol.Kind == IndexedSymbolKind.Lambda);
 
-    private static SymbolData FindLambda(IndexSnapshot snapshot, string displayName) =>
+    private static SymbolData FindLambda(IndexSnapshot snapshot, string executableDisplayPath) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>
-            symbol.Kind == IndexedSymbolKind.Lambda && symbol.DisplayName == displayName);
+            symbol.Kind == IndexedSymbolKind.Lambda &&
+            symbol.Path?.ExecutableDisplayPath == executableDisplayPath);
 
     private static SymbolData FindLambdaWithNormalizedSource(IndexSnapshot snapshot, string normalizedSource) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>
