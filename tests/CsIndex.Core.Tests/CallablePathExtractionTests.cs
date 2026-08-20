@@ -520,6 +520,64 @@ public sealed class CallablePathExtractionTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_DoesNotAttachPrimaryConstructorDeclarationMetadataToTheConstructorOwner()
+    {
+        const string source = """
+            using System;
+
+            public sealed class LabelAttribute(string text) : Attribute
+            {
+                public string Text { get; } = text;
+            }
+
+            public static class DeclarationSymbols
+            {
+                public static int Helper() => 1;
+            }
+
+            public class Base(Func<int> factory)
+            {
+            }
+
+            [Label(nameof(DeclarationSymbols.Helper))]
+            public sealed class Derived(string description = nameof(DeclarationSymbols.Helper))
+                : Base(() => DeclarationSymbols.Helper())
+            {
+                public string Description { get; } = description;
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("PrimaryConstructorDeclarationMetadata.cs", source));
+
+        Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
+        var constructor = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "Derived" &&
+            symbol.Path?.ExecutableDisplayPath == "[constructor](string)");
+        var lambda = FindPath(snapshot, "[constructor](string).<lambda#1>");
+        var helper = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "DeclarationSymbols" && symbol.Name == "Helper");
+        Assert.Equal(constructor.StableKey, lambda.ContainingSymbolKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == lambda.StableKey &&
+            call.CalleeDefinitionKey == helper.StableKey);
+
+        const string referencedExpression = "DeclarationSymbols.Helper";
+        var attributeReferenceStart = source.IndexOf(referencedExpression, StringComparison.Ordinal);
+        var defaultReferenceStart = source.IndexOf(
+            referencedExpression,
+            attributeReferenceStart + referencedExpression.Length,
+            StringComparison.Ordinal);
+        Assert.True(attributeReferenceStart >= 0);
+        Assert.True(defaultReferenceStart >= 0);
+        Assert.DoesNotContain(snapshot.Calls, call =>
+            call.ReferenceKind == ReferenceKind.NameOf &&
+            call.SourceStart == attributeReferenceStart);
+        Assert.DoesNotContain(snapshot.Calls, call =>
+            call.ReferenceKind == ReferenceKind.NameOf &&
+            call.SourceStart == defaultReferenceStart);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_ProjectsConstructedAndReducedTargetsFromTheirDefinitions()
     {
         const string source = """

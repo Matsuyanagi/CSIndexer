@@ -713,7 +713,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             };
             UpsertSymbol(data);
             RegisterSourceSymbol(projectKey, constructor.OriginalDefinition, data.StableKey);
-            documentState.PrimaryConstructorOwners[declaration.SpanStart] = data.StableKey;
+            if (declaration.BaseList is { } baseList &&
+                baseList.Types.OfType<PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() is { } primaryBaseType)
+            {
+                documentState.PrimaryConstructorBaseArgumentOwners[primaryBaseType.ArgumentList.SpanStart] =
+                    data.StableKey;
+            }
         }
     }
 
