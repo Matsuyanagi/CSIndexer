@@ -10,6 +10,65 @@ namespace CsIndex.Core.Tests;
 public sealed class SemanticExtractorCancellationTests
 {
     [Fact]
+    public async Task ExtractAsync_ObservesCancellationDuringDeclarationFinalization()
+    {
+        const string source = """
+            public sealed class Host
+            {
+                public void First() { }
+                public void Second() { }
+                public void Third() { }
+            }
+            """;
+        using var temporary = new TempDirectory();
+        var sourcePath = temporary.Write("Source.cs", source);
+        var projectPath = temporary.Write("Host.csproj", "<Project />");
+        using var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId("FinalizationCancellation");
+        var references = GetPlatformReferences();
+        var solution = workspace.CurrentSolution
+            .AddProject(ProjectInfo.Create(
+                projectId,
+                VersionStamp.Create(),
+                "FinalizationCancellation",
+                "FinalizationCancellation",
+                LanguageNames.CSharp,
+                filePath: projectPath,
+                outputFilePath: Path.ChangeExtension(projectPath, ".dll"),
+                compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
+                parseOptions: new CSharpParseOptions(LanguageVersion.Preview),
+                metadataReferences: references))
+            .AddDocument(
+                DocumentId.CreateNewId(projectId, "Source.cs"),
+                "Source.cs",
+                SourceText.From(source),
+                filePath: sourcePath);
+        Assert.True(workspace.TryApplyChanges(solution));
+
+        using var cancellation = new CancellationTokenSource();
+        var extractor = new SemanticExtractor(new ProjectFingerprintBuilder());
+        var observedPhase = (DeclarationFinalizationPhase?)null;
+        extractor.AfterDeclarationFinalizationItem = phase =>
+        {
+            if (phase == DeclarationFinalizationPhase.Projection)
+            {
+                observedPhase = phase;
+                cancellation.Cancel();
+            }
+        };
+        var snapshot = CreateSnapshot(temporary.Path);
+        var project = workspace.CurrentSolution.GetProject(projectId)!;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => extractor.ExtractAsync(
+            [project],
+            snapshot,
+            includeDiagnostics: true,
+            cancellation.Token));
+
+        Assert.Equal(DeclarationFinalizationPhase.Projection, observedPhase);
+    }
+
+    [Fact]
     public async Task ExtractAsync_ObservesCancellationDuringNestedExecutableTraversal()
     {
         const string source = """

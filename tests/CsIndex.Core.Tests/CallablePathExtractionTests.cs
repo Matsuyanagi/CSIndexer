@@ -466,13 +466,12 @@ public sealed class CallablePathExtractionTests
         var primaryConstructor = Assert.Single(snapshot.Symbols.Values, symbol =>
             symbol.TypeSimpleName == "PrimaryConstructor" &&
             symbol.Path?.SegmentDisplay == "[constructor](int)");
-        Assert.NotNull(primaryConstructor.SourceDocumentKey);
-        Assert.NotNull(primaryConstructor.SourceStart);
-        Assert.NotNull(primaryConstructor.SourceLength);
+        Assert.NotNull(PreferredDeclaration(snapshot, primaryConstructor).DocumentKey);
+        Assert.True(PreferredDeclaration(snapshot, primaryConstructor).SourceLength > 0);
         var recordPrimaryConstructor = Assert.Single(snapshot.Symbols.Values, symbol =>
             symbol.TypeSimpleName == "PositionalRecord" &&
             symbol.Path?.SegmentDisplay == "[constructor](int)");
-        Assert.NotNull(recordPrimaryConstructor.SourceDocumentKey);
+        Assert.NotNull(PreferredDeclaration(snapshot, recordPrimaryConstructor).DocumentKey);
     }
 
     [Fact]
@@ -702,8 +701,13 @@ public sealed class CallablePathExtractionTests
 
     private static SymbolData FindNormalizedSource(IndexSnapshot snapshot, string normalizedSource) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>
-            symbol.NormalizedSource == normalizedSource &&
-            symbol.Kind == IndexedSymbolKind.Lambda);
+            symbol.Kind == IndexedSymbolKind.Lambda &&
+            symbol.PreferredDeclarationKey is { } declarationKey &&
+            snapshot.Declarations.TryGetValue(declarationKey, out var declaration) &&
+            declaration.NormalizedSource == normalizedSource);
+
+    private static SymbolDeclarationData PreferredDeclaration(IndexSnapshot snapshot, SymbolData symbol) =>
+        snapshot.Declarations[symbol.PreferredDeclarationKey!];
 
     private static async Task<IndexSnapshot> AnalyzeAsync(params (string Path, string Source)[] documents)
     {

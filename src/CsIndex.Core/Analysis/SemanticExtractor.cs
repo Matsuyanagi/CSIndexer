@@ -8,6 +8,13 @@ using Microsoft.CodeAnalysis.Operations;
 
 namespace CsIndex.Core.Analysis;
 
+internal enum DeclarationFinalizationPhase
+{
+    Grouping,
+    Projection,
+    Consistency,
+}
+
 public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerprintBuilder)
 {
     private readonly Dictionary<SourceSymbolLookupKey, string> _sourceSymbolKeys = [];
@@ -25,6 +32,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private ProjectAnalysisState? _currentProjectState;
 
     internal Action? AfterNestedExecutableOwner { get; set; }
+    internal Action<DeclarationFinalizationPhase>? AfterDeclarationFinalizationItem { get; set; }
 
     public async Task ExtractAsync(
         IReadOnlyList<Project> projects,
@@ -101,7 +109,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             await ExtractProjectFactsAsync(state, cancellationToken);
         }
 
-        FinalizeDeclarationProjections();
+        FinalizeDeclarationProjections(cancellationToken);
         AsyncInvolvementPropagator.Apply(snapshot, cancellationToken);
     }
 
@@ -1295,35 +1303,33 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         _declarationAsyncRoles[key] = data.AsyncRole;
     }
 
-    private void FinalizeDeclarationProjections()
+    private void FinalizeDeclarationProjections(CancellationToken cancellationToken)
     {
+        var declarationsBySymbol = new Dictionary<string, List<SymbolDeclarationData>>(StringComparer.Ordinal);
+        foreach (var declaration in _snapshot.Declarations.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!declarationsBySymbol.TryGetValue(declaration.SymbolKey, out var declarations))
+            {
+                declarations = [];
+                declarationsBySymbol.Add(declaration.SymbolKey, declarations);
+            }
+
+            declarations.Add(declaration);
+            AfterDeclarationFinalizationItem?.Invoke(DeclarationFinalizationPhase.Grouping);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         foreach (var symbol in _snapshot.Symbols.Values.ToArray())
         {
-            var declarations = _snapshot.Declarations.Values
-                .Where(declaration => declaration.SymbolKey == symbol.StableKey)
-                .ToArray();
-            if (declarations.Length == 0)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!declarationsBySymbol.TryGetValue(symbol.StableKey, out var declarations) ||
+                declarations.Count == 0)
             {
                 continue;
             }
 
-            var preferred = declarations
-                .Where(declaration => declaration.Role == DeclarationRole.PartialImplementation)
-                .OrderBy(declaration => declaration.DocumentKey, StringComparer.Ordinal)
-                .ThenBy(declaration => declaration.SourceStart)
-                .ThenBy(declaration => declaration.Key, StringComparer.Ordinal)
-                .FirstOrDefault()
-                ?? declarations
-                    .Where(declaration => declaration.Role == DeclarationRole.PartialDefinition)
-                    .OrderBy(declaration => declaration.DocumentKey, StringComparer.Ordinal)
-                    .ThenBy(declaration => declaration.SourceStart)
-                    .ThenBy(declaration => declaration.Key, StringComparer.Ordinal)
-                    .FirstOrDefault()
-                ?? declarations
-                    .OrderBy(declaration => declaration.DocumentKey, StringComparer.Ordinal)
-                    .ThenBy(declaration => declaration.SourceStart)
-                    .ThenBy(declaration => declaration.Key, StringComparer.Ordinal)
-                    .First();
+            var preferred = SelectPreferredDeclaration(declarations, cancellationToken);
             var preferredData = _declarationProjectionData[preferred.Key];
             var directAsyncRole = _declarationAsyncRoles.GetValueOrDefault(preferred.Key);
             var bodyAsyncRole = _bodyAsyncRoles.GetValueOrDefault(symbol.StableKey);
@@ -1350,18 +1356,21 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 ConversionTypeDisplay = preferredData.ConversionTypeDisplay,
                 Parameters = preferredData.Parameters,
                 PreferredDeclarationKey = preferred.Key,
-                SourceDocumentKey = preferred.DocumentKey,
-                SourceStart = preferred.SourceStart,
-                SourceLength = preferred.SourceLength,
-                NormalizedSource = preferred.NormalizedSource,
-                NormalizedSourceHash = preferred.NormalizedSourceHash,
+                SourceDocumentKey = null,
+                SourceStart = null,
+                SourceLength = null,
+                NormalizedSource = null,
+                NormalizedSourceHash = null,
                 IsGenerated = preferred.IsGenerated,
                 AsyncRole = directAsyncRole | bodyAsyncRole,
             };
+            AfterDeclarationFinalizationItem?.Invoke(DeclarationFinalizationPhase.Projection);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         foreach (var symbol in _snapshot.Symbols.Values)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (symbol.PreferredDeclarationKey is not { } declarationKey ||
                 !_snapshot.Declarations.TryGetValue(declarationKey, out var declaration) ||
                 declaration.SymbolKey != symbol.StableKey)
@@ -1372,8 +1381,58 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                         $"Preferred declaration '{symbol.PreferredDeclarationKey}' does not belong to '{symbol.StableKey}'.");
                 }
             }
+
+            AfterDeclarationFinalizationItem?.Invoke(DeclarationFinalizationPhase.Consistency);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
+
+    private static SymbolDeclarationData SelectPreferredDeclaration(
+        IReadOnlyList<SymbolDeclarationData> declarations,
+        CancellationToken cancellationToken)
+    {
+        var preferred = declarations[0];
+        for (var index = 1; index < declarations.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = declarations[index];
+            if (CompareDeclarationPreference(candidate, preferred) < 0)
+            {
+                preferred = candidate;
+            }
+        }
+
+        return preferred;
+    }
+
+    private static int CompareDeclarationPreference(
+        SymbolDeclarationData left,
+        SymbolDeclarationData right)
+    {
+        var result = GetDeclarationRoleRank(left.Role).CompareTo(GetDeclarationRoleRank(right.Role));
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = StringComparer.Ordinal.Compare(left.DocumentKey, right.DocumentKey);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = left.SourceStart.CompareTo(right.SourceStart);
+        return result != 0
+            ? result
+            : StringComparer.Ordinal.Compare(left.Key, right.Key);
+    }
+
+    private static int GetDeclarationRoleRank(DeclarationRole role) => role switch
+    {
+        DeclarationRole.PartialImplementation => 0,
+        DeclarationRole.PartialDefinition => 1,
+        _ => 2,
+    };
 
     private string EnsureMethod(IMethodSymbol method)
     {

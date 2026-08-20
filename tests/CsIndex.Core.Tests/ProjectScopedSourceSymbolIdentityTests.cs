@@ -34,8 +34,10 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             [firstProjectKey, secondProjectKey],
             runs.Select(symbol => symbol.ProjectKey).OrderBy(key => key, StringComparer.Ordinal));
         Assert.Equal(2, runs.Select(symbol => symbol.StableKey).Distinct(StringComparer.Ordinal).Count());
-        Assert.Contains(runs, symbol => symbol.NormalizedSource!.Contains("LocalFirst", StringComparison.Ordinal));
-        Assert.Contains(runs, symbol => symbol.NormalizedSource!.Contains("LocalSecond", StringComparison.Ordinal));
+        Assert.Contains(runs, symbol => snapshot.Declarations[symbol.PreferredDeclarationKey!]
+            .NormalizedSource.Contains("LocalFirst", StringComparison.Ordinal));
+        Assert.Contains(runs, symbol => snapshot.Declarations[symbol.PreferredDeclarationKey!]
+            .NormalizedSource.Contains("LocalSecond", StringComparison.Ordinal));
 
         foreach (var run in runs)
         {
@@ -44,7 +46,14 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             var declaration = snapshot.Declarations[run.PreferredDeclarationKey!];
             Assert.Equal(run.StableKey, declaration.SymbolKey);
             Assert.Equal(DeclarationRole.Ordinary, declaration.Role);
-            Assert.Equal(run.NormalizedSource, declaration.NormalizedSource);
+            Assert.Null(run.SourceDocumentKey);
+            Assert.Null(run.SourceStart);
+            Assert.Null(run.SourceLength);
+            Assert.Null(run.NormalizedSource);
+            Assert.Null(run.NormalizedSourceHash);
+            Assert.Equal(run.IsGenerated, declaration.IsGenerated);
+            Assert.NotNull(declaration.NormalizedSource);
+            Assert.NotNull(declaration.NormalizedSourceHash);
 
             var localCall = Assert.Single(snapshot.Calls, call =>
                 call.CallerSymbolKey == run.StableKey &&
