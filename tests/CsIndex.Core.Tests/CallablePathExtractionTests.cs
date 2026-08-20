@@ -578,7 +578,7 @@ public sealed class CallablePathExtractionTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ProjectsConstructedAndReducedTargetsFromTheirDefinitions()
+    public async Task AnalyzeAsync_UsesLogicalKeysForConstructedAndReducedTargets()
     {
         const string source = """
             public static class Extensions
@@ -605,24 +605,21 @@ public sealed class CallablePathExtractionTests
 
         Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
         var memberDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
-            symbol.Name == "Member" && symbol.SourceDocumentKey is not null);
+            symbol.Name == "Member");
         var localDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
-            symbol.Name == "Local" && symbol.SourceDocumentKey is not null);
+            symbol.Name == "Local");
         var extensionDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
-            symbol.Name == "Echo" && symbol.SourceDocumentKey is not null);
+            symbol.Name == "Echo");
         var run = FindPath(snapshot, "Run()");
 
-        AssertDefinitionProjectedTarget(snapshot, memberDefinition, "Member<T>(T)");
-        AssertDefinitionProjectedTarget(snapshot, localDefinition, "Run().Local<T>(T)");
-        AssertDefinitionProjectedTarget(snapshot, extensionDefinition, "Echo<T>(T)");
+        AssertLogicalTarget(snapshot, memberDefinition, "Member<T>(T)");
+        AssertLogicalTarget(snapshot, localDefinition, "Run().Local<T>(T)");
+        AssertLogicalTarget(snapshot, extensionDefinition, "Echo<T>(T)");
         Assert.Equal(run.StableKey, localDefinition.ContainingSymbolKey);
 
         Assert.DoesNotContain(snapshot.Symbols.Values, symbol =>
-            symbol.Path?.ExecutableDisplayPath is "Member<T>(int)" or
-                "Local<T>(int)" or
-                "Local<T>(T)" or
-                "Echo<T>()" or
-                "Echo<T>(int)");
+            symbol.StableKey.Contains("|constructed:", StringComparison.Ordinal) ||
+            symbol.StableKey.Contains("|reduced:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -656,25 +653,18 @@ public sealed class CallablePathExtractionTests
         Assert.Equal("<initializer:class>", keyword.Path?.SegmentIdentity);
     }
 
-    private static void AssertDefinitionProjectedTarget(
+    private static void AssertLogicalTarget(
         IndexSnapshot snapshot,
         SymbolData definition,
         string expectedExecutableDisplayPath)
     {
         var call = Assert.Single(snapshot.Calls, candidate =>
             candidate.CalleeDefinitionKey == definition.StableKey);
-        var target = snapshot.Symbols[Assert.IsType<string>(call.CalleeSymbolKey)];
-        Assert.NotEqual(definition.StableKey, target.StableKey);
-        Assert.Equal(expectedExecutableDisplayPath, target.Path?.ExecutableDisplayPath);
-        Assert.Equal(definition.Path, target.Path);
-        Assert.Equal(definition.ContainingSymbolKey, target.ContainingSymbolKey);
-        Assert.Equal("T", Assert.Single(target.Parameters).TypeDisplay);
-        Assert.Equal("T", target.ReturnTypeDisplay);
-        Assert.Null(target.SourceDocumentKey);
-        Assert.Null(target.SourceStart);
-        Assert.Null(target.SourceLength);
-        Assert.Null(target.NormalizedSource);
-        Assert.Null(target.NormalizedSourceHash);
+        Assert.Equal(definition.StableKey, call.CalleeSymbolKey);
+        Assert.Equal(definition.StableKey, call.CalleeDefinitionKey);
+        Assert.DoesNotContain("|constructed:", call.CalleeSymbolKey!, StringComparison.Ordinal);
+        Assert.DoesNotContain("|reduced:", call.CalleeSymbolKey!, StringComparison.Ordinal);
+        Assert.Equal(expectedExecutableDisplayPath, definition.Path?.ExecutableDisplayPath);
     }
 
     private static SymbolData AssertSegment(
