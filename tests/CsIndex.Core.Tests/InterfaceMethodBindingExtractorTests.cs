@@ -60,6 +60,16 @@ public sealed class InterfaceMethodBindingExtractorTests
         Assert.Single(bindings, binding =>
             snapshot.Symbols[binding.ImplementingTypeKey].TypeSimpleName == "PartialPlayer" &&
             snapshot.Symbols[binding.InterfaceMethodKey].TypeSimpleName == "IPlayable");
+        Assert.All(bindings, binding =>
+            Assert.True(snapshot.Symbols.ContainsKey(binding.ImplementationMethodKey)));
+
+        var partialPlay = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Method &&
+            symbol.TypeSimpleName == "PartialPlayer" &&
+            symbol.Name == "Play");
+        var partialDeclaration = snapshot.Declarations[partialPlay.PreferredDeclarationKey!];
+        Assert.Equal(partialPlay.StableKey, partialDeclaration.SymbolKey);
+        Assert.Equal(DeclarationRole.Ordinary, partialDeclaration.Role);
     }
 
     [Fact]

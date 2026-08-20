@@ -65,6 +65,13 @@ public enum IndexedSymbolKind
     TopLevelStatements = 5,
 }
 
+public enum DeclarationRole
+{
+    Ordinary = 1,
+    PartialDefinition = 2,
+    PartialImplementation = 3,
+}
+
 public enum CallablePathSegmentKind
 {
     Named = 1,

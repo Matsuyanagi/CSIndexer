@@ -54,12 +54,17 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             ["op_UnsignedRightShiftAssignment"] = ">>>=",
         };
 
-    public IMethodSymbol NormalizeMethod(IMethodSymbol method) =>
-        (method.ReducedFrom ?? method).OriginalDefinition;
+    public IMethodSymbol NormalizeLogicalMethod(IMethodSymbol method)
+    {
+        ArgumentNullException.ThrowIfNull(method);
+        var unreduced = method.ReducedFrom ?? method;
+        var definition = unreduced.PartialDefinitionPart ?? unreduced;
+        return definition.OriginalDefinition;
+    }
 
     public string GetDefinitionStableKey(ISymbol symbol, string? projectKey = null)
     {
-        var normalized = symbol is IMethodSymbol method ? NormalizeMethod(method) : symbol.OriginalDefinition;
+        var normalized = symbol is IMethodSymbol method ? NormalizeLogicalMethod(method) : symbol.OriginalDefinition;
         var documentationId = normalized.GetDocumentationCommentId();
         var identity = documentationId ?? BuildFallbackIdentity(normalized);
         var assembly = normalized.ContainingAssembly?.Identity.Name ?? "source";
@@ -67,18 +72,13 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         return $"profile:{profile.Name}|assembly:{assembly}{projectScope}|tfm:{profile.TargetFramework ?? "unknown"}|{identity}";
     }
 
-    public string GetTargetStableKey(IMethodSymbol method, string? projectKey = null)
-    {
-        var definition = NormalizeMethod(method);
-        var definitionKey = GetDefinitionStableKey(definition, projectKey);
-        if (SymbolEqualityComparer.Default.Equals(method, definition))
-        {
-            return definitionKey;
-        }
-
-        var reduced = method.ReducedFrom is null ? "constructed" : "reduced";
-        return $"{definitionKey}|{reduced}:{FormatMethod(method)}";
-    }
+    public string GetDeclarationKey(
+        string logicalSymbolKey,
+        string storedDocumentPath,
+        int sourceStart,
+        int sourceLength,
+        DeclarationRole role) =>
+        $"{logicalSymbolKey}|declaration:{storedDocumentPath}:{sourceStart}:{sourceLength}:{(int)role}";
 
     public string GetSyntheticStableKey(
         string ownerKey,
@@ -126,7 +126,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
 
     public SymbolData CreateMethod(
         IMethodSymbol method,
-        bool actualTarget,
+        bool actualTarget = false,
         string? projectKey = null,
         string? documentKey = null,
         int? sourceStart = null,
@@ -135,9 +135,8 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         string? containingSymbolKey = null,
         SymbolPathData? containingPath = null)
     {
-        var stableKey = actualTarget
-            ? GetTargetStableKey(method, projectKey)
-            : GetDefinitionStableKey(method, projectKey);
+        _ = actualTarget;
+        var stableKey = GetDefinitionStableKey(NormalizeLogicalMethod(method), projectKey);
         var containingType = method.ContainingType;
         var methodSignature = SymbolSignatureCanonicalizer.CanonicalizeMethod(method);
         var segment = CreateMethodSegment(method, methodSignature);

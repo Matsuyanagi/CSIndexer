@@ -192,8 +192,7 @@ public static class AsyncInvolvementPropagator
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
-                symbol.SourceDocumentKey is not null &&
-                symbol.NormalizedSource is not null)
+                HasSourceDeclaration(snapshot, symbol))
             {
                 eligible.Add(symbol.StableKey);
             }
@@ -201,6 +200,19 @@ public static class AsyncInvolvementPropagator
 
         cancellationToken.ThrowIfCancellationRequested();
         return eligible;
+    }
+
+    private static bool HasSourceDeclaration(IndexSnapshot snapshot, SymbolData symbol)
+    {
+        if (symbol.PreferredDeclarationKey is { } declarationKey &&
+            snapshot.Declarations.TryGetValue(declarationKey, out var declaration))
+        {
+            return declaration.SymbolKey == symbol.StableKey;
+        }
+
+        // Preserve compatibility for snapshots constructed by callers before
+        // declaration rows were introduced.
+        return symbol.SourceDocumentKey is not null && symbol.NormalizedSource is not null;
     }
 
     private static int CompareCalls(CallData left, CallData right, int leftSequence, int rightSequence)

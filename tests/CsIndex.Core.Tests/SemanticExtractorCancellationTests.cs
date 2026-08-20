@@ -1,55 +1,94 @@
 using CsIndex.Core.Analysis;
+using CsIndex.Core.Caching;
+using CsIndex.Core.Model;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace CsIndex.Core.Tests;
 
 public sealed class SemanticExtractorCancellationTests
 {
     [Fact]
-    public void OrderLambdas_ObservesCancellationDuringEnumeration()
+    public async Task ExtractAsync_ObservesCancellationDuringNestedExecutableTraversal()
     {
-        var lambda = CSharpSyntaxTree.ParseText(
-                "class C { void Run() { var action = (int value) => value; } }",
-                cancellationToken: TestContext.Current.CancellationToken)
-            .GetRoot(TestContext.Current.CancellationToken)
-            .DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Single();
-        using var cancellation = new CancellationTokenSource();
-        var lambdas = Enumerable.Range(0, 2).Select(index =>
-        {
-            if (index == 0)
+        const string source = """
+            using System;
+
+            public sealed class Host
             {
-                cancellation.Cancel();
-                return lambda;
+                public void Run()
+                {
+                    void Local() { }
+                    Action callback = () => { };
+                    callback();
+                }
             }
+            """;
+        using var temporary = new TempDirectory();
+        var sourcePath = temporary.Write("Source.cs", source);
+        var projectPath = temporary.Write("Host.csproj", "<Project />");
+        using var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId("Cancellation");
+        var references = GetPlatformReferences();
+        var solution = workspace.CurrentSolution
+            .AddProject(ProjectInfo.Create(
+                projectId,
+                VersionStamp.Create(),
+                "Cancellation",
+                "Cancellation",
+                LanguageNames.CSharp,
+                filePath: projectPath,
+                outputFilePath: Path.ChangeExtension(projectPath, ".dll"),
+                compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
+                parseOptions: new CSharpParseOptions(LanguageVersion.Preview),
+                metadataReferences: references))
+            .AddDocument(
+                DocumentId.CreateNewId(projectId, "Source.cs"),
+                "Source.cs",
+                SourceText.From(source),
+                filePath: sourcePath);
+        Assert.True(workspace.TryApplyChanges(solution));
 
-            throw new InvalidOperationException("Cancellation was not observed before continuing enumeration.");
-        });
-
-        Assert.Throws<OperationCanceledException>(() =>
-            SemanticExtractor.OrderLambdas(lambdas, cancellation.Token));
-    }
-
-    [Fact]
-    public void OrderLambdas_ObservesCancellationDuringOrdering()
-    {
-        var root = CSharpSyntaxTree.ParseText(
-                "class C { void Run() { var a = (int value) => value; var b = (int value) => value; var c = (int value) => value; } }",
-                cancellationToken: TestContext.Current.CancellationToken)
-            .GetRoot(TestContext.Current.CancellationToken);
-        var reversed = root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Reverse();
         using var cancellation = new CancellationTokenSource();
-        var comparisons = 0;
+        var extractor = new SemanticExtractor(new ProjectFingerprintBuilder());
+        var callbackCount = 0;
+        extractor.AfterNestedExecutableOwner = () =>
+        {
+            callbackCount++;
+            cancellation.Cancel();
+        };
+        var snapshot = CreateSnapshot(temporary.Path);
+        var project = workspace.CurrentSolution.GetProject(projectId)!;
 
-        Assert.Throws<OperationCanceledException>(() => SemanticExtractor.OrderLambdas(
-            reversed,
-            cancellation.Token,
-            () =>
-            {
-                comparisons++;
-                cancellation.Cancel();
-            }));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => extractor.ExtractAsync(
+            [project],
+            snapshot,
+            includeDiagnostics: true,
+            cancellation.Token));
 
-        Assert.True(comparisons > 0);
+        Assert.True(callbackCount > 0);
     }
+
+    private static IndexSnapshot CreateSnapshot(string root) => new()
+    {
+        InputRoot = root,
+        InputFingerprint = [],
+        RequestHash = [],
+        Profile = new AnalysisProfileData
+        {
+            Name = "test",
+            InputMode = InputMode.Directory,
+            OperatingSystem = "Windows",
+            Architecture = "x64",
+            PreprocessorSymbols = [],
+            ProfileHash = [],
+        },
+    };
+
+    private static IReadOnlyList<MetadataReference> GetPlatformReferences() =>
+        ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))!
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        .Select(path => MetadataReference.CreateFromFile(path))
+        .ToArray();
 }

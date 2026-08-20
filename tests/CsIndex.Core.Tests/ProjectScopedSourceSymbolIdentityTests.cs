@@ -41,6 +41,10 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
         {
             var containingType = snapshot.Symbols[Assert.IsType<string>(run.ContainingSymbolKey)];
             Assert.Equal(run.ProjectKey, containingType.ProjectKey);
+            var declaration = snapshot.Declarations[run.PreferredDeclarationKey!];
+            Assert.Equal(run.StableKey, declaration.SymbolKey);
+            Assert.Equal(DeclarationRole.Ordinary, declaration.Role);
+            Assert.Equal(run.NormalizedSource, declaration.NormalizedSource);
 
             var localCall = Assert.Single(snapshot.Calls, call =>
                 call.CallerSymbolKey == run.StableKey &&

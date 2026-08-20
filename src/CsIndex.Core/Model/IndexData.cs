@@ -54,6 +54,19 @@ public sealed record SymbolPathData(
     string SegmentIdentity,
     CallablePathSegmentKind SegmentKind);
 
+public sealed record SymbolDeclarationData
+{
+    public required string Key { get; init; }
+    public required string SymbolKey { get; init; }
+    public required string DocumentKey { get; init; }
+    public required DeclarationRole Role { get; init; }
+    public required int SourceStart { get; init; }
+    public required int SourceLength { get; init; }
+    public required string NormalizedSource { get; init; }
+    public required byte[] NormalizedSourceHash { get; init; }
+    public required bool IsGenerated { get; init; }
+}
+
 public sealed record SymbolData
 {
     public required string StableKey { get; init; }
@@ -66,6 +79,7 @@ public sealed record SymbolData
     public required string FullyQualifiedName { get; init; }
     public required string DisplayName { get; init; }
     public SymbolPathData? Path { get; init; }
+    public string? PreferredDeclarationKey { get; init; }
     public string? ContainingSymbolKey { get; init; }
     public int Arity { get; init; }
     public int? ParameterCount { get; init; }
@@ -147,6 +161,7 @@ public sealed class IndexSnapshot
     public List<ProjectData> Projects { get; } = [];
     public List<DocumentData> Documents { get; } = [];
     public Dictionary<string, SymbolData> Symbols { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, SymbolDeclarationData> Declarations { get; } = new(StringComparer.Ordinal);
     public List<CallData> Calls { get; } = [];
     public List<SymbolRelationData> Relations { get; } = [];
     public List<InterfaceMethodBindingData> InterfaceMethodBindings { get; } = [];
