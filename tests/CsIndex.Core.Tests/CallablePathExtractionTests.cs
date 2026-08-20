@@ -475,6 +475,150 @@ public sealed class CallablePathExtractionTests
         Assert.NotNull(recordPrimaryConstructor.SourceDocumentKey);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_AttachesPrimaryConstructorBaseArgumentsToTheConstructorOwner()
+    {
+        const string source = """
+            using System;
+
+            public class Base(int direct, Func<int> lambda, Func<int> anonymous)
+            {
+            }
+
+            public sealed class Derived()
+                : Base(Create(), () => Helper(), delegate { return Helper(); })
+            {
+                private static int Create() => 1;
+                private static int Helper() => 2;
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("PrimaryConstructorBaseArguments.cs", source));
+
+        Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
+        var constructor = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "Derived" &&
+            symbol.Path?.ExecutableDisplayPath == "[constructor]()");
+        var lambda = FindPath(snapshot, "[constructor]().<lambda#1>");
+        var anonymous = FindPath(snapshot, "[constructor]().<anonymous-method#2>");
+        Assert.Equal(constructor.StableKey, lambda.ContainingSymbolKey);
+        Assert.Equal(constructor.StableKey, anonymous.ContainingSymbolKey);
+
+        var create = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "Derived" && symbol.Name == "Create");
+        var helper = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "Derived" && symbol.Name == "Helper");
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == constructor.StableKey &&
+            call.CalleeDefinitionKey == create.StableKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == lambda.StableKey &&
+            call.CalleeDefinitionKey == helper.StableKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == anonymous.StableKey &&
+            call.CalleeDefinitionKey == helper.StableKey);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ProjectsConstructedAndReducedTargetsFromTheirDefinitions()
+    {
+        const string source = """
+            public static class Extensions
+            {
+                public static T Echo<T>(this T value) => value;
+            }
+
+            public sealed class TargetHost
+            {
+                public T Member<T>(T value) => value;
+
+                public void Run()
+                {
+                    _ = Member(1);
+
+                    T Local<T>(T value) => value;
+                    _ = Local(2);
+                    _ = 3.Echo();
+                }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("ActualTargets.cs", source));
+
+        Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
+        var memberDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Name == "Member" && symbol.SourceDocumentKey is not null);
+        var localDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Name == "Local" && symbol.SourceDocumentKey is not null);
+        var extensionDefinition = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Name == "Echo" && symbol.SourceDocumentKey is not null);
+        var run = FindPath(snapshot, "Run()");
+
+        AssertDefinitionProjectedTarget(snapshot, memberDefinition, "Member<T>(T)");
+        AssertDefinitionProjectedTarget(snapshot, localDefinition, "Run().Local<T>(T)");
+        AssertDefinitionProjectedTarget(snapshot, extensionDefinition, "Echo<T>(T)");
+        Assert.Equal(run.StableKey, localDefinition.ContainingSymbolKey);
+
+        Assert.DoesNotContain(snapshot.Symbols.Values, symbol =>
+            symbol.Path?.ExecutableDisplayPath is "Member<T>(int)" or
+                "Local<T>(int)" or
+                "Local<T>(T)" or
+                "Echo<T>()" or
+                "Echo<T>(int)");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_NormalizesInitializerDisplayIdentifiersSemantically()
+    {
+        const string source = """
+            using System;
+
+            public sealed class InitializerNames
+            {
+                public static Func<int> @Factory = () => 1;
+                public static Func<int> \u0050roperty { get; } = () => 2;
+                public static Func<int> @class { get; } = () => 3;
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("InitializerNames.cs", source));
+
+        Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
+        var factory = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Initializer && symbol.Name == "<initializer:Factory>");
+        var property = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Initializer && symbol.Name == "<initializer:Property>");
+        var keyword = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Initializer && symbol.Name == "<initializer:class>");
+        Assert.Equal("<initializer:Factory>", factory.Path?.SegmentDisplay);
+        Assert.Equal("<initializer:Factory>", factory.Path?.SegmentIdentity);
+        Assert.Equal("<initializer:Property>", property.Path?.SegmentDisplay);
+        Assert.Equal("<initializer:Property>", property.Path?.SegmentIdentity);
+        Assert.Equal("<initializer:@class>", keyword.Path?.SegmentDisplay);
+        Assert.Equal("<initializer:class>", keyword.Path?.SegmentIdentity);
+    }
+
+    private static void AssertDefinitionProjectedTarget(
+        IndexSnapshot snapshot,
+        SymbolData definition,
+        string expectedExecutableDisplayPath)
+    {
+        var call = Assert.Single(snapshot.Calls, candidate =>
+            candidate.CalleeDefinitionKey == definition.StableKey);
+        var target = snapshot.Symbols[Assert.IsType<string>(call.CalleeSymbolKey)];
+        Assert.NotEqual(definition.StableKey, target.StableKey);
+        Assert.Equal(expectedExecutableDisplayPath, target.Path?.ExecutableDisplayPath);
+        Assert.Equal(definition.Path, target.Path);
+        Assert.Equal(definition.ContainingSymbolKey, target.ContainingSymbolKey);
+        Assert.Equal("T", Assert.Single(target.Parameters).TypeDisplay);
+        Assert.Equal("T", target.ReturnTypeDisplay);
+        Assert.Null(target.SourceDocumentKey);
+        Assert.Null(target.SourceStart);
+        Assert.Null(target.SourceLength);
+        Assert.Null(target.NormalizedSource);
+        Assert.Null(target.NormalizedSourceHash);
+    }
+
     private static SymbolData AssertSegment(
         IndexSnapshot snapshot,
         string segmentDisplay,

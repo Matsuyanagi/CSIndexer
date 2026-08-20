@@ -527,7 +527,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         return string.Join('.', namespaces);
     }
 
-    private static string EscapeIdentifier(string identifier) =>
+    internal static string EscapeIdentifier(string identifier) =>
         SyntaxFacts.GetKeywordKind(identifier) != SyntaxKind.None ||
         SyntaxFacts.GetContextualKeywordKind(identifier) != SyntaxKind.None
             ? $"@{identifier}"

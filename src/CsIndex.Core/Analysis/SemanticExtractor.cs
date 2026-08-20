@@ -713,6 +713,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             };
             UpsertSymbol(data);
             RegisterSourceSymbol(projectKey, constructor.OriginalDefinition, data.StableKey);
+            documentState.PrimaryConstructorOwners[declaration.SpanStart] = data.StableKey;
         }
     }
 
@@ -758,15 +759,9 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 PropertyDeclarationSyntax property => property.Identifier.ValueText,
                 _ => "initializer",
             };
-            var memberDisplayName = declaration switch
-            {
-                VariableDeclaratorSyntax variable => variable.Identifier.Text,
-                PropertyDeclarationSyntax property => property.Identifier.Text,
-                _ => "initializer",
-            };
             var isStatic = initializer.Ancestors().OfType<MemberDeclarationSyntax>().FirstOrDefault()
                 ?.Modifiers.Any(modifier => modifier.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StaticKeyword)) == true;
-            var segmentDisplay = $"<initializer:{memberDisplayName}>";
+            var segmentDisplay = $"<initializer:{SymbolCanonicalizer.EscapeIdentifier(memberName)}>";
             var segmentIdentity = $"<initializer:{memberName}>";
             var path = _canonicalizer.CreateSyntheticPath(
                 typeSymbol,
@@ -1180,7 +1175,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private string EnsureMethod(IMethodSymbol method, bool actualTarget)
     {
-        var normalized = actualTarget ? method : _canonicalizer.NormalizeMethod(method);
+        var normalized = _canonicalizer.NormalizeMethod(method);
         var sourceProjectKey = ResolveSourceProjectKey(method);
         if (!actualTarget &&
             sourceProjectKey is not null &&
@@ -1192,19 +1187,57 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         if (sourceProjectKey is not null && normalized.IsImplicitlyDeclared)
         {
             return actualTarget
-                ? _canonicalizer.GetTargetStableKey(normalized, sourceProjectKey)
+                ? _canonicalizer.GetTargetStableKey(method, sourceProjectKey)
                 : _canonicalizer.GetDefinitionStableKey(normalized, sourceProjectKey);
         }
 
-        var data = _canonicalizer.CreateMethod(normalized, actualTarget, sourceProjectKey) with
+        var targetKey = actualTarget
+            ? _canonicalizer.GetTargetStableKey(method, sourceProjectKey)
+            : _canonicalizer.GetDefinitionStableKey(normalized, sourceProjectKey);
+        if (_snapshot.Symbols.ContainsKey(targetKey))
         {
-            AsyncRole = AsyncSymbolClassifier.Classify(
-                normalized,
-                _currentCompilation ?? _projectStates[0].Compilation),
-        };
+            return targetKey;
+        }
+
+        var data = actualTarget
+            ? CreateActualTargetProjection(normalized, targetKey, sourceProjectKey)
+            : _canonicalizer.CreateMethod(normalized, actualTarget: false, sourceProjectKey) with
+            {
+                AsyncRole = AsyncSymbolClassifier.Classify(
+                    normalized,
+                    _currentCompilation ?? _projectStates[0].Compilation),
+            };
         EnsureType(normalized.ContainingType, sourceProjectKey);
         UpsertSymbol(data);
         return data.StableKey;
+    }
+
+    private SymbolData CreateActualTargetProjection(
+        IMethodSymbol definition,
+        string targetKey,
+        string? sourceProjectKey)
+    {
+        var definitionData = sourceProjectKey is not null &&
+                             TryGetSourceSymbolKey(sourceProjectKey, definition, out var definitionKey) &&
+                             _snapshot.Symbols.TryGetValue(definitionKey, out var sourceDefinition)
+            ? sourceDefinition
+            : _canonicalizer.CreateMethod(definition, actualTarget: false, sourceProjectKey) with
+            {
+                AsyncRole = AsyncSymbolClassifier.Classify(
+                    definition,
+                    _currentCompilation ?? _projectStates[0].Compilation),
+            };
+
+        return definitionData with
+        {
+            StableKey = targetKey,
+            SourceDocumentKey = null,
+            SourceStart = null,
+            SourceLength = null,
+            NormalizedSource = null,
+            NormalizedSourceHash = null,
+            IsGenerated = false,
+        };
     }
 
     private string EnsureType(INamedTypeSymbol type, string? sourceProjectKey = null)
