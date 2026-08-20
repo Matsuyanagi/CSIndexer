@@ -1226,10 +1226,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         CancellationToken cancellationToken)
     {
         var symbolInfo = model.GetSymbolInfo(expression, cancellationToken);
-        var candidates = symbolInfo.CandidateSymbols.OfType<IMethodSymbol>()
-            .Select(method => EnsureMethod(_canonicalizer.NormalizeLogicalMethod(method)))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var candidates = NormalizeCandidateKeys(
+            symbolInfo.CandidateSymbols.OfType<IMethodSymbol>(),
+            _canonicalizer.NormalizeLogicalMethod,
+            EnsureMethod);
         var ambiguous = candidates.Length > 0;
         _snapshot.Calls.Add(new CallData
         {
@@ -1249,6 +1249,15 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             CandidateSymbolKeys = candidates,
         });
     }
+
+    internal static string[] NormalizeCandidateKeys(
+        IEnumerable<IMethodSymbol> candidates,
+        Func<IMethodSymbol, IMethodSymbol> normalize,
+        Func<IMethodSymbol, string> keySelector) =>
+        candidates
+            .Select(candidate => keySelector(normalize(candidate)))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
     private static DeclarationRole GetDeclarationRole(
         IMethodSymbol method,

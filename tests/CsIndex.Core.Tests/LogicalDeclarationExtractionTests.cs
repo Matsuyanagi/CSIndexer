@@ -1,6 +1,8 @@
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -196,8 +198,8 @@ public sealed class LogicalDeclarationExtractionTests
         const string source = """
             public sealed class AmbiguousHost
             {
-                private static void Target(int first, object second) { }
-                private static void Target(object first, int second) { }
+                private static void Target<T>(T first, object second) { }
+                private static void Target<T>(object first, T second) { }
 
                 public void Run()
                 {
@@ -215,12 +217,83 @@ public sealed class LogicalDeclarationExtractionTests
         Assert.Equal(
             call.CandidateSymbolKeys.Count,
             call.CandidateSymbolKeys.Distinct(StringComparer.Ordinal).Count());
+        var expectedDefinitionKeys = snapshot.Symbols.Values
+            .Where(symbol =>
+                symbol.Kind == IndexedSymbolKind.Method &&
+                symbol.Name == "Target" &&
+                symbol.Arity == 1)
+            .Select(symbol => symbol.StableKey)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.Equal(2, expectedDefinitionKeys.Count);
+        Assert.True(expectedDefinitionKeys.SetEquals(call.CandidateSymbolKeys));
         Assert.All(call.CandidateSymbolKeys, key =>
         {
             Assert.DoesNotContain("|constructed:", key, StringComparison.Ordinal);
             Assert.DoesNotContain("|reduced:", key, StringComparison.Ordinal);
             Assert.True(snapshot.Symbols.ContainsKey(key));
         });
+    }
+
+    [Fact]
+    public void NormalizeCandidateKeys_CollapsesConstructedAndReducedSymbolsToOriginalDefinitions()
+    {
+        const string source = """
+            public static class Extensions
+            {
+                public static T Echo<T>(this T value) => value;
+            }
+
+            public sealed class Host
+            {
+                public static T Target<T>(T value) => value;
+
+                public void Run()
+                {
+                    var value = 1;
+                    _ = value.Echo();
+                }
+            }
+            """;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var tree = CSharpSyntaxTree.ParseText(source, cancellationToken: cancellationToken);
+        var compilation = CSharpCompilation.Create(
+            "CandidateNormalization",
+            [tree],
+            GetPlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var model = compilation.GetSemanticModel(tree);
+        var host = compilation.GetTypeByMetadataName("Host")!;
+        var targetDefinition = Assert.Single(host.GetMembers("Target").OfType<IMethodSymbol>());
+        var constructedTarget = targetDefinition.Construct(
+            compilation.GetSpecialType(SpecialType.System_Int32));
+        var extensionType = compilation.GetTypeByMetadataName("Extensions")!;
+        var extensionDefinition = Assert.Single(extensionType.GetMembers("Echo").OfType<IMethodSymbol>());
+        var invocation = Assert.Single(tree.GetRoot(cancellationToken)
+            .DescendantNodes().OfType<InvocationExpressionSyntax>());
+        var reducedExtension = Assert.IsAssignableFrom<IMethodSymbol>(
+            model.GetSymbolInfo(invocation, cancellationToken).Symbol);
+        Assert.NotNull(reducedExtension.ReducedFrom);
+
+        var canonicalizer = new SymbolCanonicalizer(new AnalysisProfileData
+        {
+            Name = "test",
+            InputMode = InputMode.Directory,
+            OperatingSystem = "Windows",
+            Architecture = "x64",
+            TargetFramework = "net10.0",
+            PreprocessorSymbols = [],
+            ProfileHash = [],
+        });
+        var candidates = SemanticExtractor.NormalizeCandidateKeys(
+            [constructedTarget, constructedTarget, reducedExtension],
+            canonicalizer.NormalizeLogicalMethod,
+            method => method.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+        var expected = new[] { targetDefinition, extensionDefinition }
+            .Select(method => method.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat))
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Equal(expected.Count, candidates.Length);
+        Assert.True(expected.SetEquals(candidates));
     }
 
     [Fact]
@@ -305,4 +378,10 @@ public sealed class LogicalDeclarationExtractionTests
             TestContext.Current.CancellationToken);
         return result.Snapshot;
     }
+
+    private static IReadOnlyList<MetadataReference> GetPlatformReferences() =>
+        ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))!
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        .Select(path => MetadataReference.CreateFromFile(path))
+        .ToArray();
 }

@@ -9,9 +9,14 @@ namespace CsIndex.Core.Tests;
 
 public sealed class SemanticExtractorCancellationTests
 {
-    [Fact]
-    public async Task ExtractAsync_ObservesCancellationDuringDeclarationFinalization()
+    [Theory]
+    [InlineData("Grouping")]
+    [InlineData("Projection")]
+    [InlineData("Consistency")]
+    public async Task ExtractAsync_ObservesCancellationDuringEachDeclarationFinalizationPhase(
+        string cancellationPhaseName)
     {
+        var cancellationPhase = Enum.Parse<DeclarationFinalizationPhase>(cancellationPhaseName);
         const string source = """
             public sealed class Host
             {
@@ -47,25 +52,43 @@ public sealed class SemanticExtractorCancellationTests
 
         using var cancellation = new CancellationTokenSource();
         var extractor = new SemanticExtractor(new ProjectFingerprintBuilder());
-        var observedPhase = (DeclarationFinalizationPhase?)null;
+        var observedPhases = new List<DeclarationFinalizationPhase>();
+        var cancellationRequested = false;
         extractor.AfterDeclarationFinalizationItem = phase =>
         {
-            if (phase == DeclarationFinalizationPhase.Projection)
+            if (cancellationRequested)
             {
-                observedPhase = phase;
+                throw new InvalidOperationException(
+                    "Finalization continued after the cancellation observer requested cancellation.");
+            }
+
+            observedPhases.Add(phase);
+            if (phase == cancellationPhase)
+            {
+                cancellationRequested = true;
                 cancellation.Cancel();
             }
         };
         var snapshot = CreateSnapshot(temporary.Path);
         var project = workspace.CurrentSolution.GetProject(projectId)!;
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() => extractor.ExtractAsync(
-            [project],
-            snapshot,
-            includeDiagnostics: true,
-            cancellation.Token));
+        Exception? extractionException = null;
+        try
+        {
+            await extractor.ExtractAsync(
+                [project],
+                snapshot,
+                includeDiagnostics: true,
+                cancellation.Token);
+        }
+        catch (Exception exception)
+        {
+            extractionException = exception;
+        }
 
-        Assert.Equal(DeclarationFinalizationPhase.Projection, observedPhase);
+        Assert.True(cancellationRequested);
+        Assert.IsType<OperationCanceledException>(extractionException);
+        Assert.Equal(1, observedPhases.Count(phase => phase == cancellationPhase));
     }
 
     [Fact]
