@@ -1,11 +1,29 @@
 using CsIndex.Core.Model;
+using CsIndex.Core.Input;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
 namespace CsIndex.Core.Symbols;
 
-public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
+public sealed class SymbolCanonicalizer
 {
+    private readonly AnalysisProfileData _profile;
+    private readonly Func<SyntaxTree, string>? _sourceTreePathLookup;
+
+    public SymbolCanonicalizer(AnalysisProfileData profile)
+        : this(profile, null)
+    {
+    }
+
+    internal SymbolCanonicalizer(
+        AnalysisProfileData profile,
+        Func<SyntaxTree, string>? sourceTreePathLookup)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        _profile = profile;
+        _sourceTreePathLookup = sourceTreePathLookup;
+    }
+
     private static readonly SymbolDisplayFormat TypeFormat = new(
         globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Omitted,
         typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
@@ -69,7 +87,7 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         var identity = documentationId ?? BuildFallbackIdentity(normalized);
         var assembly = normalized.ContainingAssembly?.Identity.Name ?? "source";
         var projectScope = projectKey is null ? string.Empty : $"|project:{projectKey}";
-        return $"profile:{profile.Name}|assembly:{assembly}{projectScope}|tfm:{profile.TargetFramework ?? "unknown"}|{identity}";
+        return $"profile:{_profile.Name}|assembly:{assembly}{projectScope}|tfm:{_profile.TargetFramework ?? "unknown"}|{identity}";
     }
 
     public string GetDeclarationKey(
@@ -126,7 +144,6 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
 
     public SymbolData CreateMethod(
         IMethodSymbol method,
-        bool actualTarget = false,
         string? projectKey = null,
         string? documentKey = null,
         int? sourceStart = null,
@@ -135,7 +152,6 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
         string? containingSymbolKey = null,
         SymbolPathData? containingPath = null)
     {
-        _ = actualTarget;
         var stableKey = GetDefinitionStableKey(NormalizeLogicalMethod(method), projectKey);
         var containingType = method.ContainingType;
         var methodSignature = SymbolSignatureCanonicalizer.CanonicalizeMethod(method);
@@ -532,12 +548,22 @@ public sealed class SymbolCanonicalizer(AnalysisProfileData profile)
             ? $"@{identifier}"
             : identifier;
 
-    private static string BuildFallbackIdentity(ISymbol symbol)
+    private string BuildFallbackIdentity(ISymbol symbol)
     {
         var location = symbol.Locations.FirstOrDefault(candidate => candidate.IsInSource);
-        var source = location is null
-            ? "metadata"
-            : $"{location.SourceTree?.FilePath}:{location.SourceSpan.Start}:{location.SourceSpan.Length}";
+        if (location is null)
+        {
+            return $"fallback:{symbol.Kind}:{symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}:metadata";
+        }
+
+        if (location.SourceTree is not { } sourceTree || _sourceTreePathLookup is null)
+        {
+            throw new InputResolutionException(
+                "An in-source symbol fallback was not present in the validated source-tree path map.");
+        }
+
+        var storedPath = _sourceTreePathLookup(sourceTree);
+        var source = $"{storedPath}:{location.SourceSpan.Start}:{location.SourceSpan.Length}";
         return $"fallback:{symbol.Kind}:{symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}:{source}";
     }
 

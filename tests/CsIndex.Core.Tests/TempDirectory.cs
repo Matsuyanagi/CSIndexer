@@ -18,6 +18,14 @@ internal sealed class TempDirectory : IDisposable
         return path;
     }
 
+    public string Copy(string relativePath, string sourcePath)
+    {
+        var path = System.IO.Path.Combine(Path, relativePath);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        File.Copy(sourcePath, path);
+        return path;
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(Path))

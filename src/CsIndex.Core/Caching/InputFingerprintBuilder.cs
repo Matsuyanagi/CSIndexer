@@ -20,33 +20,70 @@ public sealed class InputFingerprintBuilder
         ".cs", ".csproj", ".sln", ".slnx", ".props", ".targets", ".asmdef", ".asmref",
     };
 
+    internal Action? AfterFileFingerprintItem { get; set; }
+
     public async Task<byte[]> BuildAsync(
         ResolvedInput input,
         IndexOptions options,
         CancellationToken cancellationToken)
     {
-        var matcher = new GlobMatcher(options.Excludes);
-        var files = Directory.EnumerateFiles(input.RootPath, "*", SearchOption.AllDirectories)
-            .Where(path => !PathNormalizer.HasPathSegment(input.RootPath, path, "obj"))
-            .Where(path => Extensions.Contains(Path.GetExtension(path)) ||
-                           ConfigurationFileNames.Contains(Path.GetFileName(path)))
-            .Where(path => !matcher.IsMatch(Path.GetRelativePath(input.RootPath, path)))
-            .Concat(options.References.Where(File.Exists))
-            .Concat(options.DefineFiles.Where(File.Exists))
-            .Select(PathNormalizer.Normalize)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var paths = IndexPathResolver.CreateForIndex(
+            Path.Combine(input.RootPath, ".csindex", "index.sqlite"),
+            input.RootPath);
+        return await BuildAsync(input, options, paths, cancellationToken);
+    }
 
-        using var aggregate = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    public async Task<byte[]> BuildAsync(
+        ResolvedInput input,
+        IndexOptions options,
+        IndexPathResolver paths,
+        CancellationToken cancellationToken)
+    {
+        var matcher = new GlobMatcher(options.Excludes);
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in Directory.EnumerateFiles(input.RootPath, "*", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!PathNormalizer.HasPathSegment(input.RootPath, path, "obj") &&
+                (Extensions.Contains(Path.GetExtension(path)) ||
+                 ConfigurationFileNames.Contains(Path.GetFileName(path))) &&
+                !matcher.IsMatch(Path.GetRelativePath(input.RootPath, path)))
+            {
+                files.Add(PathNormalizer.NormalizeAbsolute(path));
+            }
+        }
+
+        foreach (var path in options.References.Concat(options.DefineFiles).Where(File.Exists))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            files.Add(PathNormalizer.NormalizeAbsolute(path));
+        }
+
+        var fingerprintItems = new List<FingerprintItem>(files.Count);
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relative = Path.GetRelativePath(input.RootPath, file).Replace('\\', '/');
-            aggregate.AppendData(Encoding.UTF8.GetBytes(relative.ToUpperInvariant()));
-            aggregate.AppendData(await HashUtilities.HashFileAsync(file, cancellationToken));
+            var identity = PathNormalizer.SameVolumeShare(paths.EffectiveBaseDirectory, file)
+                ? paths.ToStoredPath(file)
+                : $"external:{Path.GetFileName(file)}";
+            var contentHash = await HashUtilities.HashFileAsync(file, cancellationToken);
+            fingerprintItems.Add(new FingerprintItem(identity, contentHash));
+            AfterFileFingerprintItem?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        using var aggregate = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var item in fingerprintItems
+                     .OrderBy(item => item.Identity, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(item => Convert.ToHexString(item.ContentHash), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            aggregate.AppendData(Encoding.UTF8.GetBytes(item.Identity.ToUpperInvariant()));
+            aggregate.AppendData(item.ContentHash);
         }
 
         return aggregate.GetHashAndReset();
     }
+
+    private sealed record FingerprintItem(string Identity, byte[] ContentHash);
 }

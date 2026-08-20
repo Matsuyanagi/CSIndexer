@@ -763,7 +763,7 @@ public sealed class SymbolSignatureCanonicalizerTests
             Architecture = "x64",
             PreprocessorSymbols = [],
             ProfileHash = [],
-        }).CreateMethod(method, actualTarget: false);
+        }).CreateMethod(method);
 
         Assert.Equal("System::Int32", signature.ConversionTargetType?.IdentityKey);
         Assert.Equal("int", signature.ConversionTargetType?.DisplayText);

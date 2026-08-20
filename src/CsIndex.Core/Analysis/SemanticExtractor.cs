@@ -40,8 +40,45 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         bool includeDiagnostics,
         CancellationToken cancellationToken)
     {
+        var storageRoot = PathNormalizer.NormalizeAbsolute(snapshot.InputRoot);
+        var paths = IndexPathResolver.CreateForIndex(
+            Path.Combine(storageRoot, ".csindex", "index.sqlite"),
+            storageRoot);
+        var mappings = await AnalysisPathMappings.CreateAsync(
+            storageRoot,
+            paths,
+            projects,
+            cancellationToken);
+        snapshot.InputRoot = ".";
+        snapshot.IndexRootAnchor = paths.IndexRootAnchor;
+        await ExtractAsync(projects, mappings, snapshot, includeDiagnostics, cancellationToken);
+    }
+
+    public Task ExtractAsync(
+        PreparedAnalysis prepared,
+        IndexSnapshot snapshot,
+        bool includeDiagnostics,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(prepared);
+        prepared.ThrowIfDisposed();
+        return ExtractAsync(
+            prepared.Projects,
+            prepared.Mappings,
+            snapshot,
+            includeDiagnostics,
+            cancellationToken);
+    }
+
+    private async Task ExtractAsync(
+        IReadOnlyList<Project> projects,
+        AnalysisPathMappings mappings,
+        IndexSnapshot snapshot,
+        bool includeDiagnostics,
+        CancellationToken cancellationToken)
+    {
         _snapshot = snapshot;
-        _canonicalizer = new SymbolCanonicalizer(snapshot.Profile);
+        _canonicalizer = new SymbolCanonicalizer(snapshot.Profile, mappings.GetSourceTreePath);
         _projectStates.Clear();
         _sourceSymbolKeys.Clear();
         _sourceTreeProjectKeys.Clear();
@@ -79,17 +116,20 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 snapshot.Warnings.Add($"{project.Name}: compilation contains {errors} error(s); partial results were indexed.");
             }
 
-            var projectKey = project.FilePath is null
-                ? $"directory:{project.Name}"
-                : PathNormalizer.Normalize(project.FilePath);
+            var projectPath = mappings.GetProjectPath(project);
+            var projectKey = mappings.GetProjectKey(project);
             var projectData = new ProjectData
             {
                 Key = projectKey,
                 Name = project.Name,
                 AssemblyName = project.AssemblyName,
-                ProjectPath = project.FilePath is null ? null : PathNormalizer.Normalize(project.FilePath),
+                ProjectPath = projectPath,
                 TargetFramework = snapshot.Profile.TargetFramework,
-                Fingerprint = await projectFingerprintBuilder.BuildAsync(project, cancellationToken),
+                Fingerprint = await projectFingerprintBuilder.BuildAsync(
+                    project,
+                    projectPath,
+                    mappings,
+                    cancellationToken),
             };
             snapshot.Projects.Add(projectData);
             var state = new ProjectAnalysisState
@@ -101,7 +141,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     diagnostic.Id is "CS0012" or "CS0234" or "CS0246"),
             };
             _projectStates.Add(state);
-            await ExtractProjectDocumentsAndDeclarationsAsync(state, cancellationToken);
+            await ExtractProjectDocumentsAndDeclarationsAsync(state, mappings, cancellationToken);
         }
 
         foreach (var state in _projectStates)
@@ -115,15 +155,18 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private async Task ExtractProjectDocumentsAndDeclarationsAsync(
         ProjectAnalysisState projectState,
+        AnalysisPathMappings mappings,
         CancellationToken cancellationToken)
     {
         _currentCompilation = projectState.Compilation;
         _currentProjectState = projectState;
         var projectRoot = projectState.Project.FilePath is null
-            ? _snapshot.InputRoot
+            ? mappings.RuntimeStorageRoot
             : Path.GetDirectoryName(projectState.Project.FilePath)!;
         foreach (var document in projectState.Project.Documents
-                     .OrderBy(document => document.FilePath ?? document.Name, StringComparer.OrdinalIgnoreCase))
+                     .OrderBy(
+                         document => document.FilePath is null ? document.Name : mappings.GetDocumentPath(document),
+                         StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (document.FilePath is null || !File.Exists(document.FilePath) ||
@@ -134,11 +177,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
-            var path = PathNormalizer.Normalize(document.FilePath);
+            var path = mappings.GetDocumentPath(document);
             var text = await document.GetTextAsync(cancellationToken);
             var generated = GeneratedCodeDetector.Detect(path, text);
             var contentHash = HashUtilities.Sha256(text.ToString());
-            var documentKey = $"{projectState.Data.Key}|{path}";
+            var documentKey = $"{projectState.Data.Key}|document:{path}";
             var documentData = new DocumentData
             {
                 Key = documentKey,
@@ -186,7 +229,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 var normalizedSource = SourceNormalizer.Normalize(methodNode, cancellationToken);
                 var data = _canonicalizer.CreateMethod(
                     method.OriginalDefinition,
-                    actualTarget: false,
                     projectState.Data.Key,
                     documentKey,
                     methodNode.SpanStart,
@@ -224,7 +266,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 var normalizedSource = SourceNormalizer.Normalize(accessorNode, cancellationToken);
                 var data = _canonicalizer.CreateMethod(
                     method.OriginalDefinition,
-                    actualTarget: false,
                     projectState.Data.Key,
                     documentKey,
                     accessorNode.SpanStart,
@@ -736,7 +777,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             var sourceLength = parameterList.Span.End - sourceStart;
             var data = _canonicalizer.CreateMethod(
                 constructor.OriginalDefinition,
-                actualTarget: false,
                 projectKey,
                 documentState.Data.Key,
                 sourceStart,
@@ -895,7 +935,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             var normalizedSource = SourceNormalizer.Normalize(member, cancellationToken);
             var data = _canonicalizer.CreateMethod(
                 getter.OriginalDefinition,
-                actualTarget: false,
                 projectKey,
                 documentState.Data.Key,
                 member.SpanStart,
@@ -1049,7 +1088,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         var normalizedSource = SourceNormalizer.Normalize(localFunction, cancellationToken);
         var data = _canonicalizer.CreateMethod(
             method,
-            actualTarget: false,
             projectKey,
             documentState.Data.Key,
             localFunction.SpanStart,
@@ -1464,7 +1502,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return logicalKey;
         }
 
-        var data = _canonicalizer.CreateMethod(normalized, actualTarget: false, sourceProjectKey) with
+        var data = _canonicalizer.CreateMethod(normalized, sourceProjectKey) with
         {
             AsyncRole = AsyncSymbolClassifier.Classify(
                 normalized,
