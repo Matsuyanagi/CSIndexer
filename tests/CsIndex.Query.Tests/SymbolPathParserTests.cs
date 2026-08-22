@@ -1,3 +1,4 @@
+using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
 using CsIndex.Query.Symbols;
 using Microsoft.CodeAnalysis;
@@ -534,6 +535,225 @@ public sealed class SymbolPathParserTests
         Assert.Equal(1, Assert.IsType<LambdaExecutableSegmentSelector>(segments[3]).Ordinal);
         Assert.Null(Assert.IsType<LambdaExecutableSegmentSelector>(segments[4]).Ordinal);
         Assert.IsType<TopLevelStatementsExecutableSegmentSelector>(segments[5]);
+    }
+
+    [Fact]
+    public void Parse_RoundTripsNestedGenericCallableAcrossAllStylesAndShortModes()
+    {
+        var path = new SymbolPathData(
+            "Game.Core",
+            "Outer<T>.Inner<U>",
+            "Outer`1.Inner`1",
+            "Run<V>(ref int,out string,in System.Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>",
+            "Run`1(ref int,out string,in System.Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>",
+            "<lambda#1>",
+            "<lambda#1>",
+            CallablePathSegmentKind.Lambda);
+        var formatter = new SymbolPathFormatter();
+
+        foreach (var style in Enum.GetValues<SymbolPathStyle>())
+        {
+            foreach (var shortNames in new[] { false, true })
+            {
+                var text = formatter.Format(path, new(style, shortNames));
+                var selector = SymbolPathParser.Parse(text);
+
+                Assert.Equal(style, selector.Style);
+                if (style == SymbolPathStyle.Explicit && shortNames)
+                {
+                    Assert.Equal(["**"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
+                }
+                else if (style == SymbolPathStyle.Explicit)
+                {
+                    Assert.Equal(["Game", "Core"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
+                }
+                else
+                {
+                    Assert.Null(selector.Namespace);
+                }
+
+                IReadOnlyList<string> expectedType = style == SymbolPathStyle.CSharp && !shortNames
+                    ? ["Game", "Core", "Outer", "Inner"]
+                    : ["Outer", "Inner"];
+                Assert.Equal(expectedType, selector.Type.Segments.Select(segment => segment.IdentifierPattern));
+                Assert.Equal([1, 1], selector.Type.Segments.TakeLast(2).Select(segment => segment.GenericArity));
+
+                var method = Assert.IsType<NamedExecutableSegmentSelector>(selector.ExecutableSegments[0]);
+                Assert.Equal("Run", method.IdentifierPattern);
+                Assert.Equal(GenericListState.Present, method.Arity.GenericState);
+                Assert.Equal(["V"], method.Arity.GenericPlaceholders);
+                Assert.Equal(ParameterListState.Present, method.Arity.ParameterState);
+                Assert.Equal(
+                    ["int", "string", "System.Guid", "bool", "T", "U", "V"],
+                    method.Arity.Parameters.Select(parameter => parameter.SyntaxText));
+                Assert.Equal(
+                    [(int)RefKind.Ref, (int)RefKind.Out, (int)RefKind.In, (int)RefKind.RefReadOnlyParameter,
+                     (int)RefKind.None, (int)RefKind.None, (int)RefKind.None],
+                    method.Arity.ParameterRefKinds);
+                Assert.Equal(
+                    new(CanonicalGenericPlaceholderScope.Type, 0),
+                    method.Arity.Parameters[4].GenericPlaceholders["T"]);
+                Assert.Equal(
+                    new(CanonicalGenericPlaceholderScope.Type, 1),
+                    method.Arity.Parameters[5].GenericPlaceholders["U"]);
+                Assert.Equal(
+                    new(CanonicalGenericPlaceholderScope.Method, 0),
+                    method.Arity.Parameters[6].GenericPlaceholders["V"]);
+
+                var local = Assert.IsType<NamedExecutableSegmentSelector>(selector.ExecutableSegments[1]);
+                Assert.Equal("Local", local.IdentifierPattern);
+                Assert.Equal(ParameterListState.Present, local.Arity.ParameterState);
+                Assert.Equal(["string"], local.Arity.Parameters.Select(parameter => parameter.SyntaxText));
+                Assert.Equal(1, Assert.IsType<LambdaExecutableSegmentSelector>(selector.ExecutableSegments[2]).Ordinal);
+            }
+        }
+    }
+
+    [Fact]
+    public void Parse_RoundTripsEveryConcreteSpecialAndSyntheticCallableCategory()
+    {
+        var cases = new (string Text, Action<ExecutableSegmentSelector> AssertSegment)[]
+        {
+            ("[constructor](int,string)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("constructor", special.Tag);
+                Assert.Equal(ParameterListState.Present, special.Arity.ParameterState);
+                Assert.Equal(["int", "string"], special.Arity.Parameters.Select(parameter => parameter.SyntaxText));
+            }),
+            ("[static-constructor]()", segment => Assert.Equal(
+                "static-constructor",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Tag)),
+            ("[destructor]()", segment => Assert.Equal(
+                "destructor",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Tag)),
+            ("[operator:*](Game.Number*,Game.Number)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("operator", special.Tag);
+                Assert.Equal("*", special.OperatorToken);
+                Assert.Equal("Game.Number*", special.Arity.Parameters[0].SyntaxText);
+            }),
+            ("[checked-operator:+](Game.Number,Game.Number)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("checked-operator", special.Tag);
+                Assert.Equal("+", special.OperatorToken);
+            }),
+            ("[conversion:implicit:int](Game.Number)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("conversion", special.Tag);
+                Assert.Equal("implicit", special.ConversionKind);
+                Assert.Equal("int", special.ConversionTarget!.SyntaxText);
+            }),
+            ("[conversion:explicit:System.Guid](Game.Number)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("conversion", special.Tag);
+                Assert.Equal("explicit", special.ConversionKind);
+                Assert.Equal("System.Guid", special.ConversionTarget!.SyntaxText);
+            }),
+            ("[checked-conversion:explicit:System.Guid](Game.Number)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("checked-conversion", special.Tag);
+                Assert.Equal("explicit", special.ConversionKind);
+                Assert.Equal("System.Guid", special.ConversionTarget!.SyntaxText);
+            }),
+            ("[get:Name]()", segment => Assert.Equal(
+                "Name",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Member!.MemberPattern)),
+            ("[set:Name](string)", segment => Assert.Equal(
+                "Name",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Member!.MemberPattern)),
+            ("[init:Name](string)", segment => Assert.Equal(
+                "Name",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Member!.MemberPattern)),
+            ("[add:Changed](System.EventHandler)", segment => Assert.Equal(
+                "Changed",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Member!.MemberPattern)),
+            ("[remove:Changed](System.EventHandler)", segment => Assert.Equal(
+                "Changed",
+                Assert.IsType<SpecialExecutableSegmentSelector>(segment).Member!.MemberPattern)),
+            ("[explicit:System.IDisposable.Dispose]()", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("explicit", special.Tag);
+                Assert.Equal("System.IDisposable", special.Member!.ContainingTypePattern);
+                Assert.Equal("Dispose", special.Member.MemberPattern);
+            }),
+            ("[get:Game.Contracts.IPlayer.Name]()", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal("Game.Contracts.IPlayer", special.Member!.ContainingTypePattern);
+                Assert.Equal("Name", special.Member.MemberPattern);
+            }),
+            ("[explicit:Game.Contracts.IMapper.Map]<T>(T)", segment =>
+            {
+                var special = Assert.IsType<SpecialExecutableSegmentSelector>(segment);
+                Assert.Equal(["T"], special.Arity.GenericPlaceholders);
+                Assert.Equal("Map", special.Member!.MemberPattern);
+                Assert.Equal("T", special.Arity.Parameters.Single().SyntaxText);
+            }),
+            ("<initializer:member>.<lambda#1>", segment =>
+            {
+                var initializer = Assert.IsType<InitializerExecutableSegmentSelector>(segment);
+                Assert.Equal("member", initializer.MemberPattern);
+            }),
+            ("<anonymous-method#2>", segment => Assert.Equal(
+                2,
+                Assert.IsType<AnonymousMethodExecutableSegmentSelector>(segment).Ordinal)),
+            ("<top-level-statements>", segment => Assert.IsType<TopLevelStatementsExecutableSegmentSelector>(segment)),
+        };
+        var formatter = new SymbolPathFormatter();
+
+        foreach (var style in Enum.GetValues<SymbolPathStyle>())
+        {
+            foreach (var shortNames in new[] { false, true })
+            {
+                foreach (var (executable, assertSegment) in cases)
+                {
+                    var path = new SymbolPathData(
+                        "Game.Core",
+                        "Outer<T>.Inner<U>",
+                        "Outer`1.Inner`1",
+                        executable,
+                        executable,
+                        executable,
+                        executable,
+                        CallablePathSegmentKind.Named);
+                    var selector = SymbolPathParser.Parse(formatter.Format(path, new(style, shortNames)));
+                    Assert.Equal(style, selector.Style);
+                    if (style == SymbolPathStyle.Explicit && shortNames)
+                    {
+                        Assert.Equal(["**"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
+                        Assert.Equal(PatternMode.Glob, selector.Namespace.Segments.Single().PatternMode);
+                    }
+                    else if (style == SymbolPathStyle.Explicit)
+                    {
+                        Assert.Equal(["Game", "Core"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
+                    }
+                    else
+                    {
+                        Assert.Null(selector.Namespace);
+                    }
+
+                    IReadOnlyList<string> expectedType = style == SymbolPathStyle.CSharp && !shortNames
+                        ? ["Game", "Core", "Outer", "Inner"]
+                        : ["Outer", "Inner"];
+                    Assert.Equal(expectedType, selector.Type.Segments.Select(segment => segment.IdentifierPattern));
+                    Assert.Equal([1, 1], selector.Type.Segments.TakeLast(2).Select(segment => segment.GenericArity));
+                    Assert.NotEmpty(selector.ExecutableSegments);
+                    assertSegment(selector.ExecutableSegments[0]);
+                    if (executable == "<initializer:member>.<lambda#1>")
+                    {
+                        Assert.Equal(2, selector.ExecutableSegments.Count);
+                        Assert.Equal(1, Assert.IsType<LambdaExecutableSegmentSelector>(selector.ExecutableSegments[1]).Ordinal);
+                    }
+                }
+            }
+        }
     }
 
     [Fact]

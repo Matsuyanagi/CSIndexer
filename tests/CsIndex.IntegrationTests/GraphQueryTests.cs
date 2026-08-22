@@ -883,13 +883,13 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         {
             new CallerTreeEdge(left.Id, root.Id),
             new CallerTreeEdge(right.Id, root.Id),
-            new CallerTreeEdge(left.Id, right.Id),
             new CallerTreeEdge(right.Id, left.Id),
+            new CallerTreeEdge(left.Id, right.Id),
         };
         var symbolIds = result.Nodes.ToDictionary(node => node.Symbol.DisplayName, node => node.Symbol.Id, StringComparer.Ordinal);
         var formatter = new GraphOutputFormatter(shortNames: false);
 
-        Assert.Equal(expected.OrderBy(EdgeKey), result.Edges.OrderBy(EdgeKey));
+        Assert.Equal(expected, result.Edges);
 
         var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree", cancellationToken));
         Assert.Equal(expected.OrderBy(EdgeKey), ParseTreeEdges(tree, symbolIds).OrderBy(EdgeKey));

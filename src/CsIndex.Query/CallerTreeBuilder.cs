@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using CsIndex.Core.Model;
+using CsIndex.Query.Symbols;
 using CsIndex.Storage;
 
 [assembly: InternalsVisibleTo("CsIndex.Query.Tests")]
@@ -159,7 +160,11 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
             currentFrontier = nextFrontier;
         }
 
-        return new CallerTreeResult(profile, root, nodes, edges, truncated);
+        var orderedEdges = SymbolCanonicalComparer.OrderCallerTreeEdges(
+            edges,
+            nodesById,
+            cancellationToken);
+        return new CallerTreeResult(profile, root, nodes, orderedEdges, truncated);
     }
 
     internal static IReadOnlyList<StoredSymbol> OrderCallers(
@@ -167,54 +172,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         CancellationToken cancellationToken,
         Action? afterOrderingComparison = null)
     {
-        ArgumentNullException.ThrowIfNull(callers);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var ordered = new List<StoredSymbol>();
-        foreach (var caller in callers)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            ordered.Add(caller);
-        }
-
-        try
-        {
-            ordered.Sort((left, right) =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var result = CompareCallers(left, right);
-                afterOrderingComparison?.Invoke();
-                cancellationToken.ThrowIfCancellationRequested();
-                return result;
-            });
-        }
-        catch (InvalidOperationException exception) when (
-            exception.InnerException is OperationCanceledException && cancellationToken.IsCancellationRequested)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            throw;
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return ordered;
-    }
-
-    private static int CompareCallers(StoredSymbol left, StoredSymbol right)
-    {
-        var result = StringComparer.Ordinal.Compare(left.DisplayName, right.DisplayName);
-        if (result != 0)
-        {
-            return result;
-        }
-
-        result = StringComparer.Ordinal.Compare(left.DocumentPath ?? string.Empty, right.DocumentPath ?? string.Empty);
-        if (result != 0)
-        {
-            return result;
-        }
-
-        result = (left.SourceStart ?? -1).CompareTo(right.SourceStart ?? -1);
-        return result != 0 ? result : left.Id.CompareTo(right.Id);
+        return SymbolCanonicalComparer.OrderSymbols(callers, cancellationToken, afterOrderingComparison);
     }
 
     private static bool TargetsCallee(StoredCall call, long calleeId) =>

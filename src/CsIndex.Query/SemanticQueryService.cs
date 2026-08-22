@@ -68,6 +68,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 includeOverrides,
                 filter,
                 cancellationToken);
+            lambdaTargets = SymbolCanonicalComparer.OrderSymbols(lambdaTargets, cancellationToken);
             return await AttachPreferredSourceIfRequestedAsync(
                 new QueryContext(profile, lambdaTargets),
                 includeSourceText,
@@ -89,6 +90,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 includeOverrides,
                 filter,
                 cancellationToken);
+            methodTargets = SymbolCanonicalComparer.OrderSymbols(methodTargets, cancellationToken);
             return await AttachPreferredSourceIfRequestedAsync(
                 new QueryContext(profile, methodTargets),
                 includeSourceText,
@@ -114,8 +116,9 @@ public sealed class SemanticQueryService(QueryRepository repository)
             }
         }
 
+        var orderedMatches = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
         return await AttachPreferredSourceIfRequestedAsync(
-            new QueryContext(profile, matches),
+            new QueryContext(profile, orderedMatches),
             includeSourceText,
             cancellationToken);
     }
@@ -318,7 +321,9 @@ public sealed class SemanticQueryService(QueryRepository repository)
             asyncStatus,
             asyncInvolved,
             cancellationToken);
-        return new QueryContext(profile, symbols);
+        return new QueryContext(
+            profile,
+            SymbolCanonicalComparer.OrderSymbols(symbols, cancellationToken));
     }
 
     public Task<DefinitionResult> FindDefinitionsAsync(
@@ -447,7 +452,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
             CallerScope.Direct,
             [],
             cancellationToken);
-        return new CallResult(context, calls, hydration.EffectiveCallers, [], hydration.SymbolsById);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        return new CallResult(context, orderedCalls, hydration.EffectiveCallers, [], hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCallersAsync(
@@ -514,11 +523,19 @@ public sealed class SemanticQueryService(QueryRepository repository)
             callerScope,
             possibleTargets,
             cancellationToken);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        var orderedTargets = SymbolCanonicalComparer.OrderRelations(
+            possibleTargets,
+            hydration.SymbolsById,
+            cancellationToken);
         return new CallResult(
             context,
-            calls,
+            orderedCalls,
             hydration.EffectiveCallers,
-            possibleTargets,
+            orderedTargets,
             hydration.SymbolsById);
     }
 
@@ -572,7 +589,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
             CallerScope.Direct,
             [],
             cancellationToken);
-        return new CallResult(context, calls, [], [], hydration.SymbolsById);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        return new CallResult(context, orderedCalls, [], [], hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCalleesAsync(
@@ -614,7 +635,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
             context.Profile.Id,
             relations,
             cancellationToken);
-        return new RelationResult(context, relations, symbolsById);
+        var orderedRelations = SymbolCanonicalComparer.OrderRelations(
+            relations,
+            symbolsById,
+            cancellationToken);
+        return new RelationResult(context, orderedRelations, symbolsById);
     }
 
     public async Task<ConditionsResult> GetConditionsAsync(
@@ -679,10 +704,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 .Concat(calls.Select(call => call.CallerContainingSymbolId ?? call.CallerSymbolId)),
             _ => throw new ArgumentOutOfRangeException(nameof(callerScope)),
         };
-        var effectiveCallers = effectiveCallerIds
-            .Distinct()
-            .Select(id => symbolsById[id])
-            .ToArray();
+        var effectiveCallers = SymbolCanonicalComparer.OrderSymbols(
+            effectiveCallerIds
+                .Distinct()
+                .Select(id => symbolsById[id]),
+            cancellationToken);
         return (effectiveCallers, symbolsById);
     }
 
@@ -765,7 +791,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return new QueryContext(profile, matches, request.ShowSource);
+        return new QueryContext(
+            profile,
+            SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken),
+            request.ShowSource);
     }
 
     private static bool CanUseExactSearch(SymbolSearchRequest request) =>
@@ -805,7 +834,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
             context.MatchedSymbols,
             includeSourceText: true,
             cancellationToken);
-        return context with { MatchedSymbols = symbols };
+        return context with
+        {
+            MatchedSymbols = SymbolCanonicalComparer.OrderSymbols(symbols, cancellationToken),
+        };
     }
 
     private Task<QueryContext> AttachPreferredSourceIfRequestedAsync(
@@ -870,7 +902,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return matches;
+        return SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
     }
 
     private static void ValidateSearchRequest(SymbolSearchRequest request)
@@ -900,20 +932,21 @@ public sealed class SemanticQueryService(QueryRepository repository)
             includeOverrides: false,
             filter,
             cancellationToken);
-        if (matches.Count == 0)
+        var orderedMatches = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
+        if (orderedMatches.Count == 0)
         {
             throw new SymbolQueryParseException(
                 $"No source-backed executable matches graph query: {queryText}");
         }
 
-        if (matches.Count > 1)
+        if (orderedMatches.Count > 1)
         {
             throw new SymbolQueryParseException(
                 $"Graph query is ambiguous for '{queryText}'. Candidates: " +
-                DescribeAmbiguousGraphRootCandidates(matches, cancellationToken));
+                DescribeAmbiguousGraphRootCandidates(orderedMatches, cancellationToken));
         }
 
-        return (profile, matches[0]);
+        return (profile, orderedMatches[0]);
     }
 
     private static string DescribeAmbiguousGraphRootCandidates(
@@ -997,6 +1030,9 @@ public sealed class SemanticQueryService(QueryRepository repository)
             }
         }
 
-        return metadataContext with { MatchedSymbols = matches };
+        return metadataContext with
+        {
+            MatchedSymbols = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken),
+        };
     }
 }

@@ -17,6 +17,89 @@ public sealed class SymbolPathFormatterTests
         SegmentIdentity: "<lambda#1>",
         SegmentKind: CallablePathSegmentKind.Lambda);
 
+    [Fact]
+    public void Format_UsesExactNestedGenericAndLocalLambdaExamples()
+    {
+        var path = new SymbolPathData(
+            NamespacePath: "Game.Core",
+            TypeDisplayPath: "Player.Inventory",
+            TypeIdentityPath: "Player.Inventory",
+            ExecutableDisplayPath: "Load(int).Validate().<lambda#1>",
+            ExecutableIdentityPath: "Load(int).Validate().<lambda#1>",
+            SegmentDisplay: "<lambda#1>",
+            SegmentIdentity: "<lambda#1>",
+            SegmentKind: CallablePathSegmentKind.Lambda);
+        var guidPath = path with
+        {
+            ExecutableDisplayPath = "Load(System.Guid)",
+            ExecutableIdentityPath = "Load(System.Guid)",
+            SegmentDisplay = "Load(System.Guid)",
+            SegmentIdentity = "Load(System.Guid)",
+            SegmentKind = CallablePathSegmentKind.Named,
+        };
+        var formatter = new SymbolPathFormatter();
+
+        Assert.Equal(
+            "Game.Core.Player.Inventory::Load(int).Validate().<lambda#1>",
+            formatter.Format(path, new(SymbolPathStyle.CSharp)));
+        Assert.Equal(
+            "Game.Core::Player.Inventory::Load(int).Validate().<lambda#1>",
+            formatter.Format(path, new(SymbolPathStyle.Explicit)));
+        Assert.Equal(
+            "Player.Inventory::Load(System.Guid)",
+            formatter.Format(guidPath, new(SymbolPathStyle.CSharp, ShortNames: true)));
+        Assert.Equal(
+            "**::Player.Inventory::Load(System.Guid)",
+            formatter.Format(guidPath, new(SymbolPathStyle.Explicit, ShortNames: true)));
+    }
+
+    [Fact]
+    public void Format_CoversEveryConcreteCallableCategoryWithCanonicalPayloads()
+    {
+        var cases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["[constructor](int,string)"] = "[constructor](int,string)",
+            ["[static-constructor]()"] = "[static-constructor]()",
+            ["[destructor]()"] = "[destructor]()",
+            ["[operator:+](Game.Number,Game.Number)"] = "[operator:+](Game.Number,Game.Number)",
+            ["[checked-operator:+](Game.Number,Game.Number)"] = "[checked-operator:+](Game.Number,Game.Number)",
+            ["[operator:*](Game.Number*,Game.Number)"] = "[operator:*](Game.Number*,Game.Number)",
+            ["[conversion:implicit:int](Game.Number)"] = "[conversion:implicit:int](Game.Number)",
+            ["[conversion:explicit:System.Guid](Game.Number)"] = "[conversion:explicit:System.Guid](Game.Number)",
+            ["[checked-conversion:explicit:int](Game.Number)"] = "[checked-conversion:explicit:int](Game.Number)",
+            ["[get:Name]()"] = "[get:Name]()",
+            ["[set:Name](string)"] = "[set:Name](string)",
+            ["[init:Name](string)"] = "[init:Name](string)",
+            ["[add:Changed](System.EventHandler)"] = "[add:Changed](System.EventHandler)",
+            ["[remove:Changed](System.EventHandler)"] = "[remove:Changed](System.EventHandler)",
+            ["[explicit:System.IDisposable.Dispose]()"] = "[explicit:System.IDisposable.Dispose]()",
+            ["[get:Game.Contracts.IPlayer.Name]()"] = "[get:Game.Contracts.IPlayer.Name]()",
+            ["[set:Game.Contracts.IPlayer.Name](string)"] = "[set:Game.Contracts.IPlayer.Name](string)",
+            ["[explicit:Game.Contracts.IMapper.Map]<T>(T)"] = "[explicit:Game.Contracts.IMapper.Map]<T>(T)",
+            ["Run(int).Local(string).<lambda#1>"] = "Run(int).Local(string).<lambda#1>",
+            ["<initializer:member>.<lambda#1>"] = "<initializer:member>.<lambda#1>",
+            ["<anonymous-method#1>"] = "<anonymous-method#1>",
+            ["<top-level-statements>"] = "<top-level-statements>",
+        };
+        var formatter = new SymbolPathFormatter();
+
+        foreach (var (executable, expectedExecutable) in cases)
+        {
+            var path = new SymbolPathData(
+                "Game.Core",
+                "Player.Inventory",
+                "Player.Inventory",
+                executable,
+                executable,
+                executable,
+                executable,
+                CallablePathSegmentKind.Named);
+            Assert.Equal(
+                $"Game.Core.Player.Inventory::{expectedExecutable}",
+                formatter.Format(path, new(SymbolPathStyle.CSharp)));
+        }
+    }
+
     [Theory]
     [InlineData(SymbolPathStyle.CSharp, false, "Game.Core.Outer<T>.Inner<U>::Run(System.Guid).<lambda#1>")]
     [InlineData(SymbolPathStyle.CSharp, true, "Outer<T>.Inner<U>::Run(System.Guid).<lambda#1>")]
