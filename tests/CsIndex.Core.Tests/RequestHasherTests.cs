@@ -8,7 +8,7 @@ namespace CsIndex.Core.Tests;
 public sealed class RequestHasherTests
 {
     [Fact]
-    public void Build_UsesAnalysisCacheVersionTwoWithoutChangingSchemaVersion()
+    public void Build_UsesSchemaFiveAndAnalysisCacheVersionThree()
     {
         var input = new ResolvedInput(
             InputMode.Directory,
@@ -27,20 +27,23 @@ public sealed class RequestHasherTests
         };
 
         const string currentPayload =
-            """{"ToolVersion":"0.1.0","SchemaVersion":4,"AnalysisCacheVersion":2,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
+            """{"ToolVersion":"0.1.0","SchemaVersion":5,"AnalysisCacheVersion":3,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
         const string previousPayload =
-            """{"ToolVersion":"0.1.0","SchemaVersion":4,"AnalysisCacheVersion":1,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
+            """{"ToolVersion":"0.1.0","SchemaVersion":5,"AnalysisCacheVersion":2,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
+        const string previousSchemaPayload =
+            """{"ToolVersion":"0.1.0","SchemaVersion":4,"AnalysisCacheVersion":3,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
 
         var actual = RequestHasher.Build(input, options);
 
-        Assert.Equal(4, RequestHasher.SchemaVersion);
+        Assert.Equal(5, RequestHasher.SchemaVersion);
         Assert.NotEqual(HashUtilities.Sha256(previousPayload), HashUtilities.Sha256(currentPayload));
+        Assert.NotEqual(HashUtilities.Sha256(previousSchemaPayload), HashUtilities.Sha256(currentPayload));
         Assert.Equal(HashUtilities.Sha256(currentPayload), actual);
 
         var versionField = typeof(RequestHasher).GetField(
             "AnalysisCacheVersion",
             BindingFlags.Public | BindingFlags.Static);
         Assert.NotNull(versionField);
-        Assert.Equal(2, (int)versionField!.GetRawConstantValue()!);
+        Assert.Equal(3, (int)versionField!.GetRawConstantValue()!);
     }
 }

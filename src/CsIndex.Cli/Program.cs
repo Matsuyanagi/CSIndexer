@@ -11,6 +11,9 @@ namespace CsIndex.Cli;
 
 internal static class Program
 {
+    // Internal Task 5 seam proving prepared-analysis lifetime on cache and failure paths.
+    internal static Action<PreparedAnalysis>? PreparedAnalysisObserver { get; set; }
+
     private static readonly string[] IndexOptions =
     [
         "db", "mode", "solution", "configuration", "framework", "target-framework", "runtime",
@@ -203,15 +206,22 @@ internal static class Program
         var databasePath = options.DatabasePath is null
             ? Path.Combine(input.RootPath, ".csindex", "index.sqlite")
             : Path.GetFullPath(options.DatabasePath);
-        var index = new SqliteIndex(databasePath);
+        var paths = IndexPathResolver.CreateForIndex(databasePath, input.RootPath);
+        using var prepared = await coordinator.PrepareAsync(input, options, paths, cancellationToken);
+        PreparedAnalysisObserver?.Invoke(prepared);
         var requestHash = RequestHasher.Build(input, options);
-        var inputFingerprint = await coordinator.BuildInputFingerprintAsync(input, options, cancellationToken);
+        var inputFingerprint = await coordinator.BuildInputFingerprintAsync(
+            input,
+            options,
+            paths,
+            cancellationToken);
+        var index = new SqliteIndex(paths.DatabasePath);
 
         WriteProgress("Input mode", input.Mode.ToString());
         WriteProgress("Input path", input.OriginalPath);
-        WriteProgress("Database path", databasePath);
+        WriteProgress("Database path", paths.DatabasePath);
         if (!options.Rebuild && await index.IsCacheValidAsync(
-                input.RootPath,
+                ".",
                 inputFingerprint,
                 requestHash,
                 cancellationToken))
@@ -221,13 +231,13 @@ internal static class Program
         }
 
         var result = await coordinator.AnalyzeAsync(
-            input,
+            prepared,
             options,
             inputFingerprint,
             requestHash,
             cancellationToken);
         await index.SaveAsync(result.Snapshot, cancellationToken);
-        WriteIndexSummary(result, databasePath, options);
+        WriteIndexSummary(result, paths.DatabasePath, options);
         return ExitCodes.Success;
     }
 
@@ -294,7 +304,9 @@ internal static class Program
                 request.Pattern!,
                 new FunctionTargetFilter(request.Kind, request.AsyncStatus),
                 profileName: parsed.GetSingle("profile"),
+                sourceOnly: false,
                 includeOverrides: true,
+                includeSourceText: request.ShowSource,
                 cancellationToken: cancellationToken);
             result = result with { ShowSource = request.ShowSource };
         }

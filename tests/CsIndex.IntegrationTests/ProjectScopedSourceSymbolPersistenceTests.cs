@@ -1,6 +1,5 @@
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
-using CsIndex.Core.Input;
 using CsIndex.Core.Model;
 using CsIndex.Query;
 using CsIndex.Query.Symbols;
@@ -61,10 +60,16 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
             var duplicateRuns = runs
                 .Where(symbol => symbol.DisplayName == "Shared.Twin::Run()")
                 .ToArray();
+            var preferredRuns = (await repository.GetPreferredDeclarationsAsync(
+                    profile.Id,
+                    duplicateRuns.Select(symbol => symbol.Id),
+                    includeSourceText: true,
+                    cancellationToken))
+                .ToDictionary(declaration => declaration.SymbolId);
             var firstRun = Assert.Single(duplicateRuns, symbol =>
-                symbol.NormalizedSource!.Contains("LocalFirst", StringComparison.Ordinal));
+                preferredRuns[symbol.Id].NormalizedSource!.Contains("LocalFirst", StringComparison.Ordinal));
             var secondRun = Assert.Single(duplicateRuns, symbol =>
-                symbol.NormalizedSource!.Contains("LocalSecond", StringComparison.Ordinal));
+                preferredRuns[symbol.Id].NormalizedSource!.Contains("LocalSecond", StringComparison.Ordinal));
             Assert.Equal(2, duplicateRuns.Length);
             Assert.Equal(2, duplicateRuns.Select(symbol => symbol.Id).Distinct().Count());
 
@@ -86,8 +91,12 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
             var storedProjects = await ReadStoredProjectsAsync(databasePath, profile.Id, cancellationToken);
             Assert.Equal(2, storedProjects.Count);
             var projectIdsByPath = storedProjects.ToDictionary(project => project.ProjectPath, project => project.Id);
+            var firstStoredProjectPath = Path.GetRelativePath(root, firstProjectPath)
+                .Replace(Path.DirectorySeparatorChar, '/');
+            var secondStoredProjectPath = Path.GetRelativePath(root, secondProjectPath)
+                .Replace(Path.DirectorySeparatorChar, '/');
             Assert.Equal(
-                [PathNormalizer.Normalize(firstProjectPath), PathNormalizer.Normalize(secondProjectPath)],
+                [firstStoredProjectPath, secondStoredProjectPath],
                 storedProjects.Select(project => project.ProjectPath));
 
             var symbolProjectIds = await ReadSymbolProjectIdsAsync(
@@ -96,8 +105,8 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
                 [firstRun.Id, secondRun.Id, firstLocal.Id, secondLocal.Id],
                 cancellationToken);
             Assert.Equal(4, symbolProjectIds.Count);
-            Assert.Equal(projectIdsByPath[PathNormalizer.Normalize(firstProjectPath)], symbolProjectIds[firstRun.Id]);
-            Assert.Equal(projectIdsByPath[PathNormalizer.Normalize(secondProjectPath)], symbolProjectIds[secondRun.Id]);
+            Assert.Equal(projectIdsByPath[firstStoredProjectPath], symbolProjectIds[firstRun.Id]);
+            Assert.Equal(projectIdsByPath[secondStoredProjectPath], symbolProjectIds[secondRun.Id]);
             Assert.Equal(symbolProjectIds[firstRun.Id], symbolProjectIds[firstLocal.Id]);
             Assert.Equal(symbolProjectIds[secondRun.Id], symbolProjectIds[secondLocal.Id]);
             Assert.NotEqual(symbolProjectIds[firstRun.Id], symbolProjectIds[secondRun.Id]);
@@ -130,9 +139,15 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
 
             Assert.Equal([firstRun.Id, secondRun.Id], firstExact.MatchedSymbols.Select(symbol => symbol.Id));
             Assert.Equal(firstExact.MatchedSymbols.Select(symbol => symbol.Id), secondExact.MatchedSymbols.Select(symbol => symbol.Id));
+            var exactDeclarations = (await repository.GetPreferredDeclarationsAsync(
+                    profile.Id,
+                    firstExact.MatchedSymbols.Select(symbol => symbol.Id),
+                    includeSourceText: true,
+                    cancellationToken))
+                .ToDictionary(declaration => declaration.SymbolId);
             Assert.Equal(
                 ["public void Run(){LocalFirst();}", "public void Run(){LocalSecond();}"],
-                firstExact.MatchedSymbols.Select(symbol => symbol.NormalizedSource));
+                firstExact.MatchedSymbols.Select(symbol => exactDeclarations[symbol.Id].NormalizedSource));
             Assert.Equal(2, firstExact.MatchedSymbols.Select(symbol => symbol.Id).Distinct().Count());
         }
         finally
@@ -286,6 +301,7 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
     private static IndexSnapshot CreateSnapshot(string root) => new()
     {
         InputRoot = root,
+        IndexRootAnchor = ".",
         InputFingerprint = [],
         RequestHash = [],
         Profile = new AnalysisProfileData

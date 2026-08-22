@@ -20,9 +20,13 @@ public sealed record CallResult(
     QueryContext Context,
     IReadOnlyList<StoredCall> Calls,
     IReadOnlyList<StoredSymbol> EffectiveCallers,
-    IReadOnlyList<StoredRelation> PossibleRuntimeTargets);
+    IReadOnlyList<StoredRelation> PossibleRuntimeTargets,
+    IReadOnlyDictionary<long, StoredSymbol> SymbolsById);
 
-public sealed record RelationResult(QueryContext Context, IReadOnlyList<StoredRelation> Relations);
+public sealed record RelationResult(
+    QueryContext Context,
+    IReadOnlyList<StoredRelation> Relations,
+    IReadOnlyDictionary<long, StoredSymbol> SymbolsById);
 
 public sealed record ConditionsResult(StoredProfile Profile, IReadOnlyList<ConditionalSummary> Symbols);
 

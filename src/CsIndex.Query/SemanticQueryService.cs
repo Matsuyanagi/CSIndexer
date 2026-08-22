@@ -1,3 +1,4 @@
+using CsIndex.Core.Input;
 using CsIndex.Core.Model;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
@@ -8,6 +9,8 @@ public sealed class SemanticQueryService(QueryRepository repository)
 {
     private static readonly IReadOnlySet<ReferenceKind> CallKinds =
         new HashSet<ReferenceKind> { ReferenceKind.Invocation, ReferenceKind.ObjectCreation };
+
+    internal Action<IReadOnlyCollection<long>>? EndpointHydrationObserver { get; init; }
 
     private readonly SymbolQueryParser _parser = new();
     private readonly ExecutableTargetResolver _executableTargetResolver = new(repository);
@@ -28,13 +31,32 @@ public sealed class SemanticQueryService(QueryRepository repository)
             includeOverrides,
             cancellationToken);
 
-    public async Task<QueryContext> FindSymbolsAsync(
+    public Task<QueryContext> FindSymbolsAsync(
         string queryText,
         FunctionTargetFilter filter,
         string? profileName = null,
         bool sourceOnly = false,
         bool includeOverrides = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        FindSymbolsAsync(
+            queryText,
+            filter,
+            profileName,
+            sourceOnly,
+            includeOverrides,
+            includeSourceText: false,
+            cancellationToken);
+
+    // Temporary Task 5 compatibility surface. Task 10 replaces this with
+    // declaration-aware result projection instead of attaching source to symbols.
+    public async Task<QueryContext> FindSymbolsAsync(
+        string queryText,
+        FunctionTargetFilter filter,
+        string? profileName,
+        bool sourceOnly,
+        bool includeOverrides,
+        bool includeSourceText,
+        CancellationToken cancellationToken)
     {
         var profile = await repository.GetProfileAsync(profileName, cancellationToken);
         if (ExecutableTargetResolver.IsLambdaTargetQuery(queryText))
@@ -46,7 +68,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 includeOverrides,
                 filter,
                 cancellationToken);
-            return new QueryContext(profile, lambdaTargets);
+            return await AttachPreferredSourceIfRequestedAsync(
+                new QueryContext(profile, lambdaTargets),
+                includeSourceText,
+                cancellationToken);
         }
 
         var query = _parser.Parse(queryText);
@@ -64,7 +89,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 includeOverrides,
                 filter,
                 cancellationToken);
-            return new QueryContext(profile, methodTargets);
+            return await AttachPreferredSourceIfRequestedAsync(
+                new QueryContext(profile, methodTargets),
+                includeSourceText,
+                cancellationToken);
         }
 
         var candidates = await repository.FindSymbolCandidatesAsync(
@@ -86,7 +114,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
             }
         }
 
-        return new QueryContext(profile, matches);
+        return await AttachPreferredSourceIfRequestedAsync(
+            new QueryContext(profile, matches),
+            includeSourceText,
+            cancellationToken);
     }
 
     public async Task<QueryContext> SearchSymbolsAsync(
@@ -100,10 +131,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
             var exact = await FindSymbolsAsync(
                 request.Pattern!,
                 new FunctionTargetFilter(request.Kind, request.AsyncStatus),
-                profileName,
+                profileName: profileName,
                 sourceOnly: false,
                 includeOverrides: false,
-                cancellationToken);
+                includeSourceText: request.ShowSource,
+                cancellationToken: cancellationToken);
             return exact with { ShowSource = request.ShowSource };
         }
 
@@ -148,7 +180,7 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 sourceOnly: true,
                 includeOverrides: false,
                 cancellationToken);
-            return exact with { ShowSource = true };
+            return await AttachPreferredSourceAsync(exact with { ShowSource = true }, cancellationToken);
         }
 
         return await SearchStoredExecutableSymbolsAsync(
@@ -337,7 +369,15 @@ public sealed class SemanticQueryService(QueryRepository repository)
     {
         var profile = await repository.GetProfileAsync(profileName, cancellationToken);
         var parsed = SourcePositionResolver.ParseAt(location);
-        var documents = await repository.FindDocumentsAsync(profile.Id, parsed.Path, cancellationToken);
+        var paths = IndexPathResolver.CreateForQuery(
+            repository.DatabasePath,
+            profile.IndexRootAnchor,
+            baseDirectory: null);
+        var storedDocumentPath = paths.NormalizeLocationInputToStoredPath(parsed.Path);
+        var documents = await repository.FindDocumentsAsync(
+            profile.Id,
+            storedDocumentPath,
+            cancellationToken);
         if (documents.Count == 0)
         {
             throw new InvalidOperationException($"Document was not found in the index: {parsed.Path}");
@@ -350,7 +390,10 @@ public sealed class SemanticQueryService(QueryRepository repository)
         }
 
         var document = documents[0];
-        var offset = SourcePositionResolver.ResolveLineColumn(document.Path, parsed.Line, parsed.Column);
+        var offset = SourcePositionResolver.ResolveLineColumn(
+            paths.ToAbsolutePath(document.Path),
+            parsed.Line,
+            parsed.Column);
         var call = await repository.FindCallAtAsync(profile.Id, document.Id, offset, cancellationToken);
         if (call is null)
         {
@@ -398,7 +441,13 @@ public sealed class SemanticQueryService(QueryRepository repository)
             context.MatchedSymbols.Select(symbol => symbol.Id),
             generatedFilter,
             cancellationToken: cancellationToken);
-        return new CallResult(context, calls, [], []);
+        var hydration = await HydrateCallResultAsync(
+            context.Profile.Id,
+            calls,
+            CallerScope.Direct,
+            [],
+            cancellationToken);
+        return new CallResult(context, calls, hydration.EffectiveCallers, [], hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCallersAsync(
@@ -441,11 +490,6 @@ public sealed class SemanticQueryService(QueryRepository repository)
             generatedFilter,
             CallKinds,
             cancellationToken);
-        var effectiveCallers = await ResolveEffectiveCallersAsync(
-            context.Profile.Id,
-            calls,
-            callerScope,
-            cancellationToken);
         IReadOnlyList<StoredRelation> possibleTargets = [];
         if (dispatchMode != DispatchSearchMode.Static)
         {
@@ -464,7 +508,18 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 cancellationToken);
         }
 
-        return new CallResult(context, calls, effectiveCallers, possibleTargets);
+        var hydration = await HydrateCallResultAsync(
+            context.Profile.Id,
+            calls,
+            callerScope,
+            possibleTargets,
+            cancellationToken);
+        return new CallResult(
+            context,
+            calls,
+            hydration.EffectiveCallers,
+            possibleTargets,
+            hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCalleesAsync(
@@ -511,7 +566,13 @@ public sealed class SemanticQueryService(QueryRepository repository)
                 generatedFilter,
                 CallKinds,
                 cancellationToken);
-        return new CallResult(context, calls, [], []);
+        var hydration = await HydrateCallResultAsync(
+            context.Profile.Id,
+            calls,
+            CallerScope.Direct,
+            [],
+            cancellationToken);
+        return new CallResult(context, calls, [], [], hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCalleesAsync(
@@ -549,7 +610,11 @@ public sealed class SemanticQueryService(QueryRepository repository)
             context.MatchedSymbols.Select(symbol => symbol.Id),
             new HashSet<SymbolRelationKind> { SymbolRelationKind.Overrides },
             cancellationToken);
-        return new RelationResult(context, relations);
+        var symbolsById = await HydrateRelationEndpointsAsync(
+            context.Profile.Id,
+            relations,
+            cancellationToken);
+        return new RelationResult(context, relations, symbolsById);
     }
 
     public async Task<ConditionsResult> GetConditionsAsync(
@@ -561,28 +626,88 @@ public sealed class SemanticQueryService(QueryRepository repository)
         return new ConditionsResult(profile, symbols);
     }
 
-    private async Task<IReadOnlyList<StoredSymbol>> ResolveEffectiveCallersAsync(
+    private async Task<(IReadOnlyList<StoredSymbol> EffectiveCallers, IReadOnlyDictionary<long, StoredSymbol> SymbolsById)> HydrateCallResultAsync(
         long profileId,
         IReadOnlyList<StoredCall> calls,
         CallerScope callerScope,
+        IReadOnlyList<StoredRelation> possibleTargets,
         CancellationToken cancellationToken)
     {
-        if (callerScope == CallerScope.Direct)
+        var requiredIds = new HashSet<long>();
+        foreach (var call in calls)
         {
-            return await repository.GetSymbolsByIdsAsync(
-                profileId,
-                calls.Select(call => call.CallerSymbolId),
-                cancellationToken);
+            requiredIds.Add(call.CallerSymbolId);
+            if (call.CallerContainingSymbolId is long containingId)
+            {
+                requiredIds.Add(containingId);
+            }
+
+            if (call.CalleeSymbolId is long calleeId)
+            {
+                requiredIds.Add(calleeId);
+            }
+
+            if (call.CalleeDefinitionId is long definitionId)
+            {
+                requiredIds.Add(definitionId);
+            }
         }
 
-        var directIds = callerScope == CallerScope.Both
-            ? calls.Select(call => call.CallerSymbolId)
-            : [];
-        var containingIds = calls.Select(call => call.CallerContainingSymbolId ?? call.CallerSymbolId);
-        return await repository.GetSymbolsByIdsAsync(
-            profileId,
-            directIds.Concat(containingIds),
-            cancellationToken);
+        foreach (var relation in possibleTargets)
+        {
+            requiredIds.Add(relation.SourceSymbolId);
+            requiredIds.Add(relation.TargetSymbolId);
+        }
+
+        EndpointHydrationObserver?.Invoke(requiredIds);
+        var symbols = await repository.GetSymbolsByIdsAsync(profileId, requiredIds, cancellationToken);
+        var symbolsById = symbols.ToDictionary(symbol => symbol.Id);
+        foreach (var requiredId in requiredIds)
+        {
+            if (!symbolsById.ContainsKey(requiredId))
+            {
+                throw new InvalidOperationException(
+                    $"Endpoint symbol ID {requiredId} could not be resolved in the selected profile.");
+            }
+        }
+
+        var effectiveCallerIds = callerScope switch
+        {
+            CallerScope.Direct => calls.Select(call => call.CallerSymbolId),
+            CallerScope.Containing => calls.Select(call => call.CallerContainingSymbolId ?? call.CallerSymbolId),
+            CallerScope.Both => calls.Select(call => call.CallerSymbolId)
+                .Concat(calls.Select(call => call.CallerContainingSymbolId ?? call.CallerSymbolId)),
+            _ => throw new ArgumentOutOfRangeException(nameof(callerScope)),
+        };
+        var effectiveCallers = effectiveCallerIds
+            .Distinct()
+            .Select(id => symbolsById[id])
+            .ToArray();
+        return (effectiveCallers, symbolsById);
+    }
+
+    private async Task<IReadOnlyDictionary<long, StoredSymbol>> HydrateRelationEndpointsAsync(
+        long profileId,
+        IReadOnlyList<StoredRelation> relations,
+        CancellationToken cancellationToken)
+    {
+        var requiredIds = relations
+            .SelectMany(relation => new[] { relation.SourceSymbolId, relation.TargetSymbolId })
+            .Distinct()
+            .ToArray();
+        EndpointHydrationObserver?.Invoke(requiredIds);
+        var symbols = await repository.GetSymbolsByIdsAsync(profileId, requiredIds, cancellationToken);
+        var symbolsById = symbols.ToDictionary(symbol => symbol.Id);
+        foreach (var requiredId in requiredIds)
+        {
+            if (!symbolsById.ContainsKey(requiredId))
+            {
+                throw new InvalidOperationException(
+                    $"Relation endpoint symbol ID {requiredId} could not be resolved in the selected profile.");
+            }
+        }
+
+        return symbolsById;
     }
 
     private async Task<QueryContext> SearchStoredExecutableSymbolsAsync(
@@ -597,6 +722,14 @@ public sealed class SemanticQueryService(QueryRepository repository)
             profile.Id,
             sourceOnly || hasSourceFilters,
             cancellationToken);
+        if (hasSourceFilters || request.ShowSource)
+        {
+            candidates = await AttachPreferredDeclarationsAsync(
+                profile.Id,
+                candidates,
+                includeSourceText: true,
+                cancellationToken);
+        }
         var matcher = new SymbolPatternMatcher(request);
         var comparison = request.IgnoreCase
             ? StringComparison.OrdinalIgnoreCase
@@ -660,8 +793,65 @@ public sealed class SemanticQueryService(QueryRepository repository)
 
     private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
         symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
-        symbol.DocumentPath is not null &&
-        symbol.NormalizedSource is not null;
+        symbol.PreferredDeclarationId is not null &&
+        symbol.PreferredDocumentPath is not null;
+
+    private async Task<QueryContext> AttachPreferredSourceAsync(
+        QueryContext context,
+        CancellationToken cancellationToken)
+    {
+        var symbols = await AttachPreferredDeclarationsAsync(
+            context.Profile.Id,
+            context.MatchedSymbols,
+            includeSourceText: true,
+            cancellationToken);
+        return context with { MatchedSymbols = symbols };
+    }
+
+    private Task<QueryContext> AttachPreferredSourceIfRequestedAsync(
+        QueryContext context,
+        bool includeSourceText,
+        CancellationToken cancellationToken) =>
+        includeSourceText
+            ? AttachPreferredSourceAsync(context, cancellationToken)
+            : Task.FromResult(context);
+
+    private async Task<IReadOnlyList<StoredSymbol>> AttachPreferredDeclarationsAsync(
+        long profileId,
+        IReadOnlyList<StoredSymbol> symbols,
+        bool includeSourceText,
+        CancellationToken cancellationToken)
+    {
+        if (symbols.Count == 0)
+        {
+            return symbols;
+        }
+
+        var declarations = await repository.GetPreferredDeclarationsAsync(
+            profileId,
+            symbols.Select(symbol => symbol.Id),
+            includeSourceText,
+            cancellationToken);
+        var bySymbolId = declarations.ToDictionary(declaration => declaration.SymbolId);
+        return symbols.Select(symbol =>
+        {
+            if (!bySymbolId.TryGetValue(symbol.Id, out var declaration))
+            {
+                return symbol;
+            }
+
+            return symbol with
+            {
+                PreferredDeclaration = declaration,
+                PreferredDocumentPath = declaration.DocumentPath,
+                PreferredSourceStart = declaration.SourceStart,
+                PreferredIsGenerated = declaration.IsGenerated,
+                DocumentPath = declaration.DocumentPath,
+                SourceStart = declaration.SourceStart,
+                IsGenerated = declaration.IsGenerated,
+            };
+        }).ToArray();
+    }
 
     private static IReadOnlyList<StoredSymbol> FilterSymbols(
         IEnumerable<StoredSymbol> candidates,

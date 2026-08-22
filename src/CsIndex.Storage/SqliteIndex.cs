@@ -33,7 +33,7 @@ public sealed class SqliteIndex(string databasePath)
               AND input_fingerprint = $input_fingerprint
               AND request_hash = $request_hash;
             """;
-        command.Parameters.AddWithValue("$input_root", PathNormalizer.Normalize(inputRoot));
+        command.Parameters.AddWithValue("$input_root", inputRoot);
         command.Parameters.Add("$input_fingerprint", SqliteType.Blob).Value = inputFingerprint;
         command.Parameters.Add("$request_hash", SqliteType.Blob).Value = requestHash;
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) > 0;
@@ -41,6 +41,8 @@ public sealed class SqliteIndex(string databasePath)
 
     public async Task SaveAsync(IndexSnapshot snapshot, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ValidateSnapshot(snapshot);
         await using var connection = await OpenAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         try
@@ -103,6 +105,22 @@ public sealed class SqliteIndex(string databasePath)
                 snapshot.Symbols.Values,
                 symbolIds,
                 cancellationToken);
+            var declarationIds = await InsertDeclarationsAsync(
+                connection,
+                transaction,
+                snapshot.Declarations.Values,
+                symbolIds,
+                documentIds,
+                cancellationToken);
+            await UpdatePreferredDeclarationsAsync(
+                connection,
+                transaction,
+                snapshot.Symbols.Values,
+                symbolIds,
+                declarationIds,
+                cancellationToken);
+            await VerifyPreferredOwnershipAsync(connection, transaction, cancellationToken);
+            await VerifyIntegrityAsync(connection, transaction, cancellationToken);
             await InsertCallsAsync(
                 connection,
                 transaction,
@@ -232,8 +250,10 @@ public sealed class SqliteIndex(string databasePath)
     {
         foreach (var sql in new[]
                  {
-                     "DELETE FROM calls WHERE analysis_profile_id = $profile_id;",
+            "DELETE FROM calls WHERE analysis_profile_id = $profile_id;",
+                     "DELETE FROM call_candidates WHERE call_id NOT IN (SELECT id FROM calls);",
                      "DELETE FROM symbol_relations WHERE analysis_profile_id = $profile_id;",
+                     "DELETE FROM interface_method_bindings WHERE analysis_profile_id = $profile_id;",
                      "DELETE FROM conditional_symbols_used WHERE analysis_profile_id = $profile_id;",
                      "DELETE FROM index_runs WHERE analysis_profile_id = $profile_id;",
                      "DELETE FROM symbols WHERE analysis_profile_id = $profile_id;",
@@ -254,12 +274,13 @@ public sealed class SqliteIndex(string databasePath)
     {
         await using var command = CreateCommand(connection, transaction, """
             INSERT INTO index_runs(
-                analysis_profile_id, input_root, input_fingerprint, request_hash, indexed_at_utc)
-            VALUES($profile_id, $input_root, $input_fingerprint, $request_hash, $indexed_at);
+                analysis_profile_id, input_root, index_root_anchor, input_fingerprint, request_hash, indexed_at_utc)
+            VALUES($profile_id, $input_root, $index_root_anchor, $input_fingerprint, $request_hash, $indexed_at);
             SELECT last_insert_rowid();
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
-        command.Parameters.AddWithValue("$input_root", PathNormalizer.Normalize(snapshot.InputRoot));
+        command.Parameters.AddWithValue("$input_root", snapshot.InputRoot);
+        command.Parameters.AddWithValue("$index_root_anchor", snapshot.IndexRootAnchor);
         command.Parameters.Add("$input_fingerprint", SqliteType.Blob).Value = snapshot.InputFingerprint;
         command.Parameters.Add("$request_hash", SqliteType.Blob).Value = snapshot.RequestHash;
         command.Parameters.AddWithValue("$indexed_at", DateTimeOffset.UtcNow.ToString("O"));
@@ -329,20 +350,24 @@ public sealed class SqliteIndex(string databasePath)
         await using var command = CreateCommand(connection, transaction, """
             INSERT INTO symbols(
                 analysis_profile_id, project_id, stable_key, kind, name, namespace_name,
-                type_simple_name, type_metadata_name, fully_qualified_name, display_name,
-                containing_symbol_id, arity, parameter_count, method_kind, accessibility,
+                type_simple_name, type_metadata_name,
+                path_segment_kind, path_segment_display, path_segment_identity,
+                type_display_path, type_identity_path, executable_display_path, executable_identity_path,
+                preferred_declaration_id, containing_symbol_id, arity, parameter_count, method_kind, accessibility,
                 type_kind,
                 is_static, is_abstract, is_virtual, is_override, async_role,
-                async_involvement_depth, return_type_key, normalized_source, normalized_source_hash,
-                source_document_id, source_start, source_length, is_generated)
+                async_involvement_depth, return_type_key, return_type_display,
+                conversion_type_key, conversion_type_display, is_generated)
             VALUES(
                 $profile_id, $project_id, $stable_key, $kind, $name, $namespace_name,
-                $type_simple_name, $type_metadata_name, $fully_qualified_name, $display_name,
-                NULL, $arity, $parameter_count, $method_kind, $accessibility,
+                $type_simple_name, $type_metadata_name,
+                $path_segment_kind, $path_segment_display, $path_segment_identity,
+                $type_display_path, $type_identity_path, $executable_display_path, $executable_identity_path,
+                NULL, NULL, $arity, $parameter_count, $method_kind, $accessibility,
                 $type_kind,
                 $is_static, $is_abstract, $is_virtual, $is_override, $async_role,
-                $async_involvement_depth, $return_type_key, $normalized_source, $normalized_source_hash,
-                $source_document_id, $source_start, $source_length, $is_generated);
+                $async_involvement_depth, $return_type_key, $return_type_display,
+                $conversion_type_key, $conversion_type_display, $is_generated);
             SELECT last_insert_rowid();
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
@@ -355,8 +380,15 @@ public sealed class SqliteIndex(string databasePath)
         command.Parameters.AddWithValue("$namespace_name", symbol.NamespaceName);
         command.Parameters.AddWithValue("$type_simple_name", (object?)symbol.TypeSimpleName ?? DBNull.Value);
         command.Parameters.AddWithValue("$type_metadata_name", (object?)symbol.TypeMetadataName ?? DBNull.Value);
-        command.Parameters.AddWithValue("$fully_qualified_name", symbol.FullyQualifiedName);
-        command.Parameters.AddWithValue("$display_name", symbol.DisplayName);
+        var path = symbol.Path ?? throw new InvalidOperationException(
+            $"Logical symbol '{symbol.StableKey}' is missing semantic path data.");
+        command.Parameters.AddWithValue("$path_segment_kind", (int)path.SegmentKind);
+        command.Parameters.AddWithValue("$path_segment_display", path.SegmentDisplay);
+        command.Parameters.AddWithValue("$path_segment_identity", path.SegmentIdentity);
+        command.Parameters.AddWithValue("$type_display_path", path.TypeDisplayPath);
+        command.Parameters.AddWithValue("$type_identity_path", path.TypeIdentityPath);
+        command.Parameters.AddWithValue("$executable_display_path", path.ExecutableDisplayPath);
+        command.Parameters.AddWithValue("$executable_identity_path", path.ExecutableIdentityPath);
         command.Parameters.AddWithValue("$arity", symbol.Arity);
         command.Parameters.AddWithValue("$parameter_count", (object?)symbol.ParameterCount ?? DBNull.Value);
         command.Parameters.AddWithValue("$method_kind", (object?)symbol.MethodKind ?? DBNull.Value);
@@ -371,15 +403,9 @@ public sealed class SqliteIndex(string databasePath)
             "$async_involvement_depth",
             (object?)symbol.AsyncInvolvementDepth ?? DBNull.Value);
         command.Parameters.AddWithValue("$return_type_key", (object?)symbol.ReturnTypeKey ?? DBNull.Value);
-        command.Parameters.AddWithValue("$normalized_source", (object?)symbol.NormalizedSource ?? DBNull.Value);
-        command.Parameters.Add("$normalized_source_hash", SqliteType.Blob).Value =
-            (object?)symbol.NormalizedSourceHash ?? DBNull.Value;
-        command.Parameters.AddWithValue("$source_document_id", symbol.SourceDocumentKey is not null &&
-                                                               documentIds.TryGetValue(symbol.SourceDocumentKey, out var documentId)
-            ? documentId
-            : DBNull.Value);
-        command.Parameters.AddWithValue("$source_start", (object?)symbol.SourceStart ?? DBNull.Value);
-        command.Parameters.AddWithValue("$source_length", (object?)symbol.SourceLength ?? DBNull.Value);
+        command.Parameters.AddWithValue("$return_type_display", (object?)symbol.ReturnTypeDisplay ?? DBNull.Value);
+        command.Parameters.AddWithValue("$conversion_type_key", (object?)symbol.ConversionTypeKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$conversion_type_display", (object?)symbol.ConversionTypeDisplay ?? DBNull.Value);
         command.Parameters.AddWithValue("$is_generated", symbol.IsGenerated);
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
     }
@@ -443,8 +469,8 @@ public sealed class SqliteIndex(string databasePath)
         CancellationToken cancellationToken)
     {
         await using var command = CreateCommand(connection, transaction, """
-            INSERT INTO method_parameters(method_id, ordinal, name, type_key, ref_kind, is_optional)
-            VALUES($method_id, $ordinal, $name, $type_key, $ref_kind, $is_optional);
+            INSERT INTO method_parameters(method_id, ordinal, name, type_key, type_display, ref_kind, is_optional)
+            VALUES($method_id, $ordinal, $name, $type_key, $type_display, $ref_kind, $is_optional);
             """);
         foreach (var symbol in symbols)
         {
@@ -455,10 +481,105 @@ public sealed class SqliteIndex(string databasePath)
                 command.Parameters.AddWithValue("$ordinal", parameter.Ordinal);
                 command.Parameters.AddWithValue("$name", (object?)parameter.Name ?? DBNull.Value);
                 command.Parameters.AddWithValue("$type_key", parameter.TypeKey);
+                command.Parameters.AddWithValue("$type_display", parameter.TypeDisplay);
                 command.Parameters.AddWithValue("$ref_kind", parameter.RefKind);
                 command.Parameters.AddWithValue("$is_optional", parameter.IsOptional);
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
+        }
+    }
+
+    private static async Task<Dictionary<string, long>> InsertDeclarationsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<SymbolDeclarationData> declarations,
+        IReadOnlyDictionary<string, long> symbolIds,
+        IReadOnlyDictionary<string, long> documentIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            INSERT INTO symbol_declarations(
+                declaration_key, symbol_id, document_id, declaration_role,
+                source_start, source_length, normalized_source, normalized_source_hash, is_generated)
+            VALUES(
+                $declaration_key, $symbol_id, $document_id, $declaration_role,
+                $source_start, $source_length, $normalized_source, $normalized_source_hash, $is_generated);
+            SELECT last_insert_rowid();
+            """);
+        var declarationIds = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var declaration in declarations.OrderBy(value => value.Key, StringComparer.Ordinal))
+        {
+            if (!symbolIds.TryGetValue(declaration.SymbolKey, out var symbolId))
+            {
+                throw new InvalidOperationException(
+                    $"Declaration '{declaration.Key}' references unknown logical symbol '{declaration.SymbolKey}'.");
+            }
+
+            if (!documentIds.TryGetValue(declaration.DocumentKey, out var documentId))
+            {
+                throw new InvalidOperationException(
+                    $"Declaration '{declaration.Key}' references unknown document '{declaration.DocumentKey}'.");
+            }
+
+            command.Parameters.Clear();
+            command.Parameters.AddWithValue("$declaration_key", declaration.Key);
+            command.Parameters.AddWithValue("$symbol_id", symbolId);
+            command.Parameters.AddWithValue("$document_id", documentId);
+            command.Parameters.AddWithValue("$declaration_role", (int)declaration.Role);
+            command.Parameters.AddWithValue("$source_start", declaration.SourceStart);
+            command.Parameters.AddWithValue("$source_length", declaration.SourceLength);
+            command.Parameters.AddWithValue("$normalized_source", declaration.NormalizedSource);
+            command.Parameters.Add("$normalized_source_hash", SqliteType.Blob).Value = declaration.NormalizedSourceHash;
+            command.Parameters.AddWithValue("$is_generated", declaration.IsGenerated);
+            declarationIds[declaration.Key] = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
+        }
+
+        return declarationIds;
+    }
+
+    private static async Task UpdatePreferredDeclarationsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<SymbolData> symbols,
+        IReadOnlyDictionary<string, long> symbolIds,
+        IReadOnlyDictionary<string, long> declarationIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            UPDATE symbols
+            SET preferred_declaration_id = $declaration_id
+            WHERE id = $symbol_id;
+            """);
+        foreach (var symbol in symbols.Where(value => value.PreferredDeclarationKey is not null))
+        {
+            if (!symbolIds.TryGetValue(symbol.StableKey, out var symbolId) ||
+                !declarationIds.TryGetValue(symbol.PreferredDeclarationKey!, out var declarationId))
+            {
+                throw new InvalidOperationException(
+                    $"Preferred declaration '{symbol.PreferredDeclarationKey}' for '{symbol.StableKey}' is missing.");
+            }
+
+            command.Parameters.Clear();
+            command.Parameters.AddWithValue("$declaration_id", declarationId);
+            command.Parameters.AddWithValue("$symbol_id", symbolId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task VerifyPreferredOwnershipAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            SELECT COUNT(*)
+            FROM symbols s
+            JOIN symbol_declarations d ON d.id = s.preferred_declaration_id
+            WHERE d.symbol_id <> s.id;
+            """);
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 0)
+        {
+            throw new InvalidOperationException("A preferred declaration belongs to a different logical symbol.");
         }
     }
 
@@ -609,6 +730,242 @@ public sealed class SqliteIndex(string databasePath)
         {
             throw new InvalidOperationException(
                 $"Foreign-key integrity check failed for table '{reader.GetString(0)}'.");
+        }
+    }
+
+    private static void ValidateSnapshot(IndexSnapshot snapshot)
+    {
+        ValidateRelativePath(snapshot.InputRoot, nameof(snapshot.InputRoot));
+        ValidateRelativePath(snapshot.IndexRootAnchor, nameof(snapshot.IndexRootAnchor));
+
+        var projectKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var project in snapshot.Projects)
+        {
+            if (!projectKeys.Add(project.Key))
+            {
+                throw new InvalidOperationException($"Duplicate project key '{project.Key}'.");
+            }
+
+            if (project.ProjectPath is not null)
+            {
+                ValidateRelativePath(project.ProjectPath, $"project '{project.Key}' path");
+                if (!project.Key.Equals($"project-path:{project.ProjectPath}", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Project key '{project.Key}' does not match stored project path '{project.ProjectPath}'.");
+                }
+            }
+        }
+
+        var documentKeys = new HashSet<string>(StringComparer.Ordinal);
+        var documentPaths = new HashSet<(string Project, string Path)>();
+        foreach (var document in snapshot.Documents)
+        {
+            ValidateRelativePath(document.NormalizedPath, $"document '{document.Key}' path");
+            if (!documentKeys.Add(document.Key) ||
+                !documentPaths.Add((document.ProjectKey, document.NormalizedPath)))
+            {
+                throw new InvalidOperationException($"Duplicate document key or path '{document.Key}'.");
+            }
+
+            if (!projectKeys.Contains(document.ProjectKey))
+            {
+                throw new InvalidOperationException(
+                    $"Document '{document.Key}' references unknown project '{document.ProjectKey}'.");
+            }
+
+            var expectedKey = $"{document.ProjectKey}|document:{document.NormalizedPath}";
+            if (!document.Key.Equals(expectedKey, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Document key '{document.Key}' does not match stored path '{document.NormalizedPath}'.");
+            }
+        }
+
+        var symbolKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var pair in snapshot.Symbols)
+        {
+            if (!pair.Key.Equals(pair.Value.StableKey, StringComparison.Ordinal) ||
+                !symbolKeys.Add(pair.Value.StableKey))
+            {
+                throw new InvalidOperationException($"Logical symbol dictionary key mismatch or duplicate '{pair.Key}'.");
+            }
+        }
+
+        var declarationKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var pair in snapshot.Declarations)
+        {
+            var declaration = pair.Value;
+            if (!pair.Key.Equals(declaration.Key, StringComparison.Ordinal) ||
+                !declarationKeys.Add(declaration.Key))
+            {
+                throw new InvalidOperationException($"Declaration dictionary key mismatch or duplicate '{pair.Key}'.");
+            }
+
+            if (!symbolKeys.Contains(declaration.SymbolKey) || !documentKeys.Contains(declaration.DocumentKey))
+            {
+                throw new InvalidOperationException($"Declaration '{declaration.Key}' references an unknown owner.");
+            }
+
+            if (!Enum.IsDefined(declaration.Role))
+            {
+                throw new InvalidOperationException($"Declaration '{declaration.Key}' has an unknown role.");
+            }
+
+            var document = snapshot.Documents.Single(value => value.Key.Equals(declaration.DocumentKey, StringComparison.Ordinal));
+            var expectedKey = $"{declaration.SymbolKey}|declaration:{document.NormalizedPath}:{declaration.SourceStart}:{declaration.SourceLength}:{(int)declaration.Role}";
+            if (!declaration.Key.Equals(expectedKey, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Declaration key '{declaration.Key}' does not match its stored span and role.");
+            }
+        }
+
+        if (symbolKeys.Overlaps(declarationKeys))
+        {
+            throw new InvalidOperationException("Logical symbol and declaration key domains must be disjoint.");
+        }
+
+        foreach (var symbol in snapshot.Symbols.Values)
+        {
+            if (symbol.Path is null)
+            {
+                throw new InvalidOperationException($"Logical symbol '{symbol.StableKey}' is missing semantic path data.");
+            }
+
+            if (symbol.ContainingSymbolKey is not null)
+            {
+                ValidateRequiredLogicalKey(
+                    symbol.ContainingSymbolKey,
+                    symbolKeys,
+                    declarationKeys,
+                    "containing symbol");
+            }
+
+            if (symbol.AsyncNextSymbolKey is not null)
+            {
+                ValidateRequiredLogicalKey(
+                    symbol.AsyncNextSymbolKey,
+                    symbolKeys,
+                    declarationKeys,
+                    "async-next symbol");
+            }
+
+            var declarations = snapshot.Declarations.Values
+                .Where(value => value.SymbolKey.Equals(symbol.StableKey, StringComparison.Ordinal))
+                .ToArray();
+            if (symbol.Kind == IndexedSymbolKind.Type && declarations.Length > 0)
+            {
+                throw new InvalidOperationException($"Type symbol '{symbol.StableKey}' cannot have a callable declaration.");
+            }
+
+            if (declarations.Length == 0)
+            {
+                if (symbol.PreferredDeclarationKey is not null)
+                {
+                    throw new InvalidOperationException($"Preferred declaration for '{symbol.StableKey}' is missing.");
+                }
+
+                continue;
+            }
+
+            var ordinary = declarations.Where(value => value.Role == DeclarationRole.Ordinary).ToArray();
+            var definitions = declarations.Where(value => value.Role == DeclarationRole.PartialDefinition).ToArray();
+            var implementations = declarations.Where(value => value.Role == DeclarationRole.PartialImplementation).ToArray();
+            if (ordinary.Length > 1 ||
+                (ordinary.Length > 0 && (definitions.Length > 0 || implementations.Length > 0)) ||
+                definitions.Length > 1 ||
+                implementations.Length > 1 ||
+                (implementations.Length > 0 && definitions.Length == 0))
+            {
+                throw new InvalidOperationException($"Declaration roles for '{symbol.StableKey}' do not form a valid ordinary/partial set.");
+            }
+
+            var expectedPreferred = implementations.FirstOrDefault() ?? definitions.FirstOrDefault() ?? ordinary.First();
+            if (!string.Equals(symbol.PreferredDeclarationKey, expectedPreferred.Key, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Preferred declaration for '{symbol.StableKey}' is invalid.");
+            }
+        }
+
+        foreach (var call in snapshot.Calls)
+        {
+            ValidateRequiredLogicalKey(call.CallerSymbolKey, symbolKeys, declarationKeys, "caller");
+            ValidateLogicalOrUnresolvedKey(call.CalleeSymbolKey, symbolKeys, declarationKeys, "callee");
+            ValidateLogicalOrUnresolvedKey(call.CalleeDefinitionKey, symbolKeys, declarationKeys, "callee definition");
+            foreach (var candidate in call.CandidateSymbolKeys)
+            {
+                ValidateLogicalOrUnresolvedKey(candidate, symbolKeys, declarationKeys, "candidate");
+            }
+
+            if (!documentKeys.Contains(call.DocumentKey))
+            {
+                throw new InvalidOperationException($"Call references unknown document '{call.DocumentKey}'.");
+            }
+        }
+
+        foreach (var relation in snapshot.Relations)
+        {
+            ValidateRequiredLogicalKey(relation.SourceSymbolKey, symbolKeys, declarationKeys, "relation source");
+            ValidateRequiredLogicalKey(relation.TargetSymbolKey, symbolKeys, declarationKeys, "relation target");
+            if (relation.SourceSymbolKey.Equals(relation.TargetSymbolKey, StringComparison.Ordinal) &&
+                relation.RelationKind is SymbolRelationKind.PartialDefinition or SymbolRelationKind.PartialImplementation)
+            {
+                throw new InvalidOperationException("A partial logical callable cannot have a self relation.");
+            }
+        }
+
+        foreach (var binding in snapshot.InterfaceMethodBindings)
+        {
+            ValidateRequiredLogicalKey(binding.ImplementingTypeKey, symbolKeys, declarationKeys, "binding type");
+            ValidateRequiredLogicalKey(binding.InterfaceMethodKey, symbolKeys, declarationKeys, "binding interface method");
+            ValidateRequiredLogicalKey(binding.ImplementationMethodKey, symbolKeys, declarationKeys, "binding implementation method");
+        }
+    }
+
+    private static void ValidateLogicalOrUnresolvedKey(
+        string? key,
+        IReadOnlySet<string> symbolKeys,
+        IReadOnlySet<string> declarationKeys,
+        string role)
+    {
+        if (key is null)
+        {
+            return;
+        }
+
+        if (declarationKeys.Contains(key))
+        {
+            throw new InvalidOperationException($"{role} endpoint '{key}' is a physical declaration key.");
+        }
+
+        // Task 12 owns final dangling-call normalization. Non-declaration
+        // unresolved compiler targets may be staged as SQL NULL.
+    }
+
+    private static void ValidateRequiredLogicalKey(
+        string key,
+        IReadOnlySet<string> symbolKeys,
+        IReadOnlySet<string> declarationKeys,
+        string role)
+    {
+        if (declarationKeys.Contains(key))
+        {
+            throw new InvalidOperationException($"{role} endpoint '{key}' is a physical declaration key.");
+        }
+
+        if (!symbolKeys.Contains(key))
+        {
+            throw new InvalidOperationException($"{role} endpoint '{key}' is missing from logical symbols.");
+        }
+    }
+
+    private static void ValidateRelativePath(string path, string field)
+    {
+        if (string.IsNullOrWhiteSpace(path) ||
+            Path.IsPathRooted(path) ||
+            path.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"{field} must be a non-rooted forward-slash path: '{path}'.");
         }
     }
 

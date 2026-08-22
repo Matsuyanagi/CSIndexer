@@ -13,9 +13,9 @@ public sealed class MsBuildWorkspaceTests
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
         var projectPath = Path.Combine(
             repositoryRoot,
-            "tests",
-            "CsIndex.Query.Tests",
-            "CsIndex.Query.Tests.csproj");
+            "src",
+            "CsIndex.Query",
+            "CsIndex.Query.csproj");
         var options = new IndexOptions
         {
             InputPath = projectPath,

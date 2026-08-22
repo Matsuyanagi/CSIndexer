@@ -240,6 +240,7 @@ public sealed class AsyncInvolvementPropagatorTests
     private static IndexSnapshot CreateSnapshot() => new()
     {
         InputRoot = "root",
+        IndexRootAnchor = ".",
         InputFingerprint = [],
         RequestHash = [],
         Profile = new AnalysisProfileData

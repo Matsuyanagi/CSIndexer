@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
+using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
+using CsIndex.Core.Input;
 using CsIndex.Storage;
 using Microsoft.Data.Sqlite;
 
@@ -453,8 +455,8 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("Alpha.AsyncStatusCases::UniTaskResult()", asyncNames);
         Assert.Contains("Alpha.AsyncStatusCases::FireAndForget()", asyncNames);
         Assert.Contains("Alpha.AsyncStatusCases::StreamAsync()", asyncNames);
-        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLambda()::<lambda#1>", asyncNames);
-        Assert.Contains("Alpha.AsyncStatusCases::NestedLocalAsync()", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLambda().<lambda#1>", asyncNames);
+        Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLocal().NestedLocalAsync()", asyncNames);
 
         Assert.Contains("Alpha.AsyncStatusCases::SyncSuffixAsync()", syncNames);
         Assert.DoesNotContain("Alpha.AsyncStatusCases::SyncSuffixAsync()", asyncNames);
@@ -462,8 +464,8 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("Alpha.AsyncStatusCases::OuterWithAsyncLocal()", syncNames);
         Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLambda()", asyncNames);
         Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLocal()", asyncNames);
-        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLambda()::<lambda#1>", syncNames);
-        Assert.DoesNotContain("Alpha.AsyncStatusCases::NestedLocalAsync()", syncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLambda().<lambda#1>", syncNames);
+        Assert.DoesNotContain("Alpha.AsyncStatusCases::OuterWithAsyncLocal().NestedLocalAsync()", syncNames);
     }
 
     [Fact]
@@ -506,7 +508,7 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task AnalysisCacheVersionForcesReindexOfLegacyNormalizedSource()
+    public async Task AnalysisCacheVersionForcesReindexOfPriorDeclarationSource()
     {
         await _fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -533,7 +535,7 @@ public sealed class CliCommandTests : IDisposable
             "--db", databasePath,
         ];
         const string previousPayload =
-            """{"ToolVersion":"0.1.0","SchemaVersion":4,"AnalysisCacheVersion":1,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
+            """{"ToolVersion":"0.1.0","SchemaVersion":5,"AnalysisCacheVersion":2,"InputMode":"Directory","Configuration":"Release","TargetFramework":"net10.0","RuntimeIdentifier":"win-x64","ProfileName":"normalizer-test","Defines":["DEBUG","TRACE"],"Undefines":["LEGACY"],"References":[],"Excludes":["generated"],"GeneratedSource":"Physical","UnityEditor":null}""";
         var previousRequestHash = HashUtilities.Sha256(previousPayload);
 
         var initialIndex = await RunAsync(indexArguments);
@@ -558,10 +560,15 @@ public sealed class CliCommandTests : IDisposable
 
             const string legacySource = "public string[  ]Echo(string[  ]args)=>args;";
             command.CommandText = """
-                UPDATE symbols
+                UPDATE symbol_declarations
                 SET normalized_source = $legacy_source,
                     normalized_source_hash = $legacy_hash
-                WHERE display_name = 'Acceptance.ArrayHost::Echo(System.String[])';
+                WHERE symbol_id = (
+                    SELECT id
+                    FROM symbols
+                    WHERE namespace_name = 'Acceptance'
+                      AND type_display_path = 'ArrayHost'
+                      AND executable_display_path = 'Echo(string[])');
                 """;
             command.Parameters.AddWithValue("$legacy_source", legacySource);
             command.Parameters.Add("$legacy_hash", SqliteType.Blob).Value = HashUtilities.Sha256(legacySource);
@@ -585,9 +592,14 @@ public sealed class CliCommandTests : IDisposable
             sourceOnly: false,
             cancellationToken);
         var echo = Assert.Single(symbols, symbol =>
-            symbol.DisplayName == "Acceptance.ArrayHost::Echo(System.String[])");
-        var correctedSource = Assert.IsType<string>(echo.NormalizedSource);
-        var correctedHash = Assert.IsType<byte[]>(echo.NormalizedSourceHash);
+            symbol.DisplayName == "Acceptance.ArrayHost::Echo(string[])");
+        var echoDeclaration = Assert.Single(await repository.GetPreferredDeclarationsAsync(
+            profile.Id,
+            [echo.Id],
+            includeSourceText: true,
+            cancellationToken));
+        var correctedSource = Assert.IsType<string>(echoDeclaration.NormalizedSource);
+        var correctedHash = Assert.IsType<byte[]>(echoDeclaration.NormalizedSourceHash);
         Assert.Contains("string[]Echo(string[]args)", correctedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("[  ]", correctedSource, StringComparison.Ordinal);
         Assert.Equal(HashUtilities.Sha256(correctedSource), correctedHash);
@@ -599,6 +611,209 @@ public sealed class CliCommandTests : IDisposable
         var reindexedRequestHash = Assert.IsType<byte[]>(
             await verificationCommand.ExecuteScalarAsync(cancellationToken));
         Assert.Equal(currentRequestHash, reindexedRequestHash);
+    }
+
+    [Fact]
+    public async Task IndexWithCustomDatabaseUsesItsPortableAnchorAndDotCacheKey()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var layoutRoot = Path.Combine(_fixture.RootPath, $"custom-index-{Guid.NewGuid():N}");
+        var inputRoot = Path.Combine(layoutRoot, "input");
+        var databasePath = Path.Combine(layoutRoot, "database", "custom.sqlite");
+        Directory.CreateDirectory(inputRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(inputRoot, "Main.cs"),
+            "namespace Portable; public sealed class Worker { public void Run() { } }",
+            cancellationToken);
+        var arguments = new[]
+        {
+            "index", inputRoot,
+            "--mode", "directory",
+            "--profile-name", "custom-paths",
+            "--db", databasePath,
+        };
+
+        var first = await RunAsync(arguments);
+
+        Assert.Equal(ExitCodes.Success, first.ExitCode);
+        Assert.Contains("Cache: rebuilt", first.StandardError, StringComparison.Ordinal);
+        var repository = new SqliteIndex(databasePath).CreateQueryRepository();
+        var profile = await repository.GetProfileAsync("custom-paths", cancellationToken);
+        var expectedPaths = IndexPathResolver.CreateForIndex(databasePath, inputRoot);
+        Assert.Equal(".", profile.InputRoot);
+        Assert.Equal(expectedPaths.IndexRootAnchor, profile.IndexRootAnchor);
+
+        var second = await RunAsync(arguments);
+
+        Assert.Equal(ExitCodes.Success, second.ExitCode);
+        Assert.Contains("Cache: reused", second.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cache: rebuilt", second.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CacheHitDisposesThePreparedAnalysis()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var inputRoot = Path.Combine(_fixture.RootPath, $"cache-disposal-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(inputRoot, "index.sqlite");
+        Directory.CreateDirectory(inputRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(inputRoot, "Main.cs"),
+            "namespace Portable; public sealed class Worker { public void Run() { } }",
+            cancellationToken);
+        var arguments = new[]
+        {
+            "index", inputRoot,
+            "--mode", "directory",
+            "--db", databasePath,
+        };
+        Assert.Equal(ExitCodes.Success, (await RunAsync(arguments)).ExitCode);
+
+        PreparedAnalysis? captured = null;
+        Program.PreparedAnalysisObserver = prepared => captured = prepared;
+        CommandResult result;
+        try
+        {
+            result = await RunAsync(arguments);
+        }
+        finally
+        {
+            Program.PreparedAnalysisObserver = null;
+        }
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("Cache: reused", result.StandardError, StringComparison.Ordinal);
+        var disposed = Assert.IsType<PreparedAnalysis>(captured);
+        Assert.Throws<ObjectDisposedException>(() => _ = disposed.Input);
+    }
+
+    [Fact]
+    public async Task PreparedObserverFailureOccursBeforeDatabaseOpenAndPreservesBytes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var inputRoot = Path.Combine(_fixture.RootPath, $"observer-failure-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(inputRoot, "legacy.sqlite");
+        Directory.CreateDirectory(inputRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(inputRoot, "Main.cs"),
+            "namespace Portable; public sealed class Worker { }",
+            cancellationToken);
+        await CreateLegacyDatabaseAsync(databasePath, version: 4, cancellationToken);
+        var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
+        Program.PreparedAnalysisObserver = _ => throw new InputResolutionException("prepared observer sentinel");
+        CommandResult result;
+        try
+        {
+            result = await RunAsync(
+                "index", inputRoot,
+                "--mode", "directory",
+                "--db", databasePath);
+        }
+        finally
+        {
+            Program.PreparedAnalysisObserver = null;
+        }
+
+        Assert.Equal(ExitCodes.AnalysisFailure, result.ExitCode);
+        Assert.Contains("prepared observer sentinel", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+        await AssertLegacySentinelAsync(databasePath, version: 4, cancellationToken);
+    }
+
+    [Fact]
+    public async Task CrossDrivePreflightLeavesExistingDatabaseUnopenedAndByteIdentical()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var inputRoot = Path.Combine(
+            Directory.GetCurrentDirectory(),
+            $".task5-cross-drive-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(_fixture.RootPath, $"cross-drive-{Guid.NewGuid():N}.sqlite");
+        Assert.False(
+            string.Equals(
+                Path.GetPathRoot(inputRoot),
+                Path.GetPathRoot(databasePath),
+                StringComparison.OrdinalIgnoreCase),
+            "The preflight fixture requires different input and database drives.");
+        Directory.CreateDirectory(inputRoot);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(inputRoot, "Main.cs"),
+                "namespace Portable; public sealed class Worker { }",
+                cancellationToken);
+            await CreateLegacyDatabaseAsync(databasePath, version: 4, cancellationToken);
+            var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
+
+            var result = await RunAsync(
+                "index", inputRoot,
+                "--mode", "directory",
+                "--db", databasePath);
+
+            Assert.Equal(ExitCodes.AnalysisFailure, result.ExitCode);
+            Assert.StartsWith("Input error: ", result.StandardError, StringComparison.Ordinal);
+            Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+            await AssertLegacySentinelAsync(databasePath, version: 4, cancellationToken);
+        }
+        finally
+        {
+            Directory.Delete(inputRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RebuildDoesNotBypassSchemaFourRejectionOrModifyTheDatabase()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var inputRoot = Path.Combine(_fixture.RootPath, $"schema-four-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(inputRoot, "legacy.sqlite");
+        Directory.CreateDirectory(inputRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(inputRoot, "Main.cs"),
+            "namespace Legacy; public sealed class Worker { }",
+            cancellationToken);
+        await CreateLegacyDatabaseAsync(databasePath, version: 4, cancellationToken);
+        var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
+
+        var result = await RunAsync(
+            "index", inputRoot,
+            "--mode", "directory",
+            "--rebuild",
+            "--db", databasePath);
+
+        Assert.Equal(ExitCodes.DatabaseFailure, result.ExitCode);
+        Assert.Contains("Unsupported database schema version 4", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("database was not modified", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Delete or rename the old database", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("choose a new --db path", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("run csindex index explicitly", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+        await AssertLegacySentinelAsync(databasePath, version: 4, cancellationToken);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task LegacySchemaQueryCommandsRejectWithGuidanceAndPreserveBytes(int version)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var databasePath = Path.Combine(
+            _fixture.RootPath,
+            $"legacy-query-v{version}-{Guid.NewGuid():N}.sqlite");
+        await CreateLegacyDatabaseAsync(databasePath, version, cancellationToken);
+        var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
+
+        var result = await RunAsync("conditions", "--db", databasePath);
+
+        Assert.Equal(ExitCodes.DatabaseFailure, result.ExitCode);
+        Assert.Contains($"Unsupported database schema version {version}", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("database was not modified", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Delete or rename the old database", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("choose a new --db path", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("run csindex index explicitly", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+        await AssertLegacySentinelAsync(databasePath, version, cancellationToken);
     }
 
     [Fact]
@@ -1043,7 +1258,7 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(ExitCodes.InvalidArguments, ambiguousRoot.ExitCode);
         Assert.Equal(
             "Query error: Graph query is ambiguous for 'Alpha.AClass::Play'. Candidates: " +
-            "Alpha.AClass::Play(), Alpha.AClass::Play(System.String)" + Environment.NewLine,
+            "Alpha.AClass::Play(), Alpha.AClass::Play(string)" + Environment.NewLine,
             ambiguousRoot.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, missingRoot.ExitCode);
         Assert.Equal(
@@ -1059,7 +1274,7 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         var lambda = await RunAsync(
-            "symbol", "find", "::<lambda#1>", "--kind", "lambda", "--output-format", "json", "--db", _fixture.DatabasePath);
+            "symbol", "find", "*.<lambda#1>", "--kind", "lambda", "--output-format", "json", "--db", _fixture.DatabasePath);
         var components = await RunAsync(
             "symbol", "find", "--namespace", "Tokyo", "--type", "Gamer", "--method", "Play", "--output-format", "json",
             "--db", _fixture.DatabasePath);
@@ -1074,19 +1289,19 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(ExitCodes.Success, lambda.ExitCode);
         using var lambdaDocument = JsonDocument.Parse(lambda.StandardOutput);
         Assert.Contains(lambdaDocument.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
-            symbol.GetProperty("displayName").GetString()!.Contains("::<lambda#1>", StringComparison.Ordinal));
+            symbol.GetProperty("displayName").GetString()!.Contains(".<lambda#1>", StringComparison.Ordinal));
 
         Assert.Equal(ExitCodes.Success, components.ExitCode);
         using var componentsDocument = JsonDocument.Parse(components.StandardOutput);
         Assert.Equal(
-            ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
             componentsDocument.RootElement.GetProperty("matched").EnumerateArray()
                 .Select(symbol => symbol.GetProperty("displayName").GetString()));
 
         Assert.Equal(ExitCodes.Success, regex.ExitCode);
         using var regexDocument = JsonDocument.Parse(regex.StandardOutput);
         Assert.Equal(
-            ["Fukuoka.Gamer::Pray()", "Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(System.String)"],
+            ["Fukuoka.Gamer::Pray()", "Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
             regexDocument.RootElement.GetProperty("matched").EnumerateArray()
                 .Select(symbol => symbol.GetProperty("displayName").GetString()));
 
@@ -1151,19 +1366,20 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         const string lambdaQuery = "Tokyo.LambdaSearch::Function()::<lambda#1>";
+        const string lambdaDisplay = "Tokyo.LambdaSearch::Function().<lambda#1>";
         var table = await RunAsync(
             "source", "show", lambdaQuery, "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
         var json = await RunAsync(
             "source", "show", lambdaQuery, "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, table.ExitCode);
-        Assert.Contains(lambdaQuery, table.StandardOutput);
+        Assert.Contains(lambdaDisplay, table.StandardOutput);
         Assert.Contains("source: ()=>LambdaMarker(\"first\")", table.StandardOutput);
 
         Assert.Equal(ExitCodes.Success, json.ExitCode);
         using var document = JsonDocument.Parse(json.StandardOutput);
         var lambda = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
-        Assert.Equal(lambdaQuery, lambda.GetProperty("displayName").GetString());
+        Assert.Equal(lambdaDisplay, lambda.GetProperty("displayName").GetString());
         Assert.Equal("()=>LambdaMarker(\"first\")", lambda.GetProperty("normalizedSource").GetString());
     }
 
@@ -1326,7 +1542,7 @@ public sealed class CliCommandTests : IDisposable
         using var document = JsonDocument.Parse(lambda.StandardOutput);
         var nodes = document.RootElement.GetProperty("nodes").EnumerateArray().ToArray();
         Assert.Contains(nodes, node => node.GetProperty("symbol").GetProperty("displayName").GetString()!
-            .Contains("::<lambda#1>", StringComparison.Ordinal));
+            .Contains(".<lambda#1>", StringComparison.Ordinal));
         Assert.DoesNotContain(nodes, node => node.GetProperty("symbol").GetProperty("displayName").GetString() ==
             "Alpha.CallerGraph::LambdaOwner()");
 
@@ -1569,11 +1785,14 @@ public sealed class CliCommandTests : IDisposable
     {
         await _fixture.BuildTask;
 
-        var result = await RunAsync("symbol", "list", "--kind", "method", "--db", _fixture.DatabasePath);
+        var result = await RunAsync(
+            "symbol", "list", "--kind", "method", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains("Alpha.AClass::Play()", result.StandardOutput);
-        Assert.DoesNotContain("<lambda#", result.StandardOutput);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var symbols = document.RootElement.GetProperty("symbols").EnumerateArray().ToArray();
+        Assert.Contains(symbols, symbol => symbol.GetProperty("displayName").GetString() == "Alpha.AClass::Play()");
+        Assert.All(symbols, symbol => Assert.Equal("method", symbol.GetProperty("kind").GetString()));
     }
 
     [Fact]
@@ -1635,6 +1854,21 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task CalleesPresentDanglingImplicitConstructorByCapturedSourceToken()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "callees", "Alpha.DistinctCaller::Execute", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains(
+            "new AClass()",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SymbolFindShortNamesFormatsPresentationName()
     {
         await _fixture.BuildTask;
@@ -1660,12 +1894,16 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Theory]
-    [InlineData("definition", "Alpha.AClass::Play()", "AClass::Play()")]
-    [InlineData("references", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()")]
-    [InlineData("callers", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()")]
-    [InlineData("callees", "Alpha.DescendantCallees::Execute()", "DescendantCallees::Execute() -> DescendantCallees::DirectCall()")]
-    [InlineData("overrides", "Alpha.BaseClass::Run()", "XClass::Run() -> BaseClass::Run()")]
-    public async Task QueryCommandsShortNamesFormatHumanFacingNames(string command, string query, string expected)
+    [InlineData("definition", "Alpha.AClass::Play()", "AClass::Play()", "Alpha.AClass::")]
+    [InlineData("references", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()", "Alpha.AClass::")]
+    [InlineData("callers", "Alpha.AClass::Play()", "AClass::Execute() -> AClass::Play()", "Alpha.AClass::")]
+    [InlineData("callees", "Alpha.DescendantCallees::Execute()", "DescendantCallees::Execute() -> DescendantCallees::DirectCall()", "Alpha.DescendantCallees::")]
+    [InlineData("overrides", "Alpha.BaseClass::Run()", "XClass::Run() -> BaseClass::Run()", "Alpha.BaseClass::")]
+    public async Task QueryCommandsShortNamesFormatHumanFacingNames(
+        string command,
+        string query,
+        string expected,
+        string fullyQualifiedOwner)
     {
         await _fixture.BuildTask;
 
@@ -1673,7 +1911,7 @@ public sealed class CliCommandTests : IDisposable
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         Assert.Contains(expected, result.StandardOutput);
-        Assert.DoesNotContain("Alpha.", result.StandardOutput);
+        Assert.DoesNotContain(fullyQualifiedOwner, result.StandardOutput);
     }
 
     [Fact]
@@ -1752,6 +1990,16 @@ public sealed class CliCommandTests : IDisposable
     public async Task SymbolFindIncludeOverridesComposesWithShowSource()
     {
         await _fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var nameOnly = await _fixture.Query.FindSymbolsAsync(
+            "Alpha.Pianist::Play()",
+            filter: default,
+            profileName: _fixture.PrimaryProfileName,
+            sourceOnly: false,
+            includeOverrides: true,
+            includeSourceText: false,
+            cancellationToken);
+        Assert.All(nameOnly.MatchedSymbols, symbol => Assert.Null(symbol.PreferredDeclaration));
 
         var result = await RunAsync(
             "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--show-source", "--output-format", "json",
@@ -1856,7 +2104,7 @@ public sealed class CliCommandTests : IDisposable
             var result = await RunAsync(args.ToArray());
 
             Assert.Equal(ExitCodes.Success, result.ExitCode);
-            Assert.Contains("Alpha.LocalPlayer::Local()", result.StandardOutput);
+            Assert.Contains("Alpha.LocalPlayer::Execute().Local()", result.StandardOutput);
             Assert.DoesNotContain("Alpha.LocalBase::Local()", result.StandardOutput);
             Assert.DoesNotContain("InheritedLocalBody", result.StandardOutput);
         }
@@ -1961,6 +2209,57 @@ public sealed class CliCommandTests : IDisposable
         Assert.True(
             result.ExitCode == ExitCodes.Success,
             $"Command failed: {string.Join(' ', args)}{Environment.NewLine}{result.StandardError}");
+    }
+
+    private static async Task CreateLegacyDatabaseAsync(
+        string databasePath,
+        int version,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode = DELETE;";
+        await command.ExecuteScalarAsync(cancellationToken);
+        command.CommandText = $"""
+            CREATE TABLE schema_info(version INTEGER NOT NULL);
+            INSERT INTO schema_info(version) VALUES ({version});
+            CREATE TABLE legacy_sentinel(value TEXT NOT NULL);
+            INSERT INTO legacy_sentinel(value) VALUES ('preserve-me');
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task AssertLegacySentinelAsync(
+        string databasePath,
+        int version,
+        CancellationToken cancellationToken)
+    {
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT version,
+                   (SELECT value FROM legacy_sentinel LIMIT 1)
+            FROM schema_info;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        Assert.Equal(version, reader.GetInt32(0));
+        Assert.Equal("preserve-me", reader.GetString(1));
     }
 
     private static async Task<CommandResult> RunAsync(params string[] args)

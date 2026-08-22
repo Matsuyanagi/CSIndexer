@@ -271,7 +271,7 @@ public sealed class SymbolPatternMatcherTests
         string? typeSimpleName = "Gamer",
         string name = "Play",
         AsyncRole asyncRole = AsyncRole.None,
-        int? depth = null) => new(
+        int? depth = null) => new StoredSymbol(
         Id: 1,
         StableKey: "symbol-key",
         Kind: kind,
@@ -302,5 +302,42 @@ public sealed class SymbolPatternMatcherTests
         AssemblyName: null,
         Parameters: [],
         TypeKind: null,
-        Accessibility: null);
+        Accessibility: null) with
+        {
+            Path = CreatePath(displayName, kind, namespaceName, typeSimpleName),
+        };
+
+    private static SymbolPathData CreatePath(
+        string displayName,
+        IndexedSymbolKind kind,
+        string namespaceName,
+        string? typeSimpleName)
+    {
+        var separator = displayName.IndexOf("::", StringComparison.Ordinal);
+        if (separator < 0)
+        {
+            return new SymbolPathData(
+                string.Empty,
+                displayName,
+                displayName,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                CallablePathSegmentKind.Named);
+        }
+
+        var executable = displayName[(separator + 2)..];
+        return new SymbolPathData(
+            namespaceName,
+            typeSimpleName ?? displayName,
+            typeSimpleName ?? displayName,
+            executable,
+            executable,
+            executable,
+            executable,
+            kind == IndexedSymbolKind.Lambda
+                ? CallablePathSegmentKind.Lambda
+                : CallablePathSegmentKind.Named);
+    }
 }

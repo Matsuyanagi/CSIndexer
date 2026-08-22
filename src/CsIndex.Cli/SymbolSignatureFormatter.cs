@@ -1,10 +1,13 @@
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Storage;
 
 namespace CsIndex.Cli;
 
 internal static class SymbolSignatureFormatter
 {
+    private static readonly SymbolPathFormatter PathFormatter = new();
+
     public static string Format(StoredSymbol symbol, bool shortNames)
     {
         ArgumentNullException.ThrowIfNull(symbol);
@@ -26,20 +29,30 @@ internal static class SymbolSignatureFormatter
             parts.Add("async");
         }
 
-        if (symbol.ReturnTypeKey is not null)
+        if (symbol.ReturnTypeDisplay is not null || symbol.ReturnTypeKey is not null)
         {
-            parts.Add(FormatType(symbol.ReturnTypeKey, shortNames));
+            parts.Add(symbol.ReturnTypeDisplay ?? symbol.ReturnTypeKey!);
         }
 
-        parts.Add(FormatDisplayName(symbol.DisplayName, shortNames));
+        parts.Add(FormatDisplayName(symbol, shortNames));
         return string.Join(' ', parts);
     }
 
-    public static string FormatDisplayName(string displayName, bool shortNames) =>
-        shortNames ? SymbolNameShortener.Shorten(displayName) : displayName;
+    public static string FormatDisplayName(StoredSymbol symbol, bool shortNames)
+    {
+        ArgumentNullException.ThrowIfNull(symbol);
+        if (symbol.Path is null)
+        {
+            throw new InvalidOperationException(
+                $"Symbol ID {symbol.Id} has no semantic path data for presentation.");
+        }
 
-    public static string FormatType(string typeName, bool shortNames) =>
-        shortNames ? SymbolNameShortener.Shorten(typeName) : typeName;
+        return PathFormatter.Format(
+            symbol.Path,
+            new SymbolPathFormatOptions(SymbolPathStyle.CSharp, shortNames));
+    }
+
+    public static string FormatType(string typeName, bool shortNames) => typeName;
 
     public static bool IsDeclaredAsync(StoredSymbol symbol) =>
         (symbol.AsyncRole & AsyncRole.DeclaredAsync) != 0;

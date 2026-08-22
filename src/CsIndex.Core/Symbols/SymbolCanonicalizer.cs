@@ -116,6 +116,7 @@ public sealed class SymbolCanonicalizer
         bool isGenerated = false)
     {
         var display = FormatType(type);
+        var path = CreateTypePath(type);
         return new SymbolData
         {
             StableKey = GetDefinitionStableKey(type, projectKey),
@@ -127,6 +128,7 @@ public sealed class SymbolCanonicalizer
             TypeMetadataName = type.MetadataName,
             FullyQualifiedName = display,
             DisplayName = display,
+            Path = path,
             ContainingSymbolKey = type.ContainingType is null
                 ? null
                 : GetDefinitionStableKey(type.ContainingType, projectKey),
@@ -274,11 +276,7 @@ public sealed class SymbolCanonicalizer
 
     public static string FormatDisplayName(SymbolPathData path)
     {
-        ArgumentNullException.ThrowIfNull(path);
-        var typeOwner = string.IsNullOrEmpty(path.NamespacePath)
-            ? path.TypeDisplayPath
-            : $"{path.NamespacePath}.{path.TypeDisplayPath}";
-        return $"{typeOwner}::{path.ExecutableDisplayPath}";
+        return new SymbolPathFormatter().Format(path, new SymbolPathFormatOptions());
     }
 
     public static string FormatType(ITypeSymbol? type) =>
@@ -459,6 +457,17 @@ public sealed class SymbolCanonicalizer
             segment.Identity,
             segment.Kind);
     }
+
+    private static SymbolPathData CreateTypePath(INamedTypeSymbol type) =>
+        new(
+            GetNamespace(type),
+            GetTypeDisplayPath(type),
+            GetTypeIdentityPath(type),
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            CallablePathSegmentKind.Named);
 
     private static string GetTypeDisplayPath(INamedTypeSymbol type) =>
         string.Join('.', EnumerateContainingTypes(type).Select(current =>

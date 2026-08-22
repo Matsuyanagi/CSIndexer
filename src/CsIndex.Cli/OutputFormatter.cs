@@ -129,8 +129,8 @@ internal sealed class OutputFormatter
                     call => new
                     {
                         call.Id,
-                        caller = FormatName(call.CallerDisplayName),
-                        callee = FormatName(call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName),
+                        caller = FormatCallEndpoint(result, call.CallerSymbolId),
+                        callee = FormatCallTarget(result, call),
                         referenceKind = call.ReferenceKind.ToString(),
                         dispatchKind = call.DispatchKind.ToString(),
                         resolutionStatus = call.ResolutionStatus.ToString(),
@@ -150,8 +150,8 @@ internal sealed class OutputFormatter
                     result.PossibleRuntimeTargets,
                     relation => new
                     {
-                        source = FormatName(relation.SourceDisplayName),
-                        target = FormatName(relation.TargetDisplayName),
+                        source = FormatRelationEndpoint(result, relation.SourceSymbolId),
+                        target = FormatRelationEndpoint(result, relation.TargetSymbolId),
                         kind = relation.Kind.ToString(),
                     },
                     cancellationToken),
@@ -164,9 +164,9 @@ internal sealed class OutputFormatter
         {
             cancellationToken.ThrowIfCancellationRequested();
             var point = SafeResolve(call.DocumentPath, call.SourceStart);
-            var target = FormatName(call.CalleeDefinitionDisplayName ?? call.CalleeDisplayName ?? call.UnresolvedName ?? "<unresolved>");
+            var target = FormatCallTarget(result, call);
             _writer.WriteLine(
-                $"  {point.Path}:{point.Line}:{point.Column}  {FormatName(call.CallerDisplayName)} -> {target} " +
+                $"  {point.Path}:{point.Line}:{point.Column}  {FormatCallEndpoint(result, call.CallerSymbolId)} -> {target} " +
                 $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]");
         }
 
@@ -176,7 +176,7 @@ internal sealed class OutputFormatter
             foreach (var caller in result.EffectiveCallers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                _writer.WriteLine($"  {FormatName(caller.DisplayName)}");
+                _writer.WriteLine($"  {FormatSymbolName(caller)}");
             }
         }
 
@@ -186,7 +186,7 @@ internal sealed class OutputFormatter
             foreach (var relation in result.PossibleRuntimeTargets)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                _writer.WriteLine($"  {FormatName(relation.SourceDisplayName)} [{relation.Kind}]");
+                _writer.WriteLine($"  {FormatRelationEndpoint(result, relation.SourceSymbolId)} [{relation.Kind}]");
             }
         }
     }
@@ -207,8 +207,8 @@ internal sealed class OutputFormatter
                     result.Relations,
                     relation => new
                     {
-                        source = FormatName(relation.SourceDisplayName),
-                        target = FormatName(relation.TargetDisplayName),
+                        source = FormatRelationEndpoint(result, relation.SourceSymbolId),
+                        target = FormatRelationEndpoint(result, relation.TargetSymbolId),
                         kind = relation.Kind.ToString(),
                     },
                     cancellationToken),
@@ -220,7 +220,9 @@ internal sealed class OutputFormatter
         foreach (var relation in result.Relations)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _writer.WriteLine($"  {FormatName(relation.SourceDisplayName)} -> {FormatName(relation.TargetDisplayName)}");
+            _writer.WriteLine(
+                $"  {FormatRelationEndpoint(result, relation.SourceSymbolId)} -> " +
+                $"{FormatRelationEndpoint(result, relation.TargetSymbolId)}");
         }
     }
 
@@ -271,12 +273,16 @@ internal sealed class OutputFormatter
             ["id"] = symbol.Id,
             ["stableKey"] = symbol.StableKey,
             ["kind"] = symbol.Kind.ToString().ToLowerInvariant(),
-            ["displayName"] = SymbolSignatureFormatter.FormatDisplayName(symbol.DisplayName, shortNames),
+            ["displayName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, shortNames),
             ["signature"] = SymbolSignatureFormatter.Format(symbol, shortNames),
-            ["fullyQualifiedName"] = symbol.FullyQualifiedName,
+            ["fullyQualifiedName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, shortNames: false),
             ["namespaceName"] = symbol.NamespaceName,
             ["typeSimpleName"] = symbol.TypeSimpleName,
-            ["parameters"] = symbol.Parameters.Select(parameter => parameter.TypeKey).ToArray(),
+            ["parameters"] = symbol.Parameters
+                .Select(parameter => string.IsNullOrEmpty(parameter.TypeDisplay)
+                    ? parameter.TypeKey
+                    : parameter.TypeDisplay)
+                .ToArray(),
             ["location"] = symbol.DocumentPath is null || symbol.SourceStart is null
                 ? null
                 : ToLocationObject(symbol.DocumentPath, symbol.SourceStart.Value),
@@ -288,9 +294,9 @@ internal sealed class OutputFormatter
             ["asyncRole"] = symbol.AsyncRole.ToString(),
             ["isAsyncInvolved"] = symbol.AsyncInvolvementDepth is not null,
             ["asyncInvolvementDepth"] = symbol.AsyncInvolvementDepth,
-            ["returnType"] = symbol.ReturnTypeKey,
+            ["returnType"] = symbol.ReturnTypeDisplay ?? symbol.ReturnTypeKey,
             ["methodKind"] = symbol.MethodKind,
-            ["sourceAvailable"] = symbol.DocumentPath is not null,
+            ["sourceAvailable"] = symbol.PreferredDeclarationId is not null,
         };
         if (includeSource)
         {
@@ -407,9 +413,58 @@ internal sealed class OutputFormatter
         return results;
     }
 
-    private string? FormatName(string? name) => _shortNames && name is not null
-        ? SymbolNameShortener.Shorten(name)
-        : name;
+    private string FormatSymbolName(StoredSymbol symbol) =>
+        SymbolSignatureFormatter.FormatDisplayName(symbol, _shortNames);
+
+    private string FormatCallEndpoint(CallResult result, long symbolId) =>
+        FormatHydratedEndpoint(result.SymbolsById, symbolId, "call");
+
+    private string FormatCallTarget(CallResult result, StoredCall call)
+    {
+        var callee = call.CalleeSymbolId is long calleeId
+            ? FormatCallEndpoint(result, calleeId)
+            : null;
+        var definition = call.CalleeDefinitionId is long definitionId
+            ? FormatCallEndpoint(result, definitionId)
+            : null;
+        if (definition is not null)
+        {
+            return definition;
+        }
+
+        if (callee is not null)
+        {
+            return callee;
+        }
+
+        if (!string.IsNullOrWhiteSpace(call.UnresolvedName))
+        {
+            return call.UnresolvedName!;
+        }
+
+        throw new InvalidOperationException(
+            $"Call ID {call.Id} has no resolved callee endpoint or unresolved name.");
+    }
+
+    private string FormatRelationEndpoint(RelationResult result, long symbolId) =>
+        FormatHydratedEndpoint(result.SymbolsById, symbolId, "relation");
+
+    private string FormatRelationEndpoint(CallResult result, long symbolId) =>
+        FormatHydratedEndpoint(result.SymbolsById, symbolId, "relation");
+
+    private string FormatHydratedEndpoint(
+        IReadOnlyDictionary<long, StoredSymbol> symbolsById,
+        long symbolId,
+        string endpointKind)
+    {
+        if (!symbolsById.TryGetValue(symbolId, out var symbol))
+        {
+            throw new InvalidOperationException(
+                $"{endpointKind} endpoint symbol ID {symbolId} is missing from the hydration batch.");
+        }
+
+        return FormatSymbolName(symbol);
+    }
 
     private void WriteJsonPayload(object value) => WriteJson(value, _writer);
 

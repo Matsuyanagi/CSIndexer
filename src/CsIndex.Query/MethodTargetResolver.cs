@@ -22,7 +22,7 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
             profileId,
             typeSimpleName: query.TypeSimpleName,
             kind: IndexedSymbolKind.Type,
-            sourceOnly: sourceOnly,
+            sourceOnly: false,
             cancellationToken: cancellationToken);
         var receivers = receiverCandidates
             .Where(receiver => query.NamespaceName is null || receiver.NamespaceName == query.NamespaceName)
@@ -199,8 +199,8 @@ internal sealed class MethodTargetResolver(QueryRepository repository)
 
     private static bool IsSourceBackedMethod(StoredSymbol symbol) =>
         symbol.Kind == IndexedSymbolKind.Method &&
-        symbol.DocumentPath is not null &&
-        symbol.NormalizedSource is not null;
+        symbol.PreferredDeclarationId is not null &&
+        symbol.PreferredDocumentPath is not null;
 
     private sealed record ResolvedRoot(StoredSymbol Method, StoredSymbol ReceiverType);
 }

@@ -606,12 +606,19 @@ public sealed class SemanticIndexFixture : IDisposable
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
-        var symbols = await Repository.FindExecutableSymbolsAsync(
+        var repository = Repository;
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var symbols = await repository.FindExecutableSymbolsAsync(
             profile.Id,
             sourceOnly: false,
             cancellationToken);
-        return symbols.Single(symbol => symbol.DisplayName == displayName);
+        var symbol = symbols.Single(value => value.DisplayName == displayName);
+        var preferredDeclarations = await repository.GetPreferredDeclarationsAsync(
+            profile.Id,
+            [symbol.Id],
+            includeSourceText: true,
+            cancellationToken);
+        return symbol with { PreferredDeclaration = preferredDeclarations.SingleOrDefault() };
     }
 
     public async Task SetAsyncNextSymbolIdAsync(
@@ -622,6 +629,7 @@ public sealed class SemanticIndexFixture : IDisposable
         CancellationToken cancellationToken = default)
     {
         var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var symbol = await GetStoredSymbolAsync(displayName, profileName, cancellationToken);
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = DatabasePath,
@@ -642,11 +650,11 @@ public sealed class SemanticIndexFixture : IDisposable
             UPDATE symbols
             SET async_next_symbol_id = $async_next_symbol_id
             WHERE analysis_profile_id = $profile_id
-              AND display_name = $display_name;
+              AND id = $symbol_id;
             """;
         command.Parameters.AddWithValue("$async_next_symbol_id", (object?)asyncNextSymbolId ?? DBNull.Value);
         command.Parameters.AddWithValue("$profile_id", profile.Id);
-        command.Parameters.AddWithValue("$display_name", displayName);
+        command.Parameters.AddWithValue("$symbol_id", symbol.Id);
         var updated = await command.ExecuteNonQueryAsync(cancellationToken);
         if (updated != 1)
         {
@@ -715,15 +723,24 @@ public sealed class SemanticIndexFixture : IDisposable
         await using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE symbols
-            SET normalized_source = $normalized_source,
-                source_document_id = CASE
-                    WHEN $document_path IS NULL THEN NULL
-                    ELSE (
-                        SELECT id
-                        FROM documents
-                        WHERE analysis_profile_id = $profile_id
-                          AND normalized_path = $document_path)
-                END
+            SET preferred_declaration_id = CASE
+                WHEN $normalized_source IS NULL OR $document_path IS NULL THEN NULL
+                ELSE (
+                    SELECT d.id
+                    FROM symbol_declarations d
+                    JOIN documents doc ON doc.id = d.document_id
+                    WHERE d.symbol_id = $symbol_id
+                      AND doc.normalized_path = $document_path
+                    ORDER BY
+                        CASE d.declaration_role
+                            WHEN 2 THEN 0
+                            WHEN 3 THEN 1
+                            WHEN 1 THEN 2
+                            ELSE 3
+                        END,
+                        d.id
+                    LIMIT 1)
+            END
             WHERE analysis_profile_id = $profile_id
               AND id = $symbol_id;
             """;
@@ -746,6 +763,10 @@ public sealed class SemanticIndexFixture : IDisposable
         CancellationToken cancellationToken = default)
     {
         var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var caller = await GetStoredSymbolAsync(callerDisplayName, profileName, cancellationToken);
+        var callee = await GetStoredSymbolAsync(calleeDisplayName, profileName, cancellationToken);
+        var calleeDeclaration = callee.PreferredDeclaration ?? throw new InvalidOperationException(
+            $"Expected callee '{calleeDisplayName}' in profile '{profile.Name}' to have a preferred declaration.");
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = DatabasePath,
@@ -761,20 +782,16 @@ public sealed class SemanticIndexFixture : IDisposable
                 analysis_profile_id, caller_symbol_id, callee_symbol_id, callee_definition_id,
                 reference_kind, dispatch_kind, resolution_status, resolution_reason, async_usage_kind,
                 document_id, source_start, source_length, unresolved_name, receiver_type_key)
-            SELECT
-                $profile_id, caller.id, callee.id, callee.id,
+            VALUES(
+                $profile_id, $caller_id, $callee_id, $callee_id,
                 $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason, $async_usage_kind,
-                callee.source_document_id, COALESCE(callee.source_start, 0), 1, NULL, NULL
-            FROM symbols AS caller
-            CROSS JOIN symbols AS callee
-            WHERE caller.analysis_profile_id = $profile_id
-              AND caller.display_name = $caller_display_name
-              AND callee.analysis_profile_id = $profile_id
-              AND callee.display_name = $callee_display_name;
+                $document_id, $source_start, 1, NULL, NULL);
             """;
         command.Parameters.AddWithValue("$profile_id", profile.Id);
-        command.Parameters.AddWithValue("$caller_display_name", callerDisplayName);
-        command.Parameters.AddWithValue("$callee_display_name", calleeDisplayName);
+        command.Parameters.AddWithValue("$caller_id", caller.Id);
+        command.Parameters.AddWithValue("$callee_id", callee.Id);
+        command.Parameters.AddWithValue("$document_id", calleeDeclaration.DocumentId);
+        command.Parameters.AddWithValue("$source_start", calleeDeclaration.SourceStart);
         command.Parameters.AddWithValue("$reference_kind", (int)ReferenceKind.Invocation);
         command.Parameters.AddWithValue("$dispatch_kind", (int)DispatchKind.Static);
         command.Parameters.AddWithValue("$resolution_status", (int)ResolutionStatus.Resolved);

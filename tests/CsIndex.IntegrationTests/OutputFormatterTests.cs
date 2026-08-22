@@ -19,19 +19,36 @@ public sealed class OutputFormatterTests
     [Theory]
     [InlineData(
         "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)",
-        "DistributedCacheLocker::RunWithHeartbeatAsync(String,TimeSpan,TimeSpan,Func<CancellationToken, Task>,CancellationTokenSource)")]
+        "DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)")]
     [InlineData(
         "Example.Handlers.Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])",
-        "Worker::Execute(Dictionary<String,List<Widget?[]>>,Nullable<Int32>[])")]
+        "Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])")]
     [InlineData(
         "Example.Handlers.Worker::Run(System.Threading.Tasks.Task)::<lambda#1>",
-        "Worker::Run(Task)::<lambda#1>")]
+        "Worker::Run(System.Threading.Tasks.Task)::<lambda#1>")]
     [InlineData(
         "会社.モデル.サービス::実行(会社.モデル.入力)",
-        "サービス::実行(入力)")]
-    public void SymbolNameShortenerRemovesNamespacesAndKeepsTypeSyntax(string name, string expected)
+        "サービス::実行(会社.モデル.入力)")]
+    public void SymbolPathFormatterShortNamesRemoveOnlyOwnerNamespace(string name, string expected)
     {
-        Assert.Equal(expected, SymbolNameShortener.Shorten(name));
+        var separator = name.IndexOf("::", StringComparison.Ordinal);
+        var owner = separator < 0 ? name : name[..separator];
+        var executable = separator < 0 ? string.Empty : name[(separator + 2)..];
+        var path = new SymbolPathData(
+            NamespacePath: separator < 0 ? string.Empty : owner[..owner.LastIndexOf('.')],
+            TypeDisplayPath: separator < 0 ? owner : owner[(owner.LastIndexOf('.') + 1)..],
+            TypeIdentityPath: separator < 0 ? owner : owner[(owner.LastIndexOf('.') + 1)..],
+            ExecutableDisplayPath: executable,
+            ExecutableIdentityPath: executable,
+            SegmentDisplay: executable,
+            SegmentIdentity: executable,
+            SegmentKind: CallablePathSegmentKind.Named);
+        var actual = new CsIndex.Core.Symbols.SymbolPathFormatter().Format(
+            path,
+            new CsIndex.Core.Symbols.SymbolPathFormatOptions(
+                CsIndex.Core.Symbols.SymbolPathStyle.CSharp,
+                ShortNames: true));
+        Assert.Equal(expected, actual);
     }
 
     [Fact]
@@ -262,12 +279,18 @@ public sealed class OutputFormatterTests
             new DefinitionResult(context, [symbol]),
             TestContext.Current.CancellationToken);
         formatter.WriteCalls(
-            new CallResult(context, [CreateCall(AsyncUsageKind.None)], [], []),
+            new CallResult(
+                context,
+                [CreateCall(AsyncUsageKind.None)],
+                [],
+                [],
+                CreateEndpointSymbols()),
             "call(s)",
             TestContext.Current.CancellationToken);
         formatter.WriteRelations(new RelationResult(
             context,
-            [new StoredRelation(1, "Example.Source()", 2, "Example.Target()", SymbolRelationKind.Overrides)]),
+            [new StoredRelation(1, 2, SymbolRelationKind.Overrides)],
+            CreateEndpointSymbols()),
             TestContext.Current.CancellationToken);
         formatter.WriteConditions(new ConditionsResult(
             CreateProfile(),
@@ -307,7 +330,12 @@ public sealed class OutputFormatterTests
         var context = new QueryContext(CreateProfile(), [CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null)]);
 
         using var document = CaptureInjectedJson(formatter => formatter.WriteCalls(
-            new CallResult(context, [CreateCall(AsyncUsageKind.Awaited)], [], []),
+            new CallResult(
+                context,
+                [CreateCall(AsyncUsageKind.Awaited)],
+                [],
+                [],
+                CreateEndpointSymbols()),
             "call(s)",
             TestContext.Current.CancellationToken));
 
@@ -325,20 +353,148 @@ public sealed class OutputFormatterTests
         var context = new QueryContext(CreateProfile(), [CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null)]);
         var relation = new StoredRelation(
             1,
-            "Example.Source()",
             2,
-            "Example.Target()",
             SymbolRelationKind.Overrides);
 
         using var document = CaptureInjectedJson(formatter => formatter.WriteRelations(
-            new RelationResult(context, [relation]),
+            new RelationResult(context, [relation], CreateEndpointSymbols()),
             TestContext.Current.CancellationToken));
 
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
         var outputRelation = Assert.Single(document.RootElement.GetProperty("relations").EnumerateArray());
-        Assert.Equal(relation.SourceDisplayName, outputRelation.GetProperty("source").GetString());
-        Assert.Equal(relation.TargetDisplayName, outputRelation.GetProperty("target").GetString());
+        Assert.Equal(
+            CreateEndpointSymbols()[relation.SourceSymbolId].DisplayName,
+            outputRelation.GetProperty("source").GetString());
+        Assert.Equal(
+            CreateEndpointSymbols()[relation.TargetSymbolId].DisplayName,
+            outputRelation.GetProperty("target").GetString());
         Assert.Equal("Overrides", outputRelation.GetProperty("kind").GetString());
+    }
+
+    [Theory]
+    [InlineData("table", "caller", 1)]
+    [InlineData("json", "caller", 1)]
+    [InlineData("table", "callee", 2)]
+    [InlineData("json", "callee", 2)]
+    [InlineData("table", "definition", 3)]
+    [InlineData("json", "definition", 3)]
+    public void WriteCallsRejectsEveryMissingNonNullHydratedEndpoint(
+        string format,
+        string missingRole,
+        long missingId)
+    {
+        var call = CreateCall(AsyncUsageKind.None) with { CalleeDefinitionId = 3 };
+        var endpoints = CreateEndpointSymbols().ToDictionary();
+        endpoints[3] = CreateSymbol(
+            AsyncRole.None,
+            null,
+            id: 3,
+            displayName: "Example.Definition()");
+        Assert.True(endpoints.Remove(missingId), missingRole);
+        var result = new CallResult(
+            new QueryContext(CreateProfile(), []),
+            [call],
+            [],
+            [],
+            endpoints);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)")));
+
+        Assert.Equal(
+            $"call endpoint symbol ID {missingId} is missing from the hydration batch.",
+            exception.Message);
+    }
+
+    [Theory]
+    [InlineData("table", 1)]
+    [InlineData("json", 1)]
+    [InlineData("table", 2)]
+    [InlineData("json", 2)]
+    public void WriteRelationsRejectsEveryMissingHydratedEndpoint(string format, long missingId)
+    {
+        var endpoints = CreateEndpointSymbols().ToDictionary();
+        Assert.True(endpoints.Remove(missingId));
+        var result = new RelationResult(
+            new QueryContext(CreateProfile(), []),
+            [new StoredRelation(1, 2, SymbolRelationKind.Overrides)],
+            endpoints);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            CaptureText(() => new OutputFormatter(format).WriteRelations(result)));
+
+        Assert.Equal(
+            $"relation endpoint symbol ID {missingId} is missing from the hydration batch.",
+            exception.Message);
+    }
+
+    [Theory]
+    [InlineData("table")]
+    [InlineData("json")]
+    public void WriteCallsUsesUnresolvedNameOnlyWhenBothEndpointIdsAreNull(string format)
+    {
+        const string unresolvedName = "DynamicTarget<System.Guid>";
+        var call = CreateCall(AsyncUsageKind.None) with
+        {
+            CalleeSymbolId = null,
+            CalleeDefinitionId = null,
+            UnresolvedName = unresolvedName,
+            ResolutionStatus = ResolutionStatus.Unresolved,
+        };
+        var endpoints = CreateEndpointSymbols()
+            .Where(pair => pair.Key == call.CallerSymbolId)
+            .ToDictionary();
+        var result = new CallResult(
+            new QueryContext(CreateProfile(), []),
+            [call],
+            [],
+            [],
+            endpoints);
+
+        var output = CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)"));
+
+        if (format == "json")
+        {
+            using var document = JsonDocument.Parse(output);
+            Assert.Equal(
+                unresolvedName,
+                Assert.Single(document.RootElement.GetProperty("calls").EnumerateArray())
+                    .GetProperty("callee")
+                    .GetString());
+        }
+        else
+        {
+            Assert.Contains(unresolvedName, output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("table")]
+    [InlineData("json")]
+    public void WriteCallsRejectsMissingEndpointIdsWithoutAnUnresolvedToken(string format)
+    {
+        var call = CreateCall(AsyncUsageKind.None) with
+        {
+            CalleeSymbolId = null,
+            CalleeDefinitionId = null,
+            UnresolvedName = " ",
+        };
+        var endpoints = CreateEndpointSymbols()
+            .Where(pair => pair.Key == call.CallerSymbolId)
+            .ToDictionary();
+        var result = new CallResult(
+            new QueryContext(CreateProfile(), []),
+            [call],
+            [],
+            [],
+            endpoints);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)")));
+
+        Assert.Equal(
+            $"Call ID {call.Id} has no resolved callee endpoint or unresolved name.",
+            exception.Message);
     }
 
     [Fact]
@@ -375,7 +531,7 @@ public sealed class OutputFormatterTests
 
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal(
-            "DistributedCacheLocker::RunWithHeartbeatAsync(String)",
+            "DistributedCacheLocker::RunWithHeartbeatAsync(System.String)",
             outputSymbol.GetProperty("displayName").GetString());
         Assert.Equal("symbol-1", outputSymbol.GetProperty("stableKey").GetString());
         Assert.Equal("Nop.Core.Caching", outputSymbol.GetProperty("namespaceName").GetString());
@@ -384,7 +540,7 @@ public sealed class OutputFormatterTests
     }
 
     [Fact]
-    public void WriteSymbolsTableUsesDeclarationOrderingAndShortensReturnAndParameterTypes()
+    public void WriteSymbolsTableKeepsReturnAndParameterTypesWhileShorteningOwnerNamespace()
     {
         var symbol = CreateSymbol(
             AsyncRole.DeclaredAsync,
@@ -403,7 +559,10 @@ public sealed class OutputFormatterTests
 
         var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteSymbols(context));
 
-        Assert.Contains("public static async Task<Int32> Gamer::Play(String,CancellationToken)", output);
+        Assert.Contains(
+            "public static async System.Threading.Tasks.Task<System.Int32> " +
+            "Gamer::Play(System.String,System.Threading.CancellationToken)",
+            output);
     }
 
     [Fact]
@@ -423,8 +582,10 @@ public sealed class OutputFormatterTests
         using var hiddenSource = CaptureJson(() => new OutputFormatter("json", shortNames: true)
             .WriteSymbols(new QueryContext(CreateProfile(), [symbol])));
         var hiddenSymbol = Assert.Single(hiddenSource.RootElement.GetProperty("matched").EnumerateArray());
-        Assert.Equal("Gamer::Play(String)", hiddenSymbol.GetProperty("displayName").GetString());
-        Assert.Equal("public static async Task<Int32> Gamer::Play(String)", hiddenSymbol.GetProperty("signature").GetString());
+        Assert.Equal("Gamer::Play(System.String)", hiddenSymbol.GetProperty("displayName").GetString());
+        Assert.Equal(
+            "public static async System.Threading.Tasks.Task<System.Int32> Gamer::Play(System.String)",
+            hiddenSymbol.GetProperty("signature").GetString());
         Assert.Equal("System.Threading.Tasks.Task<System.Int32>", hiddenSymbol.GetProperty("returnType").GetString());
         Assert.Equal("System.String", Assert.Single(hiddenSymbol.GetProperty("parameters").EnumerateArray()).GetString());
         Assert.Equal("public", hiddenSymbol.GetProperty("accessibility").GetString());
@@ -1497,17 +1658,27 @@ public sealed class OutputFormatterTests
     public void WriteCallsTableShortensCallerAndCalleeNames()
     {
         var context = new QueryContext(CreateProfile(), []);
-        var call = CreateCall(AsyncUsageKind.None) with
+        var call = CreateCall(AsyncUsageKind.None);
+        var endpointSymbols = new Dictionary<long, StoredSymbol>
         {
-            CallerDisplayName = "Example.Features.Caller::Run(System.String)",
-            CalleeDisplayName = "Example.Services.Callee::Execute(System.Threading.Tasks.Task)",
-            CalleeDefinitionDisplayName = "Example.Services.Callee::Execute(System.Threading.Tasks.Task)",
+            [1] = CreateSymbol(
+                AsyncRole.None,
+                null,
+                id: 1,
+                displayName: "Example.Features.Caller::Run(System.String)"),
+            [2] = CreateSymbol(
+                AsyncRole.None,
+                null,
+                id: 2,
+                displayName: "Example.Services.Callee::Execute(System.Threading.Tasks.Task)"),
         };
-        var result = new CallResult(context, [call], [], []);
+        var result = new CallResult(context, [call], [], [], endpointSymbols);
 
         var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteCalls(result, "call(s)"));
 
-        Assert.Contains("Caller::Run(String) -> Callee::Execute(Task)", output);
+        Assert.Contains(
+            "Caller::Run(System.String) -> Callee::Execute(System.Threading.Tasks.Task)",
+            output);
     }
 
     [Fact]
@@ -1553,7 +1724,9 @@ public sealed class OutputFormatterTests
 
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("symbols").EnumerateArray());
-        Assert.Equal("Worker::Run(Task)", outputSymbol.GetProperty("displayName").GetString());
+        Assert.Equal(
+            "Worker::Run(System.Threading.Tasks.Task)",
+            outputSymbol.GetProperty("displayName").GetString());
         Assert.False(document.RootElement.TryGetProperty("matched", out _));
     }
 
@@ -1561,7 +1734,12 @@ public sealed class OutputFormatterTests
     public void WriteCallsJsonIncludesAsyncUsageKind()
     {
         var context = new QueryContext(CreateProfile(), []);
-        var result = new CallResult(context, [CreateCall(AsyncUsageKind.Awaited)], [], []);
+        var result = new CallResult(
+            context,
+            [CreateCall(AsyncUsageKind.Awaited)],
+            [],
+            [],
+            CreateEndpointSymbols());
 
         using var document = CaptureJson(() => new OutputFormatter("json").WriteCalls(result, "call(s)"));
 
@@ -1596,7 +1774,12 @@ public sealed class OutputFormatterTests
     public void WriteCallsTableShowsAsyncUsageKind()
     {
         var context = new QueryContext(CreateProfile(), []);
-        var result = new CallResult(context, [CreateCall(AsyncUsageKind.Awaited)], [], []);
+        var result = new CallResult(
+            context,
+            [CreateCall(AsyncUsageKind.Awaited)],
+            [],
+            [],
+            CreateEndpointSymbols());
 
         var output = CaptureText(() => new OutputFormatter("table").WriteCalls(result, "call(s)"));
 
@@ -1911,48 +2094,110 @@ public sealed class OutputFormatterTests
         string? normalizedSource = null,
         int? accessibility = null,
         string? documentPath = null,
-        int? sourceStart = null) => new(
-        Id: id,
-        StableKey: $"symbol-{id}",
-        Kind: kind,
-        Name: name,
-        NamespaceName: namespaceName,
-        TypeSimpleName: "Example",
-        TypeMetadataName: "Example",
-        FullyQualifiedName: displayName,
-        DisplayName: displayName,
-        ContainingSymbolId: null,
-        Arity: 0,
-        ParameterCount: 0,
-        MethodKind: methodKind,
-        IsStatic: isStatic,
-        IsAbstract: false,
-        IsVirtual: false,
-        IsOverride: false,
-        AsyncRole: asyncRole,
-        AsyncInvolvementDepth: asyncInvolvementDepth,
-        AsyncNextSymbolId: null,
-        ReturnTypeKey: returnTypeKey,
-        NormalizedSource: normalizedSource,
-        NormalizedSourceHash: null,
-        DocumentPath: documentPath,
-        SourceStart: sourceStart,
-        SourceLength: normalizedSource?.Length,
-        IsGenerated: false,
-        AssemblyName: null,
-        Parameters: parameters ?? [],
-        TypeKind: null,
-        Accessibility: accessibility);
+        int? sourceStart = null)
+    {
+        var path = CreatePath(displayName, namespaceName);
+        var preferredDeclaration = normalizedSource is not null || documentPath is not null
+            ? new StoredDeclaration(
+                Id: id,
+                DeclarationKey: $"declaration-{id}",
+                SymbolId: id,
+                DocumentId: id,
+                DocumentPath: documentPath ?? "source.cs",
+                Role: DeclarationRole.Ordinary,
+                SourceStart: sourceStart ?? 0,
+                SourceLength: normalizedSource?.Length ?? 0,
+                NormalizedSource: normalizedSource,
+                NormalizedSourceHash: null,
+                IsGenerated: false)
+            : null;
+        return new StoredSymbol(
+            Id: id,
+            StableKey: $"symbol-{id}",
+            Kind: kind,
+            Name: name,
+            NamespaceName: namespaceName,
+            TypeSimpleName: path.TypeDisplayPath,
+            TypeMetadataName: path.TypeIdentityPath,
+            FullyQualifiedName: string.Empty,
+            DisplayName: string.Empty,
+            ContainingSymbolId: null,
+            Arity: 0,
+            ParameterCount: parameters?.Count ?? 0,
+            MethodKind: methodKind,
+            IsStatic: isStatic,
+            IsAbstract: false,
+            IsVirtual: false,
+            IsOverride: false,
+            AsyncRole: asyncRole,
+            AsyncInvolvementDepth: asyncInvolvementDepth,
+            AsyncNextSymbolId: null,
+            ReturnTypeKey: returnTypeKey,
+            NormalizedSource: null,
+            NormalizedSourceHash: null,
+            DocumentPath: documentPath,
+            SourceStart: sourceStart,
+            SourceLength: preferredDeclaration?.SourceLength,
+            IsGenerated: false,
+            AssemblyName: null,
+            Parameters: parameters ?? [],
+            TypeKind: null,
+            Accessibility: accessibility) with
+        {
+            Path = path,
+            PreferredDeclarationId = preferredDeclaration?.Id,
+            PreferredDocumentPath = preferredDeclaration?.DocumentPath,
+            PreferredSourceStart = preferredDeclaration?.SourceStart,
+            PreferredIsGenerated = preferredDeclaration?.IsGenerated,
+            PreferredDeclaration = preferredDeclaration,
+        };
+    }
+
+    private static SymbolPathData CreatePath(string displayName, string namespaceName)
+    {
+        var separator = displayName.IndexOf("::", StringComparison.Ordinal);
+        if (separator < 0)
+        {
+            return new SymbolPathData(
+                string.Empty,
+                displayName,
+                displayName,
+                string.Empty,
+                string.Empty,
+                displayName,
+                displayName,
+                CallablePathSegmentKind.Named);
+        }
+
+        var owner = displayName[..separator];
+        var executable = displayName[(separator + 2)..];
+        var lastDot = owner.LastIndexOf('.');
+        var typePath = lastDot < 0 ? owner : owner[(lastDot + 1)..];
+        var namespacePath = lastDot < 0 ? namespaceName : owner[..lastDot];
+        return new SymbolPathData(
+            namespacePath,
+            typePath,
+            typePath,
+            executable,
+            executable,
+            executable,
+            executable,
+            CallablePathSegmentKind.Named);
+    }
+
+    private static IReadOnlyDictionary<long, StoredSymbol> CreateEndpointSymbols() =>
+        new Dictionary<long, StoredSymbol>
+        {
+            [1] = CreateSymbol(AsyncRole.None, null, id: 1, displayName: "Example.Source()"),
+            [2] = CreateSymbol(AsyncRole.None, null, id: 2, displayName: "Example.Target()"),
+        };
 
     private static StoredCall CreateCall(AsyncUsageKind asyncUsageKind) => new(
         Id: 1,
         CallerSymbolId: 1,
-        CallerDisplayName: "Example.Caller()",
         CallerContainingSymbolId: null,
         CalleeSymbolId: 2,
-        CalleeDisplayName: "Example.Callee()",
         CalleeDefinitionId: 2,
-        CalleeDefinitionDisplayName: "Example.Callee()",
         ReferenceKind: ReferenceKind.Invocation,
         DispatchKind: DispatchKind.Static,
         ResolutionStatus: ResolutionStatus.Resolved,

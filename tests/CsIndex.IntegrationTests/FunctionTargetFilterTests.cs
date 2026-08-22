@@ -71,16 +71,16 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
 
     [Theory]
     [InlineData("Alpha.FunctionKinds::Regular()", "Alpha.FunctionKinds::Regular()", MethodKind.Ordinary)]
-    [InlineData("Alpha.FunctionKinds::.ctor()", "Alpha.FunctionKinds::.ctor()", MethodKind.Constructor)]
-    [InlineData("Alpha.FunctionKinds::Local()", "Alpha.FunctionKinds::Local()", MethodKind.LocalFunction)]
-    [InlineData("Alpha.FunctionKinds::get_Value()", "Alpha.FunctionKinds::get_Value()", MethodKind.PropertyGet)]
+    [InlineData("Alpha.FunctionKinds::.ctor()", "Alpha.FunctionKinds::[constructor]()", MethodKind.Constructor)]
+    [InlineData("Alpha.FunctionKinds::Local()", "Alpha.FunctionKinds::LocalOwner().Local()", MethodKind.LocalFunction)]
+    [InlineData("Alpha.FunctionKinds::get_Value()", "Alpha.FunctionKinds::[get:Value]()", MethodKind.PropertyGet)]
     [InlineData(
         "Alpha.FunctionKinds::op_Addition(Alpha.FunctionKinds,Alpha.FunctionKinds)",
-        "Alpha.FunctionKinds::op_Addition(Alpha.FunctionKinds,Alpha.FunctionKinds)",
+        "Alpha.FunctionKinds::[operator:+](Alpha.FunctionKinds,Alpha.FunctionKinds)",
         MethodKind.UserDefinedOperator)]
     [InlineData(
         "Alpha.FunctionKinds::op_Implicit(Alpha.FunctionKinds)",
-        "Alpha.FunctionKinds::op_Implicit(Alpha.FunctionKinds)",
+        "Alpha.FunctionKinds::[conversion:implicit:int](Alpha.FunctionKinds)",
         MethodKind.Conversion)]
     public async Task MethodKindFilter_IncludesEveryExecutableStoredAsMethod(
         string query,
@@ -98,6 +98,45 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
         Assert.Equal(expectedDisplayName, definition.DisplayName);
         Assert.Equal(IndexedSymbolKind.Method, definition.Kind);
         Assert.Equal((int)expectedMethodKind, definition.MethodKind);
+    }
+
+    [Fact]
+    public async Task LegacyParameterQueryMatchesDisplaySpellingWhileTypeKeyRemainsOpaque()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var profile = await fixture.Repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var stored = Assert.Single(await fixture.Repository.FindLogicalSymbolCandidatesAsync(
+            profile.Id,
+            name: "Select",
+            typeSimpleName: "HidingMiddle",
+            kind: IndexedSymbolKind.Method,
+            sourceOnly: true,
+            cancellationToken));
+        var parameter = Assert.Single(stored.Parameters);
+        Assert.Equal("System::String", parameter.TypeKey);
+        Assert.Equal("string", parameter.TypeDisplay);
+
+        var result = await fixture.Query.FindDefinitionsAsync(
+            "Alpha.HidingMiddle::Select(string)",
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(stored.Id, Assert.Single(result.Definitions).Id);
+    }
+
+    [Fact]
+    public async Task LegacyLambdaQueryResolvesCanonicalSemanticPath()
+    {
+        await fixture.BuildTask;
+
+        var result = await fixture.Query.ShowSourceAsync(
+            "Alpha.LambdaPlayer::Execute()::<lambda#1>",
+            filter: new(IndexedSymbolKind.Lambda, AsyncStatusFilter.All),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            "Alpha.LambdaPlayer::Execute().<lambda#1>",
+            Assert.Single(result.MatchedSymbols).DisplayName);
     }
 
     [Fact]
@@ -123,14 +162,14 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         var lambda = Assert.Single(shownLambda.MatchedSymbols);
-        Assert.Equal(lambdaQuery, lambda.DisplayName);
+        Assert.Equal("Alpha.LambdaPlayer::Execute().<lambda#1>", lambda.DisplayName);
         Assert.NotNull(lambda.NormalizedSource);
         Assert.Empty(hiddenByMethodFilter.MatchedSymbols);
         Assert.NotEmpty(searchedLambdas.MatchedSymbols);
         Assert.All(searchedLambdas.MatchedSymbols, symbol => Assert.Equal(IndexedSymbolKind.Lambda, symbol.Kind));
         Assert.Contains(
             searchedLambdas.MatchedSymbols,
-            symbol => symbol.DisplayName == "Alpha.CallerGraph::LambdaOwner()::<lambda#1>");
+            symbol => symbol.DisplayName == "Alpha.CallerGraph::LambdaOwner().<lambda#1>");
     }
 
     [Fact]
@@ -192,10 +231,11 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         Assert.Contains(references.Calls, call =>
-            call.CallerDisplayName == "Alpha.LambdaPlayer::Execute()::<lambda#1>");
+            references.SymbolsById[call.CallerSymbolId].DisplayName ==
+            "Alpha.LambdaPlayer::Execute().<lambda#1>");
         var caller = Assert.Single(callers.EffectiveCallers);
         Assert.Equal(IndexedSymbolKind.Lambda, caller.Kind);
-        Assert.Equal("Alpha.LambdaPlayer::Execute()::<lambda#1>", caller.DisplayName);
+        Assert.Equal("Alpha.LambdaPlayer::Execute().<lambda#1>", caller.DisplayName);
         Assert.Empty(lambdaReferences.Calls);
     }
 
@@ -218,7 +258,9 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
 
         Assert.Equal(IndexedSymbolKind.Lambda, Assert.Single(lambdaCallees.Context.MatchedSymbols).Kind);
         var callee = Assert.Single(lambdaCallees.Calls);
-        Assert.Equal("Alpha.LambdaPlayer::Play()", callee.CalleeDefinitionDisplayName);
+        Assert.Equal(
+            "Alpha.LambdaPlayer::Play()",
+            lambdaCallees.SymbolsById[callee.CalleeDefinitionId!.Value].DisplayName);
         Assert.Empty(excludedRoot.Context.MatchedSymbols);
         Assert.Empty(excludedRoot.Calls);
     }
@@ -249,7 +291,8 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
         Assert.Equal("Alpha.AsyncOverrideBase::Run()", Assert.Single(overrideRelations.Context.MatchedSymbols).DisplayName);
         Assert.Contains(
             overrideRelations.Relations,
-            relation => relation.SourceDisplayName == "Alpha.AsyncOverrideDerived::Run()");
+            relation => overrideRelations.SymbolsById[relation.SourceSymbolId].DisplayName ==
+                "Alpha.AsyncOverrideDerived::Run()");
 
         var includeOverridesError = await Assert.ThrowsAsync<SymbolQueryParseException>(() =>
             fixture.Query.FindDefinitionsAsync(
@@ -266,6 +309,70 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
         Assert.Contains("--kind lambda", includeOverridesError.Message, StringComparison.Ordinal);
         Assert.Contains("--include-overrides", includeOverridesError.Message, StringComparison.Ordinal);
         Assert.Equal("--kind lambda is not applicable to overrides.", overridesError.Message);
+    }
+
+    [Fact]
+    public async Task CallResultHydratesTheCompleteEndpointUnionInExactlyOneBatch()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var hydrationBatches = new List<long[]>();
+        var query = new SemanticQueryService(fixture.Repository)
+        {
+            EndpointHydrationObserver = ids =>
+                hydrationBatches.Add(ids.Order().ToArray()),
+        };
+
+        var result = await query.FindCallersAsync(
+            "Alpha.BaseClass::Run()",
+            GeneratedFilter.Include,
+            DispatchSearchMode.Virtual,
+            CallerScope.Both,
+            cancellationToken: cancellationToken);
+
+        var expectedIds = result.Calls
+            .SelectMany(call => new long?[]
+            {
+                call.CallerSymbolId,
+                call.CallerContainingSymbolId,
+                call.CalleeSymbolId,
+                call.CalleeDefinitionId,
+            })
+            .Concat(result.PossibleRuntimeTargets.SelectMany(relation =>
+                new long?[] { relation.SourceSymbolId, relation.TargetSymbolId }))
+            .Where(id => id is not null)
+            .Select(id => id!.Value)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        Assert.Equal(expectedIds, Assert.Single(hydrationBatches));
+        Assert.All(expectedIds, id => Assert.True(result.SymbolsById.ContainsKey(id)));
+    }
+
+    [Fact]
+    public async Task RelationResultHydratesTheCompleteEndpointUnionInExactlyOneBatch()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var hydrationBatches = new List<long[]>();
+        var query = new SemanticQueryService(fixture.Repository)
+        {
+            EndpointHydrationObserver = ids =>
+                hydrationBatches.Add(ids.Order().ToArray()),
+        };
+
+        var result = await query.FindOverridesAsync(
+            "Alpha.BaseClass::Run()",
+            cancellationToken: cancellationToken);
+        var expectedIds = result.Relations
+            .SelectMany(relation => new[] { relation.SourceSymbolId, relation.TargetSymbolId })
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        Assert.Equal(expectedIds, Assert.Single(hydrationBatches));
+        Assert.All(expectedIds, id => Assert.True(result.SymbolsById.ContainsKey(id)));
     }
 
     private static SymbolSearchRequest Request(

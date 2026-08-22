@@ -19,7 +19,7 @@ public sealed class SqliteIndexTests
         await index.SaveAsync(snapshot, cancellationToken);
 
         Assert.True(await index.IsCacheValidAsync(
-            temporary.Path,
+            snapshot.InputRoot,
             snapshot.InputFingerprint,
             snapshot.RequestHash,
             cancellationToken));
@@ -28,7 +28,7 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
-    public async Task Save_CreatesVersionFourSchemaWithExecutableMetadataAndAsyncNextForeignKey()
+    public async Task Save_CreatesVersionFiveSchemaWithSemanticPathsAndAsyncNextForeignKey()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var temporary = new TempDirectory();
@@ -37,8 +37,8 @@ public sealed class SqliteIndexTests
 
         await index.SaveAsync(CreateSnapshot(temporary.Path), cancellationToken);
 
-        Assert.Equal(4, SchemaMigrator.CurrentVersion);
-        Assert.Equal(4, RequestHasher.SchemaVersion);
+        Assert.Equal(5, SchemaMigrator.CurrentVersion);
+        Assert.Equal(5, RequestHasher.SchemaVersion);
 
         var connectionString = new SqliteConnectionStringBuilder
         {
@@ -61,9 +61,11 @@ public sealed class SqliteIndexTests
         }
 
         Assert.Equal("TEXT", columns["return_type_key"]);
-        Assert.Equal("TEXT", columns["normalized_source"]);
-        Assert.Equal("BLOB", columns["normalized_source_hash"]);
+        Assert.Equal("TEXT", columns["type_identity_path"]);
+        Assert.Equal("TEXT", columns["executable_identity_path"]);
         Assert.Equal("INTEGER", columns["async_next_symbol_id"]);
+        Assert.DoesNotContain("normalized_source", columns.Keys);
+        Assert.DoesNotContain("normalized_source_hash", columns.Keys);
 
         command.CommandText = "PRAGMA foreign_key_list(symbols);";
         var hasAsyncNextForeignKey = false;
@@ -123,8 +125,8 @@ public sealed class SqliteIndexTests
             isPartial: false);
         AssertSymbolIndex(
             symbolIndexes,
-            "ix_symbols_profile_fully_qualified",
-            ["analysis_profile_id", "fully_qualified_name"],
+            "ix_symbols_profile_path_identity",
+            ["analysis_profile_id", "namespace_name", "type_identity_path", "executable_identity_path"],
             isPartial: false);
         Assert.DoesNotContain("ix_symbols_name", symbolIndexes.Keys);
         Assert.DoesNotContain("ix_symbols_short_method", symbolIndexes.Keys);
@@ -179,7 +181,7 @@ public sealed class SqliteIndexTests
             FROM symbols AS s
             WHERE s.analysis_profile_id = $profile_id
               AND s.kind IN ($method_kind, $lambda_kind)
-              AND s.source_document_id IS NOT NULL;
+              AND s.preferred_declaration_id IS NOT NULL;
             """,
             command =>
             {
@@ -273,6 +275,10 @@ public sealed class SqliteIndexTests
         {
             MethodKind = 0,
             ReturnTypeKey = "System.Threading.Tasks.Task<System.Int32>",
+        };
+        var callerDeclarationKey = snapshot.Symbols["caller"].PreferredDeclarationKey!;
+        snapshot.Declarations[callerDeclarationKey] = snapshot.Declarations[callerDeclarationKey] with
+        {
             NormalizedSource = normalizedSource,
             NormalizedSourceHash = normalizedSourceHash,
         };
@@ -299,7 +305,7 @@ public sealed class SqliteIndexTests
                 cancellationToken: cancellationToken),
             symbol => symbol.StableKey == "callee");
 
-        AssertExecutableMetadata(caller, normalizedSource, normalizedSourceHash);
+        AssertExecutableMetadata(caller);
         Assert.Equal(caller.Id, callee.AsyncNextSymbolId);
 
         var byId = Assert.Single(await repository.GetSymbolsByIdsAsync(
@@ -314,8 +320,15 @@ public sealed class SqliteIndexTests
                 cancellationToken),
             symbol => symbol.Id == caller.Id);
 
-        AssertExecutableMetadata(byId, normalizedSource, normalizedSourceHash);
-        AssertExecutableMetadata(function, normalizedSource, normalizedSourceHash);
+        AssertExecutableMetadata(byId);
+        AssertExecutableMetadata(function);
+        var declaration = Assert.Single(await repository.GetPreferredDeclarationsAsync(
+            profile.Id,
+            [caller.Id],
+            includeSourceText: true,
+            cancellationToken));
+        Assert.Equal(normalizedSource, declaration.NormalizedSource);
+        Assert.Equal(normalizedSourceHash, declaration.NormalizedSourceHash);
     }
 
     [Fact]
@@ -341,8 +354,8 @@ public sealed class SqliteIndexTests
             GeneratedFilter.Include,
             cancellationToken: cancellationToken));
 
-        Assert.Equal(4, SchemaMigrator.CurrentVersion);
-        Assert.Equal(4, RequestHasher.SchemaVersion);
+        Assert.Equal(5, SchemaMigrator.CurrentVersion);
+        Assert.Equal(5, RequestHasher.SchemaVersion);
         Assert.Equal(AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable, caller.AsyncRole);
         Assert.Equal(0, caller.AsyncInvolvementDepth);
         Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
@@ -375,8 +388,8 @@ public sealed class SqliteIndexTests
             [contract.Id],
             cancellationToken);
 
-        Assert.Equal(4, SchemaMigrator.CurrentVersion);
-        Assert.Equal(4, RequestHasher.SchemaVersion);
+        Assert.Equal(5, SchemaMigrator.CurrentVersion);
+        Assert.Equal(5, RequestHasher.SchemaVersion);
         Assert.Equal((int)IndexedTypeKind.Interface, interfaceType.TypeKind);
         Assert.Equal((int)IndexedAccessibility.Public, interfaceType.Accessibility);
         Assert.Equal(5, bindings.Count);
@@ -444,6 +457,7 @@ public sealed class SqliteIndexTests
         var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
         var first = CreateOverrideSearchSnapshot(temporary.Path, "first");
         var second = CreateOverrideSearchSnapshot(temporary.Path, "second");
+        RemoveCallableDeclarations(second);
 
         await index.SaveAsync(first, cancellationToken);
         await index.SaveAsync(second, cancellationToken);
@@ -876,7 +890,7 @@ public sealed class SqliteIndexTests
             functions.Select(symbol => symbol.Name).Order());
         Assert.Equal(
             ["same-z-generated", "same-m-source-earlier", "same-a-source-later"],
-            functions.Where(symbol => symbol.DisplayName == "Same").Select(symbol => symbol.StableKey));
+            functions.Where(symbol => symbol.DisplayName == "Global::Same").Select(symbol => symbol.StableKey));
         Assert.Equal(
             ["Nested lambda", "Outer lambda"],
             lambdas.Select(symbol => symbol.Name).Order());
@@ -964,6 +978,7 @@ public sealed class SqliteIndexTests
         var snapshot = CreateLambdaCallSnapshot(temporary.Path);
         AddFinalTieSymbol(snapshot, "final-z");
         AddFinalTieSymbol(snapshot, "final-a");
+        FinalizeSnapshotForSchemaFive(snapshot);
         var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
         await index.SaveAsync(snapshot, cancellationToken);
 
@@ -1032,17 +1047,22 @@ public sealed class SqliteIndexTests
             GeneratedFilter.Only,
             referenceKinds: null,
             cancellationToken);
+        var symbolsById = (await repository.GetSymbolsByIdsAsync(
+                profile.Id,
+                allCalls.Select(call => call.CallerSymbolId),
+                cancellationToken))
+            .ToDictionary(symbol => symbol.Id);
 
         Assert.Equal(
             ["Nested lambda", "Outer lambda", "Root"],
-            allCalls.Select(call => call.CallerDisplayName).Order());
+            allCalls.Select(call => symbolsById[call.CallerSymbolId].Name).Order());
         Assert.Equal(
             ["Nested lambda", "Root"],
-            invocationCalls.Select(call => call.CallerDisplayName).Order());
+            invocationCalls.Select(call => symbolsById[call.CallerSymbolId].Name).Order());
         Assert.Equal(
             ["Outer lambda", "Root"],
-            nonGeneratedCalls.Select(call => call.CallerDisplayName).Order());
-        Assert.Equal(["Nested lambda"], generatedCalls.Select(call => call.CallerDisplayName));
+            nonGeneratedCalls.Select(call => symbolsById[call.CallerSymbolId].Name).Order());
+        Assert.Equal(["Nested lambda"], generatedCalls.Select(call => symbolsById[call.CallerSymbolId].Name));
     }
 
     [Fact]
@@ -1061,18 +1081,18 @@ public sealed class SqliteIndexTests
             DispatchKind = DispatchKind.Static,
             ResolutionStatus = ResolutionStatus.Unresolved,
             ResolutionReason = ResolutionReason.Unknown,
-            DocumentKey = "project|source",
+            DocumentKey = "project|document:Source.cs",
             SourceStart = 0,
             SourceLength = 1,
         });
 
-        await Assert.ThrowsAsync<IndexDatabaseException>(() => index.SaveAsync(invalid, cancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => index.SaveAsync(invalid, cancellationToken));
 
         var symbols = await index.CreateQueryRepository().FindSymbolCandidatesAsync(
             (await index.CreateQueryRepository().GetProfileAsync(cancellationToken: cancellationToken)).Id,
             typeSimpleName: "Sample",
             kind: IndexedSymbolKind.Type,
-            sourceOnly: true,
+            sourceOnly: false,
             cancellationToken: cancellationToken);
         Assert.Single(symbols);
     }
@@ -1084,7 +1104,9 @@ public sealed class SqliteIndexTests
         using var temporary = new TempDirectory();
         var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
         await index.SaveAsync(CreateSnapshot(temporary.Path, "first"), cancellationToken);
-        await index.SaveAsync(CreateSnapshot(temporary.Path, "other"), cancellationToken);
+        var other = CreateSnapshot(temporary.Path, "other");
+        RemoveCallableDeclarations(other);
+        await index.SaveAsync(other, cancellationToken);
         var invalid = CreateSnapshot(temporary.Path, "first");
         invalid.Symbols.Remove("caller");
         invalid.Calls.Clear();
@@ -1094,7 +1116,7 @@ public sealed class SqliteIndexTests
             AsyncNextSymbolKey = "caller",
         };
 
-        await Assert.ThrowsAsync<IndexDatabaseException>(() => index.SaveAsync(invalid, cancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => index.SaveAsync(invalid, cancellationToken));
 
         var repository = index.CreateQueryRepository();
         var firstProfile = await repository.GetProfileAsync("first", cancellationToken);
@@ -1122,6 +1144,68 @@ public sealed class SqliteIndexTests
             index.EnsureCreatedAsync(cancellationToken));
 
         Assert.Contains("corrupt", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task LegacySchemaVersionsRejectIndexAndQueryWithoutChangingBytes(int version)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, $"legacy-v{version}.sqlite");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ToString();
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            await command.ExecuteScalarAsync(cancellationToken);
+            command.CommandText = $"""
+                CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info(version) VALUES ({version});
+                CREATE TABLE legacy_sentinel(value TEXT NOT NULL);
+                INSERT INTO legacy_sentinel(value) VALUES ('preserve-me');
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
+        var indexException = await Assert.ThrowsAsync<IndexDatabaseException>(() =>
+            new SqliteIndex(databasePath).EnsureCreatedAsync(cancellationToken));
+        AssertLegacySchemaGuidance(indexException, version);
+        Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+
+        var queryException = await Assert.ThrowsAsync<IndexDatabaseException>(() =>
+            new SqliteIndex(databasePath).CreateQueryRepository()
+                .GetProfileAsync(cancellationToken: cancellationToken));
+        AssertLegacySchemaGuidance(queryException, version);
+        Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
+
+        var readOnlyConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString();
+        await using var verification = new SqliteConnection(readOnlyConnectionString);
+        await verification.OpenAsync(cancellationToken);
+        await using var verificationCommand = verification.CreateCommand();
+        verificationCommand.CommandText = """
+            SELECT version,
+                   (SELECT value FROM legacy_sentinel LIMIT 1)
+            FROM schema_info;
+            """;
+        await using var reader = await verificationCommand.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        Assert.Equal(version, reader.GetInt32(0));
+        Assert.Equal("preserve-me", reader.GetString(1));
     }
 
     [Fact]
@@ -1388,15 +1472,21 @@ public sealed class SqliteIndexTests
             $"journalModeAfter={journalModeAfter}");
     }
 
-    private static void AssertExecutableMetadata(
-        StoredSymbol symbol,
-        string expectedNormalizedSource,
-        byte[] expectedNormalizedSourceHash)
+    private static void AssertLegacySchemaGuidance(IndexDatabaseException exception, int version)
+    {
+        Assert.Contains($"Unsupported database schema version {version}", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("database was not modified", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Delete or rename the old database", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("choose a new --db path", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("run csindex index explicitly", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertExecutableMetadata(StoredSymbol symbol)
     {
         Assert.Equal(0, symbol.MethodKind);
         Assert.Equal("System.Threading.Tasks.Task<System.Int32>", symbol.ReturnTypeKey);
-        Assert.Equal(expectedNormalizedSource, symbol.NormalizedSource);
-        Assert.Equal(expectedNormalizedSourceHash, symbol.NormalizedSourceHash);
+        Assert.Null(symbol.NormalizedSource);
+        Assert.Null(symbol.NormalizedSourceHash);
     }
 
     private sealed record SymbolIndexInfo(string[] Columns, bool IsPartial);
@@ -1497,7 +1587,8 @@ public sealed class SqliteIndexTests
         var requestHash = HashUtilities.Sha256("request");
         var snapshot = new IndexSnapshot
         {
-            InputRoot = root,
+            InputRoot = ".",
+            IndexRootAnchor = ".",
             InputFingerprint = inputFingerprint,
             RequestHash = requestHash,
             Profile = new AnalysisProfileData
@@ -1520,9 +1611,9 @@ public sealed class SqliteIndexTests
         });
         snapshot.Documents.Add(new DocumentData
         {
-            Key = "project|source",
+            Key = "project|document:Source.cs",
             ProjectKey = "project",
-            NormalizedPath = Path.Combine(root, "Source.cs"),
+            NormalizedPath = "Source.cs",
             ContentHash = HashUtilities.Sha256("source"),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
@@ -1538,7 +1629,7 @@ public sealed class SqliteIndexTests
             TypeMetadataName = "Sample",
             FullyQualifiedName = "Sample",
             DisplayName = "Sample",
-            SourceDocumentKey = "project|source",
+            SourceDocumentKey = "project|document:Source.cs",
             SourceStart = 0,
             SourceLength = 6,
         };
@@ -1555,7 +1646,7 @@ public sealed class SqliteIndexTests
             ParameterCount = 0,
             AsyncRole = AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable,
             AsyncInvolvementDepth = 0,
-            SourceDocumentKey = "project|source",
+            SourceDocumentKey = "project|document:Source.cs",
             SourceStart = 7,
             SourceLength = 6,
         };
@@ -1570,7 +1661,7 @@ public sealed class SqliteIndexTests
             DisplayName = "Sample.Callee()",
             ContainingSymbolKey = "sample",
             ParameterCount = 0,
-            SourceDocumentKey = "project|source",
+            SourceDocumentKey = "project|document:Source.cs",
             SourceStart = 14,
             SourceLength = 6,
         };
@@ -1584,17 +1675,18 @@ public sealed class SqliteIndexTests
             ResolutionStatus = ResolutionStatus.Resolved,
             ResolutionReason = ResolutionReason.None,
             AsyncUsageKind = AsyncUsageKind.Awaited,
-            DocumentKey = "project|source",
+            DocumentKey = "project|document:Source.cs",
             SourceStart = 21,
             SourceLength = 6,
         });
-        return snapshot;
+        return FinalizeSnapshotForSchemaFive(snapshot);
     }
 
     private static IndexSnapshot CreateIndexPlanSnapshot(string root)
     {
         var snapshot = CreateSnapshot(root, "query-plan");
         snapshot.Symbols.Clear();
+        snapshot.Declarations.Clear();
         snapshot.Calls.Clear();
 
         snapshot.Symbols["index-owner"] = CreateSymbol(
@@ -1657,7 +1749,7 @@ public sealed class SqliteIndexTests
                 sourceBacked: false);
         }
 
-        return snapshot;
+        return FinalizeSnapshotForSchemaFive(snapshot);
 
         static SymbolData CreateSymbol(
             string stableKey,
@@ -1684,7 +1776,7 @@ public sealed class SqliteIndexTests
                 ParameterCount = parameterCount,
                 AsyncInvolvementDepth = asyncInvolvementDepth,
                 AsyncNextSymbolKey = asyncNextSymbolKey,
-                SourceDocumentKey = sourceBacked ? "project|source" : null,
+                SourceDocumentKey = sourceBacked ? "project|document:Source.cs" : null,
                 SourceStart = sourceBacked ? 0 : null,
                 SourceLength = sourceBacked ? 1 : null,
             };
@@ -1698,6 +1790,7 @@ public sealed class SqliteIndexTests
     {
         var snapshot = CreateSnapshot(root, profileName);
         snapshot.Symbols.Clear();
+        snapshot.Declarations.Clear();
         snapshot.Calls.Clear();
         snapshot.Projects.Add(new ProjectData
         {
@@ -1708,9 +1801,9 @@ public sealed class SqliteIndexTests
         });
         snapshot.Documents.Add(new DocumentData
         {
-            Key = "external-project|source",
+            Key = "external-project|document:ExternalSource.cs",
             ProjectKey = "external-project",
-            NormalizedPath = Path.Combine(root, "ExternalSource.cs"),
+            NormalizedPath = "ExternalSource.cs",
             ContentHash = HashUtilities.Sha256("external-source"),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
@@ -1818,13 +1911,14 @@ public sealed class SqliteIndexTests
             AddGraphBinding(snapshot, "dual-player", "i-left-play", "dual-player-play");
         }
 
-        return snapshot;
+        return FinalizeSnapshotForSchemaFive(snapshot);
     }
 
     private static IndexSnapshot CreateCyclicOverrideSearchSnapshot(string root)
     {
         var snapshot = CreateSnapshot(root, "cycle");
         snapshot.Symbols.Clear();
+        snapshot.Declarations.Clear();
         snapshot.Calls.Clear();
 
         AddGraphType(snapshot, "i-loop", "ILoop", IndexedTypeKind.Interface, 0);
@@ -1849,7 +1943,7 @@ public sealed class SqliteIndexTests
 
         AddGraphBinding(snapshot, "cycle-a", "i-loop-play", "cycle-a-play");
         AddGraphBinding(snapshot, "cycle-b", "i-loop-play", "cycle-b-play");
-        return snapshot;
+        return FinalizeSnapshotForSchemaFive(snapshot);
     }
 
     private static void AddGraphType(
@@ -1873,7 +1967,7 @@ public sealed class SqliteIndexTests
             DisplayName = name,
             TypeKind = (int)typeKind,
             Accessibility = (int)IndexedAccessibility.Public,
-            SourceDocumentKey = $"{projectKey}|source",
+            SourceDocumentKey = $"{projectKey}|document:{(projectKey == "project" ? "Source.cs" : "ExternalSource.cs")}",
             SourceStart = sourceStart,
             SourceLength = name.Length,
         };
@@ -1906,7 +2000,7 @@ public sealed class SqliteIndexTests
             Accessibility = (int)accessibility,
             IsVirtual = isVirtual,
             IsOverride = isOverride,
-            SourceDocumentKey = $"{projectKey}|source",
+            SourceDocumentKey = $"{projectKey}|document:{(projectKey == "project" ? "Source.cs" : "ExternalSource.cs")}",
             SourceStart = sourceStart,
             SourceLength = methodName.Length,
         };
@@ -1951,7 +2045,7 @@ public sealed class SqliteIndexTests
             NamespaceName = string.Empty,
             FullyQualifiedName = "FinalTie",
             DisplayName = "FinalTie",
-            SourceDocumentKey = "project|source",
+            SourceDocumentKey = "project|document:Source.cs",
             SourceStart = 120,
             SourceLength = 5,
         };
@@ -1961,12 +2055,13 @@ public sealed class SqliteIndexTests
     {
         var snapshot = CreateSnapshot(root);
         snapshot.Symbols.Clear();
+        snapshot.Declarations.Clear();
         snapshot.Calls.Clear();
         snapshot.Documents.Add(new DocumentData
         {
-            Key = "project|generated",
+            Key = "project|document:Generated.cs",
             ProjectKey = "project",
-            NormalizedPath = Path.Combine(root, "Generated.cs"),
+            NormalizedPath = "Generated.cs",
             ContentHash = HashUtilities.Sha256("generated"),
             IsGenerated = true,
             GenerationKind = GenerationKind.FileName,
@@ -1977,32 +2072,32 @@ public sealed class SqliteIndexTests
             "Root",
             null,
             0,
-            "project|source",
+            "project|document:Source.cs",
             0,
             AsyncRole.ReturnsAwaitable);
-        AddSymbol("local", IndexedSymbolKind.Method, "Local", "root", null, "project|source", 10);
+        AddSymbol("local", IndexedSymbolKind.Method, "Local", "root", null, "project|document:Source.cs", 10);
         AddSymbol(
             "outer",
             IndexedSymbolKind.Lambda,
             "Outer lambda",
             "local",
             1,
-            "project|source",
+            "project|document:Source.cs",
             20,
             AsyncRole.ContainsAwait);
-        AddSymbol("nested", IndexedSymbolKind.Lambda, "Nested lambda", "outer", 2, "project|generated", 30);
-        AddSymbol("sync-involved", IndexedSymbolKind.Method, "Sync involved", null, 1, "project|source", 35);
-        AddSymbol("unrelated", IndexedSymbolKind.Method, "Unrelated", null, null, "project|source", 40);
-        AddSymbol("same-z-generated", IndexedSymbolKind.Method, "Same", null, null, "project|generated", 100);
-        AddSymbol("same-a-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|source", 110);
-        AddSymbol("same-m-source-earlier", IndexedSymbolKind.Method, "Same", null, null, "project|source", 105);
+        AddSymbol("nested", IndexedSymbolKind.Lambda, "Nested lambda", "outer", 2, "project|document:Generated.cs", 30);
+        AddSymbol("sync-involved", IndexedSymbolKind.Method, "Sync involved", null, 1, "project|document:Source.cs", 35);
+        AddSymbol("unrelated", IndexedSymbolKind.Method, "Unrelated", null, null, "project|document:Source.cs", 40);
+        AddSymbol("same-z-generated", IndexedSymbolKind.Method, "Same", null, null, "project|document:Generated.cs", 100);
+        AddSymbol("same-a-source-later", IndexedSymbolKind.Method, "Same", null, null, "project|document:Source.cs", 110);
+        AddSymbol("same-m-source-earlier", IndexedSymbolKind.Method, "Same", null, null, "project|document:Source.cs", 105);
 
-        AddCall("root", ReferenceKind.Invocation, "project|source", 50);
-        AddCall("local", ReferenceKind.Invocation, "project|source", 60);
-        AddCall("outer", ReferenceKind.MethodGroup, "project|source", 70);
-        AddCall("nested", ReferenceKind.Invocation, "project|generated", 80);
-        AddCall("unrelated", ReferenceKind.Invocation, "project|source", 90);
-        return snapshot;
+        AddCall("root", ReferenceKind.Invocation, "project|document:Source.cs", 50);
+        AddCall("local", ReferenceKind.Invocation, "project|document:Source.cs", 60);
+        AddCall("outer", ReferenceKind.MethodGroup, "project|document:Source.cs", 70);
+        AddCall("nested", ReferenceKind.Invocation, "project|document:Generated.cs", 80);
+        AddCall("unrelated", ReferenceKind.Invocation, "project|document:Source.cs", 90);
+        return FinalizeSnapshotForSchemaFive(snapshot);
 
         void AddSymbol(
             string stableKey,
@@ -2047,5 +2142,94 @@ public sealed class SqliteIndexTests
                 UnresolvedName = "Target",
             });
         }
+    }
+
+    private static IndexSnapshot FinalizeSnapshotForSchemaFive(IndexSnapshot snapshot)
+    {
+        foreach (var pair in snapshot.Symbols.ToArray())
+        {
+            var symbol = pair.Value;
+            var path = symbol.Path ?? CreateStoredTestPath(snapshot, symbol);
+            var preferredDeclarationKey = symbol.PreferredDeclarationKey;
+
+            if (symbol.Kind != IndexedSymbolKind.Type &&
+                symbol.SourceDocumentKey is { } documentKey &&
+                !snapshot.Declarations.Values.Any(value =>
+                    value.SymbolKey.Equals(symbol.StableKey, StringComparison.Ordinal)))
+            {
+                var document = snapshot.Documents.Single(value =>
+                    value.Key.Equals(documentKey, StringComparison.Ordinal));
+                var sourceStart = symbol.SourceStart ?? 0;
+                var sourceLength = symbol.SourceLength ?? Math.Max(1, symbol.Name.Length);
+                var normalizedSource = symbol.NormalizedSource ?? symbol.Name;
+                var declarationKey =
+                    $"{symbol.StableKey}|declaration:{document.NormalizedPath}:{sourceStart}:{sourceLength}:{(int)DeclarationRole.Ordinary}";
+                snapshot.Declarations[declarationKey] = new SymbolDeclarationData
+                {
+                    Key = declarationKey,
+                    SymbolKey = symbol.StableKey,
+                    DocumentKey = documentKey,
+                    Role = DeclarationRole.Ordinary,
+                    SourceStart = sourceStart,
+                    SourceLength = sourceLength,
+                    NormalizedSource = normalizedSource,
+                    NormalizedSourceHash = symbol.NormalizedSourceHash ?? HashUtilities.Sha256(normalizedSource),
+                    IsGenerated = symbol.IsGenerated,
+                };
+                preferredDeclarationKey = declarationKey;
+            }
+
+            snapshot.Symbols[pair.Key] = symbol with
+            {
+                Path = path,
+                PreferredDeclarationKey = preferredDeclarationKey,
+            };
+        }
+
+        return snapshot;
+    }
+
+    private static void RemoveCallableDeclarations(IndexSnapshot snapshot)
+    {
+        snapshot.Declarations.Clear();
+        foreach (var pair in snapshot.Symbols.ToArray())
+        {
+            snapshot.Symbols[pair.Key] = pair.Value with { PreferredDeclarationKey = null };
+        }
+    }
+
+    private static SymbolPathData CreateStoredTestPath(IndexSnapshot snapshot, SymbolData symbol)
+    {
+        var typePath = symbol.TypeSimpleName;
+        if (string.IsNullOrWhiteSpace(typePath) &&
+            symbol.ContainingSymbolKey is { } containingKey &&
+            snapshot.Symbols.TryGetValue(containingKey, out var containingSymbol))
+        {
+            typePath = containingSymbol.Path?.TypeDisplayPath ??
+                       containingSymbol.TypeSimpleName ??
+                       containingSymbol.Name;
+        }
+
+        typePath = string.IsNullOrWhiteSpace(typePath)
+            ? symbol.Kind == IndexedSymbolKind.Type ? symbol.Name : "Global"
+            : typePath;
+        var executablePath = symbol.Kind == IndexedSymbolKind.Type ? string.Empty : symbol.Name;
+        var segmentKind = symbol.Kind switch
+        {
+            IndexedSymbolKind.Lambda => CallablePathSegmentKind.Lambda,
+            IndexedSymbolKind.Initializer => CallablePathSegmentKind.Initializer,
+            IndexedSymbolKind.TopLevelStatements => CallablePathSegmentKind.TopLevelStatements,
+            _ => CallablePathSegmentKind.Named,
+        };
+
+        return new SymbolPathData(
+            symbol.NamespaceName,
+            typePath,
+            typePath,
+            executablePath,
+            executablePath,
+            executablePath,
+            executablePath,
+            segmentKind);
     }
 }

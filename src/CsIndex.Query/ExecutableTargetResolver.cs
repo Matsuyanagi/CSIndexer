@@ -34,11 +34,14 @@ public readonly record struct FunctionTargetFilter(
 
 internal sealed class ExecutableTargetResolver(QueryRepository repository)
 {
+    private const string LegacyLambdaChildDelimiter = "::<lambda#";
+    private const string SemanticLambdaChildDelimiter = ".<lambda#";
+
     private readonly SymbolQueryParser _parser = new();
     private readonly MethodTargetResolver _methodTargetResolver = new(repository);
 
     internal static bool IsLambdaTargetQuery(string queryText) =>
-        queryText?.Contains("::<lambda#", StringComparison.Ordinal) == true;
+        queryText?.Contains(LegacyLambdaChildDelimiter, StringComparison.Ordinal) == true;
 
     public async Task<IReadOnlyList<StoredSymbol>> ResolveAsync(
         long profileId,
@@ -100,8 +103,14 @@ internal sealed class ExecutableTargetResolver(QueryRepository repository)
             profileId,
             sourceOnly,
             cancellationToken);
+        // Task 6 replaces this legacy-input bridge with structured path selectors.
+        // The leading wildcard preserves the legacy matcher's suffix semantics.
+        var matcherPattern = "*" + queryText.Replace(
+            LegacyLambdaChildDelimiter,
+            SemanticLambdaChildDelimiter,
+            StringComparison.Ordinal);
         var matcher = new SymbolPatternMatcher(new SymbolSearchRequest(
-            Pattern: queryText,
+            Pattern: matcherPattern,
             NamespacePattern: null,
             TypePattern: null,
             MethodPattern: null,
@@ -150,6 +159,6 @@ internal sealed class ExecutableTargetResolver(QueryRepository repository)
 
     private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
         (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda) &&
-        symbol.DocumentPath is not null &&
-        symbol.NormalizedSource is not null;
+        symbol.PreferredDeclarationId is not null &&
+        symbol.PreferredDocumentPath is not null;
 }

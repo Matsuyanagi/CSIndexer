@@ -40,7 +40,7 @@ public sealed class CallerTreeBuilderTests
         yield return CreateCaller(1, "Example.Caller()");
     }
 
-    private static StoredSymbol CreateCaller(long id, string displayName) => new(
+    private static StoredSymbol CreateCaller(long id, string displayName) => new StoredSymbol(
         Id: id,
         StableKey: $"symbol-{id}",
         Kind: IndexedSymbolKind.Method,
@@ -71,5 +71,16 @@ public sealed class CallerTreeBuilderTests
         AssemblyName: null,
         Parameters: [],
         TypeKind: null,
-        Accessibility: null);
+        Accessibility: null) with
+    {
+        Path = new SymbolPathData(
+                string.Empty,
+                displayName,
+                displayName,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                CallablePathSegmentKind.Named),
+    };
 }

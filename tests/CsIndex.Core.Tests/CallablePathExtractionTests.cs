@@ -267,7 +267,18 @@ public sealed class CallablePathExtractionTests
 
         Assert.All(
             snapshot.Symbols.Values.Where(symbol => symbol.Kind == IndexedSymbolKind.Type),
-            symbol => Assert.Null(symbol.Path));
+            symbol =>
+            {
+                var typePath = Assert.IsType<SymbolPathData>(symbol.Path);
+                Assert.Equal(symbol.NamespaceName, typePath.NamespacePath);
+                Assert.False(string.IsNullOrEmpty(typePath.TypeDisplayPath));
+                Assert.False(string.IsNullOrEmpty(typePath.TypeIdentityPath));
+                Assert.Equal(string.Empty, typePath.ExecutableDisplayPath);
+                Assert.Equal(string.Empty, typePath.ExecutableIdentityPath);
+                Assert.Equal(string.Empty, typePath.SegmentDisplay);
+                Assert.Equal(string.Empty, typePath.SegmentIdentity);
+                Assert.Equal(CallablePathSegmentKind.Named, typePath.SegmentKind);
+            });
         Assert.All(
             snapshot.Symbols.Values.Where(symbol => symbol.Kind != IndexedSymbolKind.Type),
             symbol => Assert.IsType<SymbolPathData>(symbol.Path));
@@ -451,6 +462,15 @@ public sealed class CallablePathExtractionTests
             symbol.Kind == IndexedSymbolKind.Method &&
             symbol.TypeSimpleName == "ImplicitConstructor" &&
             symbol.MethodKind == (int)Microsoft.CodeAnalysis.MethodKind.Constructor);
+        var creator = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "WrittenMembers" &&
+            symbol.Name == "CreateImplicitConstructor");
+        var implicitConstructorCall = Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == creator.StableKey &&
+            call.ReferenceKind == ReferenceKind.ObjectCreation);
+        Assert.Equal("new ImplicitConstructor()", implicitConstructorCall.UnresolvedName);
+        Assert.DoesNotContain(implicitConstructorCall.CalleeSymbolKey, snapshot.Symbols.Keys);
+        Assert.DoesNotContain(implicitConstructorCall.CalleeDefinitionKey, snapshot.Symbols.Keys);
         Assert.DoesNotContain(snapshot.Symbols.Values, symbol =>
             symbol.Name is "add_FieldLike" or "remove_FieldLike");
         Assert.DoesNotContain(snapshot.Symbols.Values, symbol =>
@@ -472,6 +492,46 @@ public sealed class CallablePathExtractionTests
             symbol.TypeSimpleName == "PositionalRecord" &&
             symbol.Path?.SegmentDisplay == "[constructor](int)");
         Assert.NotNull(PreferredDeclaration(snapshot, recordPrimaryConstructor).DocumentKey);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_RetainsExactSourceTokensForEveryResolvedCallShape()
+    {
+        const string source = """
+            using System;
+
+            public sealed class TokenTarget
+            {
+            }
+
+            public sealed class TokenCaller
+            {
+                private static void Target() { }
+
+                public void Run()
+                {
+                    Target();
+                    _ = new TokenTarget();
+                    Action callback = Target;
+                    _ = callback;
+                    _ = nameof(Target);
+                }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("ResolvedCallTokens.cs", source));
+        var caller = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "TokenCaller" && symbol.Name == "Run");
+        var calls = snapshot.Calls.Where(call => call.CallerSymbolKey == caller.StableKey).ToArray();
+
+        Assert.Equal("Target", Assert.Single(calls, call =>
+            call.ReferenceKind == ReferenceKind.Invocation).UnresolvedName);
+        Assert.Equal("new TokenTarget()", Assert.Single(calls, call =>
+            call.ReferenceKind == ReferenceKind.ObjectCreation).UnresolvedName);
+        Assert.Equal("Target", Assert.Single(calls, call =>
+            call.ReferenceKind == ReferenceKind.DelegateCreation).UnresolvedName);
+        Assert.Equal("Target", Assert.Single(calls, call =>
+            call.ReferenceKind == ReferenceKind.NameOf).UnresolvedName);
     }
 
     [Fact]

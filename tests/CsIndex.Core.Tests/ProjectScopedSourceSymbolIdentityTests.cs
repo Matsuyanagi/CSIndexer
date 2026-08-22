@@ -204,6 +204,7 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
     private static IndexSnapshot CreateSnapshot(string root) => new()
     {
         InputRoot = root,
+        IndexRootAnchor = ".",
         InputFingerprint = [],
         RequestHash = [],
         Profile = new AnalysisProfileData

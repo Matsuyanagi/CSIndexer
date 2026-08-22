@@ -448,6 +448,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     invocationSyntax.SpanStart,
                     invocationSyntax.Span.Length,
                     documentState.Data.Key,
+                    invocationSyntax.Expression.ToString(),
                     invocation.Instance?.Type,
                     AsyncOperationClassifier.ClassifyInvocation(invocation, projectState.Compilation));
                 continue;
@@ -509,6 +510,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     creationSyntax.SpanStart,
                     creationSyntax.Span.Length,
                     documentState.Data.Key,
+                    creationSyntax.ToString(),
                     creation.Type);
             }
             else
@@ -580,6 +582,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 DocumentKey = documentState.Data.Key,
                 SourceStart = expression.SpanStart,
                 SourceLength = expression.Span.Length,
+                UnresolvedName = expression.ToString(),
             });
         }
     }
@@ -1219,6 +1222,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     DocumentKey = documentState.Data.Key,
                     SourceStart = expression.SpanStart,
                     SourceLength = expression.Span.Length,
+                    UnresolvedName = expression.ToString(),
                 });
             }
 
@@ -1233,6 +1237,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         int sourceStart,
         int sourceLength,
         string documentKey,
+        string sourceToken,
         ITypeSymbol? receiverType,
         AsyncUsageKind asyncUsageKind = AsyncUsageKind.None)
     {
@@ -1249,6 +1254,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             DocumentKey = documentKey,
             SourceStart = sourceStart,
             SourceLength = sourceLength,
+            UnresolvedName = sourceToken,
             ReceiverTypeKey = SymbolCanonicalizer.FormatType(receiverType),
         });
     }

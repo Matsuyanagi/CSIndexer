@@ -55,12 +55,13 @@ public sealed class PortableAnalysisPathTests
 
         var anchor = Assert.IsAssignableFrom<System.Reflection.PropertyInfo>(
             snapshotType.GetProperty(nameof(IndexSnapshot.IndexRootAnchor)));
-        Assert.False(anchor.IsDefined(typeof(RequiredMemberAttribute), inherit: false));
+        Assert.True(anchor.IsDefined(typeof(RequiredMemberAttribute), inherit: false));
 
         var snapshot = new IndexSnapshot
         {
             Profile = CreateProfile(),
             InputRoot = ".",
+            IndexRootAnchor = ".",
             InputFingerprint = [],
             RequestHash = [],
         };

@@ -10,6 +10,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
 {
     private readonly string _databasePath = PathNormalizer.Normalize(databasePath);
 
+    public string DatabasePath => _databasePath;
+
     public async Task<StoredProfile> GetProfileAsync(
         string? profileName = null,
         CancellationToken cancellationToken = default)
@@ -19,7 +21,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.CommandText = """
             SELECT
                 p.id, p.name, p.input_mode, p.configuration, p.target_framework,
-                p.runtime_identifier, p.preprocessor_symbols, r.input_root
+                p.runtime_identifier, p.preprocessor_symbols, r.input_root, r.index_root_anchor
             FROM analysis_profiles p
             JOIN index_runs r ON r.analysis_profile_id = p.id
             WHERE ($profile_name IS NULL OR p.name = $profile_name)
@@ -43,7 +45,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             reader.IsDBNull(4) ? null : reader.GetString(4),
             reader.IsDBNull(5) ? null : reader.GetString(5),
             JsonSerializer.Deserialize<string[]>(reader.GetString(6)) ?? [],
-            reader.GetString(7));
+            reader.GetString(7),
+            reader.GetString(8));
     }
 
     public async Task<IReadOnlyList<StoredSymbol>> FindSymbolCandidatesAsync(
@@ -64,17 +67,26 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             """;
         if (sourceOnly)
         {
-            whereClause += "\nAND s.source_document_id IS NOT NULL";
+            whereClause += "\nAND s.preferred_declaration_id IS NOT NULL";
         }
 
         command.CommandText = BuildSymbolSelect(whereClause) +
-                          "\nORDER BY s.display_name, d.normalized_path, s.source_start, s.id;";
+                          "\nORDER BY s.namespace_name, s.type_identity_path, s.executable_identity_path, pdoc.normalized_path, pd.source_start, s.id;";
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$name", (object?)name ?? DBNull.Value);
         command.Parameters.AddWithValue("$type_name", (object?)typeSimpleName ?? DBNull.Value);
         command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
         return await ReadSymbolsAsync(connection, command, cancellationToken);
     }
+
+    public Task<IReadOnlyList<StoredSymbol>> FindLogicalSymbolCandidatesAsync(
+        long profileId,
+        string? name = null,
+        string? typeSimpleName = null,
+        IndexedSymbolKind? kind = null,
+        bool sourceOnly = false,
+        CancellationToken cancellationToken = default) =>
+        FindSymbolCandidatesAsync(profileId, name, typeSimpleName, kind, sourceOnly, cancellationToken);
 
     public async Task<IReadOnlyList<StoredSymbol>> GetSymbolsByIdsAsync(
         long profileId,
@@ -93,10 +105,85 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.CommandText = BuildSymbolSelect($"""
             s.analysis_profile_id = $profile_id AND s.id IN ({placeholders})
             """) + """
-            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
+            ORDER BY s.namespace_name, s.type_identity_path, s.executable_identity_path, pdoc.normalized_path, pd.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         return await ReadSymbolsAsync(connection, command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<StoredDeclaration>> GetDeclarationsAsync(
+        long profileId,
+        IEnumerable<long> symbolIds,
+        bool includeSourceText,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = symbolIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var placeholders = AddIdParameters(command, ids);
+        var sourceProjection = includeSourceText
+            ? "d.normalized_source, d.normalized_source_hash"
+            : "NULL, NULL";
+        command.CommandText = $"""
+            SELECT
+                d.id, d.declaration_key, d.symbol_id, d.document_id, doc.normalized_path,
+                d.declaration_role, d.source_start, d.source_length,
+                {sourceProjection}, d.is_generated
+            FROM symbol_declarations d
+            JOIN symbols s ON s.id = d.symbol_id
+            JOIN documents doc ON doc.id = d.document_id
+            WHERE s.analysis_profile_id = $profile_id
+              AND d.symbol_id IN ({placeholders})
+            ORDER BY
+                CASE d.declaration_role
+                    WHEN 2 THEN 0
+                    WHEN 3 THEN 1
+                    WHEN 1 THEN 2
+                    ELSE 3
+                END,
+                doc.normalized_path, d.source_start, d.id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        return await ReadDeclarationsAsync(command, includeSourceText, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<StoredDeclaration>> GetPreferredDeclarationsAsync(
+        long profileId,
+        IEnumerable<long> symbolIds,
+        bool includeSourceText,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = symbolIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var placeholders = AddIdParameters(command, ids);
+        var sourceProjection = includeSourceText
+            ? "d.normalized_source, d.normalized_source_hash"
+            : "NULL, NULL";
+        command.CommandText = $"""
+            SELECT
+                d.id, d.declaration_key, d.symbol_id, d.document_id, doc.normalized_path,
+                d.declaration_role, d.source_start, d.source_length,
+                {sourceProjection}, d.is_generated
+            FROM symbols s
+            JOIN symbol_declarations d ON d.id = s.preferred_declaration_id
+            JOIN documents doc ON doc.id = d.document_id
+            WHERE s.analysis_profile_id = $profile_id
+              AND s.id IN ({placeholders})
+            ORDER BY s.id;
+            """;
+        command.Parameters.AddWithValue("$profile_id", profileId);
+        return await ReadDeclarationsAsync(command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredSymbol>> FindFunctionSymbolsAsync(
@@ -131,7 +218,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
               )
               AND ($async_involved = 0 OR s.async_involvement_depth IS NOT NULL)
             """) + """
-            ORDER BY s.display_name, d.normalized_path, s.source_start, s.id;
+            ORDER BY s.namespace_name, s.type_identity_path, s.executable_identity_path,
+                     pdoc.normalized_path, pd.source_start, s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
@@ -158,11 +246,11 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             """;
         if (sourceOnly)
         {
-            whereClause += "\nAND s.source_document_id IS NOT NULL";
+            whereClause += "\nAND s.preferred_declaration_id IS NOT NULL";
         }
 
         command.CommandText = BuildSymbolSelect(whereClause) +
-                          "\nORDER BY s.display_name, d.normalized_path, s.source_start, s.id;";
+                              "\nORDER BY s.namespace_name, s.type_identity_path, s.executable_identity_path, pdoc.normalized_path, pd.source_start, s.id;";
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
@@ -630,15 +718,16 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         var kindClause = AddRelationKindClause(command, kinds);
         command.CommandText = $"""
             SELECT
-                r.source_symbol_id, source.display_name,
-                r.target_symbol_id, target.display_name, r.relation_kind
+                r.source_symbol_id,
+                r.target_symbol_id,
+                r.relation_kind
             FROM symbol_relations r
             JOIN symbols source ON source.id = r.source_symbol_id
             JOIN symbols target ON target.id = r.target_symbol_id
             WHERE r.analysis_profile_id = $profile_id
               AND r.target_symbol_id IN ({placeholders})
               {kindClause}
-            ORDER BY source.display_name;
+            ORDER BY r.source_symbol_id, r.target_symbol_id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         return await ReadRelationsAsync(command, cancellationToken);
@@ -662,15 +751,16 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         var kindClause = AddRelationKindClause(command, kinds);
         command.CommandText = $"""
             SELECT
-                r.source_symbol_id, source.display_name,
-                r.target_symbol_id, target.display_name, r.relation_kind
+                r.source_symbol_id,
+                r.target_symbol_id,
+                r.relation_kind
             FROM symbol_relations r
             JOIN symbols source ON source.id = r.source_symbol_id
             JOIN symbols target ON target.id = r.target_symbol_id
             WHERE r.analysis_profile_id = $profile_id
               AND r.source_symbol_id IN ({placeholders})
               {kindClause}
-            ORDER BY target.display_name;
+            ORDER BY r.target_symbol_id, r.source_symbol_id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
         return await ReadRelationsAsync(command, cancellationToken);
@@ -803,20 +893,26 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
 
     private const string SymbolProjection = """
         s.id, s.stable_key, s.kind, s.name, s.namespace_name,
-        s.type_simple_name, s.type_metadata_name, s.fully_qualified_name,
-        s.display_name, s.containing_symbol_id, s.arity, s.parameter_count, s.method_kind,
+        s.type_simple_name, s.type_metadata_name,
+        s.path_segment_kind, s.path_segment_display, s.path_segment_identity,
+        s.type_display_path, s.type_identity_path,
+        s.executable_display_path, s.executable_identity_path,
+        s.preferred_declaration_id, s.containing_symbol_id, s.arity, s.parameter_count,
+        s.method_kind, s.accessibility, s.type_kind,
         s.is_static, s.is_abstract, s.is_virtual, s.is_override,
         s.async_role, s.async_involvement_depth, s.async_next_symbol_id,
-        s.return_type_key, s.normalized_source, s.normalized_source_hash,
-        d.normalized_path, s.source_start, s.source_length, s.is_generated,
-        p.assembly_name, s.type_kind, s.accessibility
+        s.return_type_key, s.return_type_display,
+        s.conversion_type_key, s.conversion_type_display,
+        pdoc.normalized_path, pd.source_start, pd.source_length, pd.is_generated,
+        s.is_generated, p.assembly_name
         """;
 
     private static string BuildSymbolSelect(string whereClause) => $"""
         SELECT
             {SymbolProjection}
         FROM symbols s
-        LEFT JOIN documents d ON d.id = s.source_document_id
+        LEFT JOIN symbol_declarations pd ON pd.id = s.preferred_declaration_id
+        LEFT JOIN documents pdoc ON pdoc.id = pd.document_id
         LEFT JOIN projects p ON p.id = s.project_id
         WHERE {whereClause}
         """;
@@ -831,6 +927,20 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         {
             while (await reader.ReadAsync(cancellationToken))
             {
+                var path = new SymbolPathData(
+                    reader.GetString(4),
+                    reader.GetString(10),
+                    reader.GetString(11),
+                    reader.GetString(12),
+                    reader.GetString(13),
+                    reader.GetString(9),
+                    reader.GetString(8),
+                    (CallablePathSegmentKind)reader.GetInt32(7));
+                var preferredPath = reader.IsDBNull(32) ? null : reader.GetString(32);
+                int? preferredStart = reader.IsDBNull(33) ? null : reader.GetInt32(33);
+                int? preferredLength = reader.IsDBNull(34) ? null : reader.GetInt32(34);
+                bool? preferredGenerated = reader.IsDBNull(35) ? null : reader.GetBoolean(35);
+                var logicalGenerated = reader.GetBoolean(36);
                 rows.Add(new StoredSymbol(
                     reader.GetInt64(0),
                     reader.GetString(1),
@@ -839,36 +949,46 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.GetString(4),
                     reader.IsDBNull(5) ? null : reader.GetString(5),
                     reader.IsDBNull(6) ? null : reader.GetString(6),
-                    reader.GetString(7),
-                    reader.GetString(8),
-                    reader.IsDBNull(9) ? null : reader.GetInt64(9),
-                    reader.GetInt32(10),
-                    reader.IsDBNull(11) ? null : reader.GetInt32(11),
-                    reader.IsDBNull(12) ? null : reader.GetInt32(12),
-                    reader.GetBoolean(13),
-                    reader.GetBoolean(14),
-                    reader.GetBoolean(15),
-                    reader.GetBoolean(16),
-                    (AsyncRole)reader.GetInt32(17),
+                    string.Empty,
+                    string.Empty,
+                    reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                    reader.GetInt32(16),
+                    reader.IsDBNull(17) ? null : reader.GetInt32(17),
                     reader.IsDBNull(18) ? null : reader.GetInt32(18),
-                    reader.IsDBNull(19) ? null : reader.GetInt64(19),
-                    reader.IsDBNull(20) ? null : reader.GetString(20),
-                    reader.IsDBNull(21) ? null : reader.GetString(21),
-                    reader.IsDBNull(22) ? null : reader.GetFieldValue<byte[]>(22),
-                    reader.IsDBNull(23) ? null : reader.GetString(23),
-                    reader.IsDBNull(24) ? null : reader.GetInt32(24),
-                    reader.IsDBNull(25) ? null : reader.GetInt32(25),
-                    reader.GetBoolean(26),
-                    reader.IsDBNull(27) ? null : reader.GetString(27),
+                    reader.GetBoolean(21),
+                    reader.GetBoolean(22),
+                    reader.GetBoolean(23),
+                    reader.GetBoolean(24),
+                    (AsyncRole)reader.GetInt32(25),
+                    reader.IsDBNull(26) ? null : reader.GetInt32(26),
+                    reader.IsDBNull(27) ? null : reader.GetInt64(27),
+                    reader.IsDBNull(28) ? null : reader.GetString(28),
+                    null,
+                    null,
+                    preferredPath,
+                    preferredStart,
+                    preferredLength,
+                    preferredGenerated ?? logicalGenerated,
+                    reader.IsDBNull(37) ? null : reader.GetString(37),
                     [],
-                    reader.IsDBNull(28) ? null : reader.GetInt32(28),
-                    reader.IsDBNull(29) ? null : reader.GetInt32(29)));
+                    reader.IsDBNull(20) ? null : reader.GetInt32(20),
+                    reader.IsDBNull(19) ? null : reader.GetInt32(19)) with
+                {
+                    Path = path,
+                    PreferredDeclarationId = reader.IsDBNull(14) ? null : reader.GetInt64(14),
+                    PreferredDocumentPath = preferredPath,
+                    PreferredSourceStart = preferredStart,
+                    PreferredIsGenerated = preferredGenerated,
+                    ReturnTypeDisplay = reader.IsDBNull(29) ? null : reader.GetString(29),
+                    ConversionTypeKey = reader.IsDBNull(30) ? null : reader.GetString(30),
+                    ConversionTypeDisplay = reader.IsDBNull(31) ? null : reader.GetString(31),
+                });
             }
         }
 
         await using var parameterCommand = connection.CreateCommand();
         parameterCommand.CommandText = """
-            SELECT ordinal, name, type_key, ref_kind, is_optional
+            SELECT ordinal, name, type_key, ref_kind, is_optional, type_display
             FROM method_parameters
             WHERE method_id = $method_id
             ORDER BY ordinal;
@@ -886,10 +1006,37 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.IsDBNull(1) ? null : reader.GetString(1),
                     reader.GetString(2),
                     reader.GetInt32(3),
-                    reader.GetBoolean(4)));
+                    reader.GetBoolean(4),
+                    reader.GetString(5)));
             }
 
             rows[index] = rows[index] with { Parameters = parameters };
+        }
+
+        return rows;
+    }
+
+    private static async Task<IReadOnlyList<StoredDeclaration>> ReadDeclarationsAsync(
+        SqliteCommand command,
+        bool includeSourceText,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<StoredDeclaration>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new StoredDeclaration(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                reader.GetString(4),
+                (DeclarationRole)reader.GetInt32(5),
+                reader.GetInt32(6),
+                reader.GetInt32(7),
+                includeSourceText && !reader.IsDBNull(8) ? reader.GetString(8) : null,
+                includeSourceText && !reader.IsDBNull(9) ? reader.GetFieldValue<byte[]>(9) : null,
+                reader.GetBoolean(10)));
         }
 
         return rows;
@@ -906,24 +1053,21 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             result.Add(new StoredCall(
                 reader.GetInt64(0),
                 reader.GetInt64(1),
-                reader.GetString(2),
+                reader.IsDBNull(2) ? null : reader.GetInt64(2),
                 reader.IsDBNull(3) ? null : reader.GetInt64(3),
                 reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.IsDBNull(6) ? null : reader.GetInt64(6),
-                reader.IsDBNull(7) ? null : reader.GetString(7),
-                (ReferenceKind)reader.GetInt32(8),
-                (DispatchKind)reader.GetInt32(9),
-                (ResolutionStatus)reader.GetInt32(10),
-                (ResolutionReason)reader.GetInt32(11),
-                (AsyncUsageKind)reader.GetInt32(12),
-                reader.GetInt64(13),
-                reader.GetString(14),
-                reader.GetInt32(15),
-                reader.GetInt32(16),
-                reader.GetBoolean(17),
-                reader.IsDBNull(18) ? null : reader.GetString(18),
-                reader.IsDBNull(19) ? null : reader.GetString(19)));
+                (ReferenceKind)reader.GetInt32(5),
+                (DispatchKind)reader.GetInt32(6),
+                (ResolutionStatus)reader.GetInt32(7),
+                (ResolutionReason)reader.GetInt32(8),
+                (AsyncUsageKind)reader.GetInt32(9),
+                reader.GetInt64(10),
+                reader.GetString(11),
+                reader.GetInt32(12),
+                reader.GetInt32(13),
+                reader.GetBoolean(14),
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16)));
         }
 
         return result;
@@ -939,10 +1083,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         {
             result.Add(new StoredRelation(
                 reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetInt64(2),
-                reader.GetString(3),
-                (SymbolRelationKind)reader.GetInt32(4)));
+                reader.GetInt64(1),
+                (SymbolRelationKind)reader.GetInt32(2)));
         }
 
         return result;
@@ -965,9 +1107,9 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
     private static string BuildCallSelect(string whereClause) => $"""
         SELECT
             c.id,
-            caller.id, caller.display_name, caller.containing_symbol_id,
-            callee.id, callee.display_name,
-            definition.id, definition.display_name,
+            caller.id, caller.containing_symbol_id,
+            callee.id,
+            definition.id,
             c.reference_kind, c.dispatch_kind, c.resolution_status, c.resolution_reason,
             c.async_usage_kind,
             d.id, d.normalized_path, c.source_start, c.source_length, d.is_generated,

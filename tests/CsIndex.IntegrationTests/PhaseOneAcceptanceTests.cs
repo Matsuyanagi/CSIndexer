@@ -27,8 +27,10 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Equal(2, noArguments.Calls.Count);
         Assert.Single(stringArgument.Calls);
         Assert.Single(bClass.Calls);
-        Assert.All(noArguments.Calls, call => Assert.Contains("AClass::Play", call.CalleeDefinitionDisplayName));
-        Assert.All(bClass.Calls, call => Assert.Contains("BClass::Play", call.CalleeDefinitionDisplayName));
+        Assert.All(noArguments.Calls, call =>
+            Assert.Contains("AClass::Play", CalleeName(noArguments, call)));
+        Assert.All(bClass.Calls, call =>
+            Assert.Contains("BClass::Play", CalleeName(bClass, call)));
     }
 
     [Fact]
@@ -145,7 +147,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         var definition = Assert.Single(visible.Definitions);
-        Assert.Equal("Alpha.HidingMiddle::Select(System.String)", definition.DisplayName);
+        Assert.Equal("Alpha.HidingMiddle::Select(string)", definition.DisplayName);
         Assert.Empty(hidden.Definitions);
     }
 
@@ -173,10 +175,10 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             DispatchSearchMode.Static, CallerScope.Direct,
             includeOverrides: true,
             cancellationToken: cancellationToken);
-        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("IPlayable"));
-        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Pianist"));
-        Assert.Contains(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Game"));
-        Assert.DoesNotContain(interfaceCallers.Calls, call => call.CalleeDefinitionDisplayName!.Contains("Baseball"));
+        Assert.Contains(interfaceCallers.Calls, call => CalleeName(interfaceCallers, call)!.Contains("IPlayable"));
+        Assert.Contains(interfaceCallers.Calls, call => CalleeName(interfaceCallers, call)!.Contains("Pianist"));
+        Assert.Contains(interfaceCallers.Calls, call => CalleeName(interfaceCallers, call)!.Contains("Game"));
+        Assert.DoesNotContain(interfaceCallers.Calls, call => CalleeName(interfaceCallers, call)!.Contains("Baseball"));
 
         var concreteCallers = await fixture.Query.FindCallersAsync(
             "Alpha.Pianist::Play()", GeneratedFilter.Include,
@@ -184,30 +186,30 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             includeOverrides: true,
             cancellationToken: cancellationToken);
         Assert.DoesNotContain(concreteCallers.Calls, call =>
-            call.CalleeDefinitionDisplayName!.Contains("IPlayable"));
+            CalleeName(concreteCallers, call)!.Contains("IPlayable"));
         Assert.DoesNotContain(concreteCallers.Calls, call =>
-            call.CalleeDefinitionDisplayName!.Contains("Game"));
+            CalleeName(concreteCallers, call)!.Contains("Game"));
 
         var exactCallers = await fixture.Query.FindCallersAsync(
             "Alpha.Pianist::Play()", GeneratedFilter.Include,
             DispatchSearchMode.Static, CallerScope.Direct,
             cancellationToken: cancellationToken);
         Assert.DoesNotContain(exactCallers.Calls, call =>
-            call.CalleeDefinitionDisplayName!.Contains("ProPianist"));
+            CalleeName(exactCallers, call)!.Contains("ProPianist"));
 
         var references = await fixture.Query.FindReferencesAsync(
             "Alpha.Pianist::Play()", GeneratedFilter.Include,
             includeOverrides: true,
             cancellationToken: cancellationToken);
-        Assert.Contains(references.Calls, call => call.CalleeDefinitionDisplayName!.Contains("ProPianist"));
+        Assert.Contains(references.Calls, call => CalleeName(references, call)!.Contains("ProPianist"));
 
         var callees = await fixture.Query.FindCalleesAsync(
             "Alpha.D1::Play()", GeneratedFilter.Include,
             includeOverrides: true,
             cancellationToken: cancellationToken);
-        Assert.Contains(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("BaseBody"));
-        Assert.Contains(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("D2Body"));
-        Assert.DoesNotContain(callees.Calls, call => call.CalleeDefinitionDisplayName!.Contains("OtherBody"));
+        Assert.Contains(callees.Calls, call => CalleeName(callees, call)!.Contains("BaseBody"));
+        Assert.Contains(callees.Calls, call => CalleeName(callees, call)!.Contains("D2Body"));
+        Assert.DoesNotContain(callees.Calls, call => CalleeName(callees, call)!.Contains("OtherBody"));
     }
 
     [Fact]
@@ -258,9 +260,9 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         Assert.Single(lambda.Calls);
-        Assert.Contains("<lambda#1>", lambda.Calls[0].CallerDisplayName);
+        Assert.Contains("<lambda#1>", CallerName(lambda, lambda.Calls[0]));
         Assert.Single(local.Calls);
-        Assert.Contains("Local", local.Calls[0].CallerDisplayName);
+        Assert.Contains("Local", CallerName(local, local.Calls[0]));
     }
 
     [Theory]
@@ -297,16 +299,17 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
 
-        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(symbols.MatchedSymbols).DisplayName);
-        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(definitions.Definitions).DisplayName);
-        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(references.Context.MatchedSymbols).DisplayName);
-        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(callers.Context.MatchedSymbols).DisplayName);
-        Assert.Equal("Alpha.LocalPlayer::Local()", Assert.Single(callees.Context.MatchedSymbols).DisplayName);
+        const string localPath = "Alpha.LocalPlayer::Execute().Local()";
+        Assert.Equal(localPath, Assert.Single(symbols.MatchedSymbols).DisplayName);
+        Assert.Equal(localPath, Assert.Single(definitions.Definitions).DisplayName);
+        Assert.Equal(localPath, Assert.Single(references.Context.MatchedSymbols).DisplayName);
+        Assert.Equal(localPath, Assert.Single(callers.Context.MatchedSymbols).DisplayName);
+        Assert.Equal(localPath, Assert.Single(callees.Context.MatchedSymbols).DisplayName);
         Assert.Single(references.Calls);
         Assert.Single(callers.Calls);
         var callee = Assert.Single(callees.Calls);
-        Assert.Contains("LocalPlayer::Play", callee.CalleeDefinitionDisplayName);
-        Assert.DoesNotContain("InheritedLocalBody", callee.CalleeDefinitionDisplayName);
+        Assert.Contains("LocalPlayer::Play", CalleeName(callees, callee));
+        Assert.DoesNotContain("InheritedLocalBody", CalleeName(callees, callee));
     }
 
     [Fact]
@@ -322,7 +325,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         {
             var databasePath = Path.Combine(root, "index.sqlite");
             var index = new SqliteIndex(databasePath);
-            await index.SaveAsync(CreateDuplicateReceiverSnapshot(root), cancellationToken);
+            await index.SaveAsync(CreateDuplicateReceiverSnapshot(), cancellationToken);
             var query = new SemanticQueryService(index.CreateQueryRepository());
 
             var result = await query.FindSymbolsAsync(
@@ -336,13 +339,13 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
             Assert.Equal(
-                ["Duplicate.LocalBaseB::Local()", "Duplicate.Receiver::Local()"],
+                ["Duplicate.LocalBaseB::Local()", "Duplicate.Receiver::Execute().Local()"],
                 result.MatchedSymbols.Select(symbol => symbol.DisplayName));
             Assert.DoesNotContain(
                 result.MatchedSymbols,
                 symbol => symbol.DisplayName == "Duplicate.LocalBaseA::Local()");
             Assert.Equal(
-                "Duplicate.Receiver::CycleLocal()",
+                "Duplicate.Receiver::CycleOwnerA().CycleLocal()",
                 Assert.Single(cyclicResult.MatchedSymbols).DisplayName);
         }
         finally
@@ -408,11 +411,11 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(5, result.Calls.Count);
-        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("DirectCall") == true);
-        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("OuterLambdaCall") == true);
-        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("InnerCreated::.ctor") == true);
-        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("FirstNestedLambdaCall") == true);
-        Assert.Contains(result.Calls, call => call.CalleeDefinitionDisplayName?.Contains("SecondNestedLambdaCall") == true);
+        Assert.Contains(result.Calls, call => CalleeName(result, call)?.Contains("DirectCall") == true);
+        Assert.Contains(result.Calls, call => CalleeName(result, call)?.Contains("OuterLambdaCall") == true);
+        Assert.Contains(result.Calls, call => call.ReferenceKind == ReferenceKind.ObjectCreation);
+        Assert.Contains(result.Calls, call => CalleeName(result, call)?.Contains("FirstNestedLambdaCall") == true);
+        Assert.Contains(result.Calls, call => CalleeName(result, call)?.Contains("SecondNestedLambdaCall") == true);
     }
 
     [Fact]
@@ -427,7 +430,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
 
         var call = Assert.Single(result.Calls);
-        Assert.Contains("DirectCall", call.CalleeDefinitionDisplayName);
+        Assert.Contains("DirectCall", CalleeName(result, call));
     }
 
     [Fact]
@@ -448,10 +451,11 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         Assert.Single(extension.Calls);
-        Assert.Contains("PlayerExtensions::PlayExt", extension.Calls[0].CalleeDefinitionDisplayName);
+        Assert.Contains("PlayerExtensions::PlayExt", CalleeName(extension, extension.Calls[0]));
         Assert.Equal(2, generic.Calls.Count(call => call.ReferenceKind == ReferenceKind.Invocation));
-        Assert.Contains(generic.Calls, call => call.CalleeDisplayName?.Contains("System.Int32", StringComparison.Ordinal) == true);
-        Assert.Contains(generic.Calls, call => call.CalleeDisplayName?.Contains("System.String", StringComparison.Ordinal) == true);
+        Assert.All(
+            generic.Calls,
+            call => Assert.Equal("Alpha.Converter::Convert<T>(object)", CalleeName(generic, call)));
     }
 
     [Fact]
@@ -460,11 +464,10 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         await fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
 
-        var constructor = await fixture.Query.FindCallersAsync(
-            "Alpha.AClass::.ctor()",
+        var created = await fixture.Query.FindCalleesAsync(
+            "Alpha.DistinctCaller::Execute(Alpha.AClass,Alpha.BClass)",
             GeneratedFilter.Include,
-            DispatchSearchMode.Static,
-            CallerScope.Direct,
+            includeLambdaCalls: false,
             cancellationToken: cancellationToken);
         var references = await fixture.Query.FindReferencesAsync(
             "Alpha.ReferenceKinds::Target()",
@@ -477,7 +480,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             CallerScope.Direct,
             cancellationToken: cancellationToken);
 
-        Assert.Single(constructor.Calls);
+        Assert.Single(created.Calls, call => call.ReferenceKind == ReferenceKind.ObjectCreation);
         Assert.Contains(references.Calls, call => call.ReferenceKind is ReferenceKind.MethodGroup or ReferenceKind.DelegateCreation);
         Assert.Contains(references.Calls, call => call.ReferenceKind == ReferenceKind.NameOf);
         Assert.Empty(callers.Calls);
@@ -514,8 +517,8 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         var conditions = await fixture.Query.GetConditionsAsync(cancellationToken: cancellationToken);
 
         Assert.Single(callees.Calls);
-        Assert.Contains("PlayWindows", callees.Calls[0].CalleeDefinitionDisplayName);
-        Assert.DoesNotContain(callees.Calls, call => call.CalleeDefinitionDisplayName?.Contains("PlayOther") == true);
+        Assert.Contains("PlayWindows", CalleeName(callees, callees.Calls[0]));
+        Assert.DoesNotContain(callees.Calls, call => CalleeName(callees, call)?.Contains("PlayOther") == true);
         Assert.Contains(conditions.Symbols, symbol => symbol.SymbolName == "WINDOWS" && symbol.IsDefined);
         Assert.Contains("WINDOWS", conditions.Profile.PreprocessorSymbols);
         Assert.DoesNotContain("NET10_0", conditions.Profile.PreprocessorSymbols);
@@ -533,18 +536,19 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         var requestHash = CsIndex.Core.Caching.RequestHasher.Build(input, options);
         var index = new SqliteIndex(fixture.DatabasePath);
 
-        Assert.True(await index.IsCacheValidAsync(fixture.RootPath, fingerprint, requestHash, cancellationToken));
+        Assert.True(await index.IsCacheValidAsync(".", fingerprint, requestHash, cancellationToken));
         var result = await fixture.Query.FindDefinitionsAsync(
             "Alpha.AClass::Play()",
             cancellationToken: cancellationToken);
         Assert.Single(result.Definitions);
     }
 
-    private static IndexSnapshot CreateDuplicateReceiverSnapshot(string root)
+    private static IndexSnapshot CreateDuplicateReceiverSnapshot()
     {
         var snapshot = new IndexSnapshot
         {
-            InputRoot = root,
+            InputRoot = ".",
+            IndexRootAnchor = ".",
             InputFingerprint = HashUtilities.Sha256("duplicate-receiver-input"),
             RequestHash = HashUtilities.Sha256("duplicate-receiver-request"),
             Profile = new AnalysisProfileData
@@ -561,19 +565,25 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         AddProject("project-a", "AssemblyA", "A.cs");
         AddProject("project-b", "AssemblyB", "B.cs");
 
-        AddType("a-base", "LocalBaseA", "project-a", 0);
-        AddMethod("a-base-local", "LocalBaseA", "a-base", "Local", "project-a", 20);
-        AddType("a-receiver", "Receiver", "project-a", 40);
-        AddMethod("a-owner", "Receiver", "a-receiver", "Execute", "project-a", 60);
-        AddMethod("a-local", "Receiver", "a-owner", "Local", "project-a", 80);
-        AddMethod("cycle-owner-a", "Receiver", "cycle-owner-b", "CycleOwnerA", "project-a", 100);
-        AddMethod("cycle-owner-b", "Receiver", "cycle-owner-a", "CycleOwnerB", "project-a", 120);
-        AddMethod("cycle-local", "Receiver", "cycle-owner-a", "CycleLocal", "project-a", 140);
+        AddType("a-base", "LocalBaseA", "project-a");
+        AddMethod("a-base-local", "LocalBaseA", "a-base", "Local", "project-a");
+        AddType("a-receiver", "Receiver", "project-a");
+        AddMethod("a-owner", "Receiver", "a-receiver", "Execute", "project-a");
+        AddMethod("a-local", "Receiver", "a-owner", "Local", "project-a", "Execute().Local()");
+        AddMethod("cycle-owner-a", "Receiver", "cycle-owner-b", "CycleOwnerA", "project-a");
+        AddMethod("cycle-owner-b", "Receiver", "cycle-owner-a", "CycleOwnerB", "project-a");
+        AddMethod(
+            "cycle-local",
+            "Receiver",
+            "cycle-owner-a",
+            "CycleLocal",
+            "project-a",
+            "CycleOwnerA().CycleLocal()");
         AddRelation("a-receiver", "a-base");
 
-        AddType("b-base", "LocalBaseB", "project-b", 0);
-        AddMethod("b-base-local", "LocalBaseB", "b-base", "Local", "project-b", 20);
-        AddType("b-receiver", "Receiver", "project-b", 40);
+        AddType("b-base", "LocalBaseB", "project-b");
+        AddMethod("b-base-local", "LocalBaseB", "b-base", "Local", "project-b");
+        AddType("b-receiver", "Receiver", "project-b");
         AddRelation("b-receiver", "b-base");
 
         return snapshot;
@@ -589,16 +599,16 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             });
             snapshot.Documents.Add(new DocumentData
             {
-                Key = $"{key}|source",
+                Key = $"{key}|document:{fileName}",
                 ProjectKey = key,
-                NormalizedPath = Path.Combine(root, fileName),
+                NormalizedPath = fileName,
                 ContentHash = HashUtilities.Sha256(fileName),
                 IsGenerated = false,
                 GenerationKind = GenerationKind.None,
             });
         }
 
-        void AddType(string stableKey, string typeName, string projectKey, int sourceStart)
+        void AddType(string stableKey, string typeName, string projectKey)
         {
             snapshot.Symbols[stableKey] = new SymbolData
             {
@@ -613,9 +623,15 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 DisplayName = $"Duplicate.{typeName}",
                 TypeKind = (int)IndexedTypeKind.Class,
                 Accessibility = (int)IndexedAccessibility.Public,
-                SourceDocumentKey = $"{projectKey}|source",
-                SourceStart = sourceStart,
-                SourceLength = typeName.Length,
+                Path = new SymbolPathData(
+                    "Duplicate",
+                    typeName,
+                    typeName,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    CallablePathSegmentKind.Named),
             };
         }
 
@@ -625,8 +641,9 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             string containingSymbolKey,
             string methodName,
             string projectKey,
-            int sourceStart)
+            string? executableDisplayPath = null)
         {
+            var executablePath = executableDisplayPath ?? $"{methodName}()";
             snapshot.Symbols[stableKey] = new SymbolData
             {
                 StableKey = stableKey,
@@ -641,9 +658,15 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 ContainingSymbolKey = containingSymbolKey,
                 ParameterCount = 0,
                 Accessibility = (int)IndexedAccessibility.Public,
-                SourceDocumentKey = $"{projectKey}|source",
-                SourceStart = sourceStart,
-                SourceLength = methodName.Length,
+                Path = new SymbolPathData(
+                    "Duplicate",
+                    typeName,
+                    typeName,
+                    executablePath,
+                    executablePath,
+                    $"{methodName}()",
+                    $"{methodName}()",
+                    CallablePathSegmentKind.Named),
             };
         }
 
@@ -657,4 +680,15 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             });
         }
     }
+
+    private static string? CalleeName(CallResult result, StoredCall call)
+    {
+        var id = call.CalleeDefinitionId ?? call.CalleeSymbolId;
+        return id is long endpointId && result.SymbolsById.TryGetValue(endpointId, out var symbol)
+            ? symbol.DisplayName
+            : call.UnresolvedName;
+    }
+
+    private static string CallerName(CallResult result, StoredCall call) =>
+        result.SymbolsById[call.CallerSymbolId].DisplayName;
 }

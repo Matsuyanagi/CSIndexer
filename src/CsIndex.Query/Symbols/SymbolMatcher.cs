@@ -40,8 +40,14 @@ public static class SymbolMatcher
             return true;
         }
 
+        // Legacy selectors carry display spellings, while schema-v5 TypeKey is an
+        // opaque semantic identity. Task 6 replaces this compatibility bridge with
+        // structured selectors.
         return symbol.Parameters.Count == query.ParameterTypes.Count &&
-               symbol.Parameters.Select(parameter => TypeNameNormalizer.Normalize(parameter.TypeKey))
+               symbol.Parameters.Select(parameter => TypeNameNormalizer.Normalize(
+                       string.IsNullOrEmpty(parameter.TypeDisplay)
+                           ? parameter.TypeKey
+                           : parameter.TypeDisplay))
                    .SequenceEqual(query.ParameterTypes);
     }
 }

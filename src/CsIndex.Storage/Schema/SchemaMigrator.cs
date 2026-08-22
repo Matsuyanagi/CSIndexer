@@ -7,6 +7,10 @@ public sealed class SchemaMigrator
 {
     public const int CurrentVersion = RequestHasher.SchemaVersion;
 
+    private const string IncompatibleDatabaseGuidance =
+        "The database was not modified. Delete or rename the old database or choose a new --db path, " +
+        "then run csindex index explicitly.";
+
     public async Task EnsureMigratedAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         try
@@ -30,13 +34,11 @@ public sealed class SchemaMigrator
                     await userSchemaCommand.ExecuteScalarAsync(cancellationToken)) > 0;
                 if (hasUserSchema)
                 {
-                    throw new IndexDatabaseException(
-                        "The database is not an empty CSIndexer database: schema_info is missing and user schema objects already exist. " +
-                        "The database was not modified.");
+                    throw UnsupportedSchema("schema_info is missing");
                 }
 
                 await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
-                await CreateVersionFourAsync(connection, cancellationToken);
+                await CreateVersionFiveAsync(connection, cancellationToken);
                 return;
             }
 
@@ -53,14 +55,12 @@ public sealed class SchemaMigrator
 
             if (versions.Count != 1)
             {
-                throw new IndexDatabaseException("The database schema_info table is corrupt: exactly one row is required.");
+                throw UnsupportedSchema("schema_info is corrupt: exactly one row is required");
             }
 
             if (versions[0] != CurrentVersion)
             {
-                throw new IndexDatabaseException(
-                    $"Unsupported database schema version {versions[0]}; this build supports version {CurrentVersion}. " +
-                    "The database was not deleted or modified.");
+                throw UnsupportedSchema(versions[0]);
             }
 
             await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
@@ -77,7 +77,14 @@ public sealed class SchemaMigrator
         }
     }
 
-    private static async Task CreateVersionFourAsync(
+    private static IndexDatabaseException UnsupportedSchema(string details) =>
+        new($"Unsupported database schema version ({details}). {IncompatibleDatabaseGuidance}");
+
+    private static IndexDatabaseException UnsupportedSchema(long version) =>
+        new($"Unsupported database schema version {version}; this build supports version {CurrentVersion}. " +
+            IncompatibleDatabaseGuidance);
+
+    private static async Task CreateVersionFiveAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -89,7 +96,7 @@ public sealed class SchemaMigrator
                 version INTEGER NOT NULL
             );
 
-            INSERT INTO schema_info(version) VALUES (4);
+            INSERT INTO schema_info(version) VALUES (5);
 
             CREATE TABLE analysis_profiles (
                 id                    INTEGER PRIMARY KEY,
@@ -108,6 +115,7 @@ public sealed class SchemaMigrator
                 id                    INTEGER PRIMARY KEY,
                 analysis_profile_id   INTEGER NOT NULL,
                 input_root            TEXT NOT NULL,
+                index_root_anchor     TEXT NOT NULL,
                 input_fingerprint     BLOB NOT NULL,
                 request_hash          BLOB NOT NULL,
                 indexed_at_utc        TEXT NOT NULL,
@@ -158,11 +166,17 @@ public sealed class SchemaMigrator
                 namespace_name        TEXT NOT NULL DEFAULT '',
                 type_simple_name      TEXT,
                 type_metadata_name    TEXT,
-                fully_qualified_name  TEXT NOT NULL,
-                display_name          TEXT NOT NULL,
+                path_segment_kind     INTEGER NOT NULL,
+                path_segment_display  TEXT NOT NULL,
+                path_segment_identity TEXT NOT NULL,
+                type_display_path     TEXT NOT NULL,
+                type_identity_path    TEXT NOT NULL,
+                executable_display_path TEXT NOT NULL,
+                executable_identity_path TEXT NOT NULL,
+                preferred_declaration_id INTEGER,
                 containing_symbol_id  INTEGER,
                 arity                 INTEGER NOT NULL DEFAULT 0,
-                parameter_count       INTEGER,
+                parameter_count      INTEGER,
                 method_kind           INTEGER,
                 accessibility         INTEGER,
                 type_kind             INTEGER,
@@ -173,12 +187,10 @@ public sealed class SchemaMigrator
                 async_role            INTEGER NOT NULL DEFAULT 0,
                 async_involvement_depth INTEGER,
                 return_type_key       TEXT,
-                normalized_source     TEXT,
-                normalized_source_hash BLOB,
+                return_type_display   TEXT,
+                conversion_type_key   TEXT,
+                conversion_type_display TEXT,
                 async_next_symbol_id  INTEGER,
-                source_document_id    INTEGER,
-                source_start          INTEGER,
-                source_length         INTEGER,
                 is_generated          INTEGER NOT NULL DEFAULT 0,
 
                 UNIQUE(analysis_profile_id, stable_key),
@@ -195,17 +207,18 @@ public sealed class SchemaMigrator
                 FOREIGN KEY(async_next_symbol_id)
                   REFERENCES symbols(id) ON DELETE SET NULL,
 
-                FOREIGN KEY(source_document_id)
-                  REFERENCES documents(id) ON DELETE CASCADE
+                FOREIGN KEY(preferred_declaration_id)
+                  REFERENCES symbol_declarations(id) ON DELETE SET NULL
             );
 
             CREATE TABLE method_parameters (
                 method_id       INTEGER NOT NULL,
-                ordinal         INTEGER NOT NULL,
-                name            TEXT,
-                type_key        TEXT NOT NULL,
-                ref_kind        INTEGER NOT NULL,
-                is_optional     INTEGER NOT NULL DEFAULT 0,
+                ordinal          INTEGER NOT NULL,
+                name             TEXT,
+                type_key         TEXT NOT NULL,
+                type_display     TEXT NOT NULL,
+                ref_kind         INTEGER NOT NULL,
+                is_optional      INTEGER NOT NULL DEFAULT 0,
 
                 PRIMARY KEY(method_id, ordinal),
 
@@ -213,22 +226,43 @@ public sealed class SchemaMigrator
                   REFERENCES symbols(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE symbol_declarations (
+                id                     INTEGER PRIMARY KEY,
+                declaration_key       TEXT NOT NULL UNIQUE,
+                symbol_id             INTEGER NOT NULL,
+                document_id           INTEGER NOT NULL,
+                declaration_role      INTEGER NOT NULL CHECK (declaration_role IN (1, 2, 3)),
+                source_start           INTEGER NOT NULL,
+                source_length         INTEGER NOT NULL,
+                normalized_source     TEXT NOT NULL,
+                normalized_source_hash BLOB NOT NULL,
+                is_generated          INTEGER NOT NULL,
+
+                UNIQUE(symbol_id, document_id, source_start, source_length, declaration_role),
+
+                FOREIGN KEY(symbol_id)
+                  REFERENCES symbols(id) ON DELETE CASCADE,
+
+                FOREIGN KEY(document_id)
+                  REFERENCES documents(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE calls (
                 id                      INTEGER PRIMARY KEY,
                 analysis_profile_id     INTEGER NOT NULL,
                 caller_symbol_id        INTEGER NOT NULL,
-                callee_symbol_id        INTEGER,
-                callee_definition_id    INTEGER,
-                reference_kind          INTEGER NOT NULL,
-                dispatch_kind           INTEGER NOT NULL,
-                resolution_status       INTEGER NOT NULL,
-                resolution_reason       INTEGER NOT NULL,
-                async_usage_kind        INTEGER NOT NULL DEFAULT 0,
-                document_id             INTEGER NOT NULL,
-                source_start            INTEGER NOT NULL,
-                source_length           INTEGER NOT NULL,
-                unresolved_name         TEXT,
-                receiver_type_key       TEXT,
+                callee_symbol_id       INTEGER,
+                callee_definition_id   INTEGER,
+                reference_kind         INTEGER NOT NULL,
+                dispatch_kind          INTEGER NOT NULL,
+                resolution_status      INTEGER NOT NULL,
+                resolution_reason      INTEGER NOT NULL,
+                async_usage_kind       INTEGER NOT NULL DEFAULT 0,
+                document_id            INTEGER NOT NULL,
+                source_start           INTEGER NOT NULL,
+                source_length          INTEGER NOT NULL,
+                unresolved_name        TEXT,
+                receiver_type_key      TEXT,
 
                 FOREIGN KEY(analysis_profile_id)
                   REFERENCES analysis_profiles(id),
@@ -333,6 +367,12 @@ public sealed class SchemaMigrator
             CREATE INDEX ix_symbols_profile_async_depth
             ON symbols(analysis_profile_id, async_involvement_depth);
 
+            CREATE INDEX ix_symbols_profile_async_next
+            ON symbols(analysis_profile_id, async_next_symbol_id);
+
+            CREATE INDEX ix_symbols_profile_preferred_declaration
+            ON symbols(analysis_profile_id, preferred_declaration_id);
+
             CREATE INDEX ix_symbols_profile_name
             ON symbols(analysis_profile_id, name);
 
@@ -342,18 +382,18 @@ public sealed class SchemaMigrator
             CREATE INDEX ix_symbols_profile_namespace_type_method
             ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
 
-            CREATE INDEX ix_symbols_profile_fully_qualified
-            ON symbols(analysis_profile_id, fully_qualified_name);
-
-            CREATE INDEX ix_symbols_location
-            ON symbols(source_document_id, source_start);
-
-            CREATE INDEX ix_symbols_profile_async_next
-            ON symbols(analysis_profile_id, async_next_symbol_id);
+            CREATE INDEX ix_symbols_profile_path_identity
+            ON symbols(analysis_profile_id, namespace_name, type_identity_path, executable_identity_path);
 
             CREATE INDEX ix_symbols_profile_source_executable
             ON symbols(analysis_profile_id, kind)
-            WHERE source_document_id IS NOT NULL;
+            WHERE preferred_declaration_id IS NOT NULL;
+
+            CREATE INDEX ix_symbol_declarations_symbol
+            ON symbol_declarations(symbol_id);
+
+            CREATE INDEX ix_symbol_declarations_document_location_role
+            ON symbol_declarations(document_id, source_start, source_length, declaration_role);
 
             CREATE INDEX ix_calls_callee
             ON calls(callee_definition_id);

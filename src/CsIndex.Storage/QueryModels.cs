@@ -1,4 +1,5 @@
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 
 namespace CsIndex.Storage;
 
@@ -17,42 +18,163 @@ public sealed record StoredProfile(
     string? TargetFramework,
     string? RuntimeIdentifier,
     IReadOnlyList<string> PreprocessorSymbols,
-    string InputRoot);
+    string InputRoot,
+    string IndexRootAnchor = ".");
 
-public sealed record StoredParameter(int Ordinal, string? Name, string TypeKey, int RefKind, bool IsOptional);
+public sealed record StoredParameter(
+    int Ordinal,
+    string? Name,
+    string TypeKey,
+    int RefKind,
+    bool IsOptional,
+    string TypeDisplay = "");
 
-public sealed record StoredSymbol(
+public sealed record StoredDeclaration(
     long Id,
-    string StableKey,
-    IndexedSymbolKind Kind,
-    string Name,
-    string NamespaceName,
-    string? TypeSimpleName,
-    string? TypeMetadataName,
-    string FullyQualifiedName,
-    string DisplayName,
-    long? ContainingSymbolId,
-    int Arity,
-    int? ParameterCount,
-    int? MethodKind,
-    bool IsStatic,
-    bool IsAbstract,
-    bool IsVirtual,
-    bool IsOverride,
-    AsyncRole AsyncRole,
-    int? AsyncInvolvementDepth,
-    long? AsyncNextSymbolId,
-    string? ReturnTypeKey,
+    string DeclarationKey,
+    long SymbolId,
+    long DocumentId,
+    string DocumentPath,
+    DeclarationRole Role,
+    int SourceStart,
+    int SourceLength,
     string? NormalizedSource,
     byte[]? NormalizedSourceHash,
-    string? DocumentPath,
-    int? SourceStart,
-    int? SourceLength,
-    bool IsGenerated,
-    string? AssemblyName,
-    IReadOnlyList<StoredParameter> Parameters,
-    int? TypeKind,
-    int? Accessibility);
+    bool IsGenerated);
+
+public sealed record StoredSymbol
+{
+    // Temporary object-projection compatibility bridge. Task 9 deletes these
+    // forwarding members after the declaration-aware matcher conversion.
+    private static readonly SymbolPathFormatter PathFormatter = new();
+
+    public StoredSymbol(
+        long Id,
+        string StableKey,
+        IndexedSymbolKind Kind,
+        string Name,
+        string NamespaceName,
+        string? TypeSimpleName,
+        string? TypeMetadataName,
+        string FullyQualifiedName,
+        string DisplayName,
+        long? ContainingSymbolId,
+        int Arity,
+        int? ParameterCount,
+        int? MethodKind,
+        bool IsStatic,
+        bool IsAbstract,
+        bool IsVirtual,
+        bool IsOverride,
+        AsyncRole AsyncRole,
+        int? AsyncInvolvementDepth,
+        long? AsyncNextSymbolId,
+        string? ReturnTypeKey,
+        string? NormalizedSource,
+        byte[]? NormalizedSourceHash,
+        string? DocumentPath,
+        int? SourceStart,
+        int? SourceLength,
+        bool IsGenerated,
+        string? AssemblyName,
+        IReadOnlyList<StoredParameter> Parameters,
+        int? TypeKind,
+        int? Accessibility)
+    {
+        this.Id = Id;
+        this.StableKey = StableKey;
+        this.Kind = Kind;
+        this.Name = Name;
+        this.NamespaceName = NamespaceName;
+        this.TypeSimpleName = TypeSimpleName;
+        this.TypeMetadataName = TypeMetadataName;
+        this.ContainingSymbolId = ContainingSymbolId;
+        this.Arity = Arity;
+        this.ParameterCount = ParameterCount;
+        this.MethodKind = MethodKind;
+        this.IsStatic = IsStatic;
+        this.IsAbstract = IsAbstract;
+        this.IsVirtual = IsVirtual;
+        this.IsOverride = IsOverride;
+        this.AsyncRole = AsyncRole;
+        this.AsyncInvolvementDepth = AsyncInvolvementDepth;
+        this.AsyncNextSymbolId = AsyncNextSymbolId;
+        this.ReturnTypeKey = ReturnTypeKey;
+        this.DocumentPath = DocumentPath;
+        this.SourceStart = SourceStart;
+        this.IsGenerated = IsGenerated;
+        this.AssemblyName = AssemblyName;
+        this.Parameters = Parameters;
+        this.TypeKind = TypeKind;
+        this.Accessibility = Accessibility;
+        if ((NormalizedSource is not null || NormalizedSourceHash is not null) &&
+            DocumentPath is not null &&
+            SourceStart is int preferredStart &&
+            SourceLength is int preferredLength)
+        {
+            PreferredDeclaration = new StoredDeclaration(
+                0,
+                string.Empty,
+                Id,
+                0,
+                DocumentPath,
+                DeclarationRole.Ordinary,
+                preferredStart,
+                preferredLength,
+                NormalizedSource,
+                NormalizedSourceHash,
+                IsGenerated);
+        }
+    }
+
+    public long Id { get; init; }
+    public string StableKey { get; init; } = string.Empty;
+    public IndexedSymbolKind Kind { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public string NamespaceName { get; init; } = string.Empty;
+    public string? TypeSimpleName { get; init; }
+    public string? TypeMetadataName { get; init; }
+    public long? ContainingSymbolId { get; init; }
+    public int Arity { get; init; }
+    public int? ParameterCount { get; init; }
+    public int? MethodKind { get; init; }
+    public bool IsStatic { get; init; }
+    public bool IsAbstract { get; init; }
+    public bool IsVirtual { get; init; }
+    public bool IsOverride { get; init; }
+    public AsyncRole AsyncRole { get; init; }
+    public int? AsyncInvolvementDepth { get; init; }
+    public long? AsyncNextSymbolId { get; init; }
+    public string? ReturnTypeKey { get; init; }
+    public string? ReturnTypeDisplay { get; init; }
+    public string? ConversionTypeKey { get; init; }
+    public string? ConversionTypeDisplay { get; init; }
+    public SymbolPathData? Path { get; init; }
+    public long? PreferredDeclarationId { get; init; }
+    public string? PreferredDocumentPath { get; init; }
+    public int? PreferredSourceStart { get; init; }
+    public bool? PreferredIsGenerated { get; init; }
+    public StoredDeclaration? PreferredDeclaration { get; init; }
+    public string? DocumentPath { get; init; }
+    public int? SourceStart { get; init; }
+    public int? SourceLength => PreferredDeclaration?.SourceLength;
+    public bool IsGenerated { get; init; }
+    public string? AssemblyName { get; init; }
+    public IReadOnlyList<StoredParameter> Parameters { get; init; } = [];
+    public int? TypeKind { get; init; }
+    public int? Accessibility { get; init; }
+    public string? NormalizedSource => PreferredDeclaration?.NormalizedSource;
+    public byte[]? NormalizedSourceHash => PreferredDeclaration?.NormalizedSourceHash;
+
+    // Temporary object-projection bridge; neither property is a database column.
+    public string DisplayName => Path is null
+        ? throw new InvalidOperationException(
+            $"Symbol ID {Id} has no semantic path data for presentation.")
+        : PathFormatter.Format(Path, new SymbolPathFormatOptions());
+
+    // Temporary object-projection bridge; Task 9 removes this member.
+    public string FullyQualifiedName => DisplayName;
+}
 
 public sealed record StoredInterfaceMethodBinding(
     long ImplementingTypeId,
@@ -68,12 +190,9 @@ public sealed record InterfaceSearchSeed(long InterfaceMethodId, long InterfaceS
 public sealed record StoredCall(
     long Id,
     long CallerSymbolId,
-    string CallerDisplayName,
     long? CallerContainingSymbolId,
     long? CalleeSymbolId,
-    string? CalleeDisplayName,
     long? CalleeDefinitionId,
-    string? CalleeDefinitionDisplayName,
     ReferenceKind ReferenceKind,
     DispatchKind DispatchKind,
     ResolutionStatus ResolutionStatus,
@@ -89,9 +208,7 @@ public sealed record StoredCall(
 
 public sealed record StoredRelation(
     long SourceSymbolId,
-    string SourceDisplayName,
     long TargetSymbolId,
-    string TargetDisplayName,
     SymbolRelationKind Kind);
 
 public sealed record StoredDocument(long Id, string Path, bool IsGenerated);

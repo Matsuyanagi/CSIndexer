@@ -296,7 +296,7 @@ internal sealed class GraphOutputFormatter
     private string DisplayName(StoredSymbol symbol) => NormalizeText(RawDisplayName(symbol));
 
     private string RawDisplayName(StoredSymbol symbol) =>
-        SymbolSignatureFormatter.FormatDisplayName(symbol.DisplayName, _shortNames);
+        SymbolSignatureFormatter.FormatDisplayName(symbol, _shortNames);
 
     private string AsyncDisplayName(StoredSymbol symbol) =>
         symbol.AsyncRole == AsyncRole.None ? DisplayName(symbol) : $"async {DisplayName(symbol)}";
@@ -415,7 +415,9 @@ internal sealed class GraphOutputFormatter
             return result;
         }
 
-        result = StringComparer.Ordinal.Compare(left.Symbol.DisplayName, right.Symbol.DisplayName);
+        result = StringComparer.Ordinal.Compare(
+            SymbolSignatureFormatter.FormatDisplayName(left.Symbol, shortNames: false),
+            SymbolSignatureFormatter.FormatDisplayName(right.Symbol, shortNames: false));
         if (result != 0)
         {
             return result;

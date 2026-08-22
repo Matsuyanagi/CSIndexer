@@ -151,8 +151,8 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
 
     private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
         (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda) &&
-        symbol.DocumentPath is not null &&
-        symbol.NormalizedSource is not null;
+        symbol.PreferredDeclarationId is not null &&
+        symbol.PreferredDocumentPath is not null;
 
     private static bool IsAsyncOrigin(StoredSymbol symbol) =>
         (symbol.AsyncRole & AsyncOriginRoles) != 0;
