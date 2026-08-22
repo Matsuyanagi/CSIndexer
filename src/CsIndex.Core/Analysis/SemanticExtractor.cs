@@ -1379,6 +1379,14 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             if (!declarationsBySymbol.TryGetValue(symbol.StableKey, out var declarations) ||
                 declarations.Count == 0)
             {
+                _snapshot.Symbols[symbol.StableKey] = symbol with
+                {
+                    SourceDocumentKey = null,
+                    SourceStart = null,
+                    SourceLength = null,
+                    NormalizedSource = null,
+                    NormalizedSourceHash = null,
+                };
                 continue;
             }
 

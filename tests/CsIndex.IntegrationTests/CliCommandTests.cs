@@ -1854,18 +1854,27 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task CalleesPresentDanglingImplicitConstructorByCapturedSourceToken()
+    public async Task CalleesJsonDropsResolvedSourceTokensAndPresentsDanglingToken()
     {
         await _fixture.BuildTask;
 
         var result = await RunAsync(
-            "callees", "Alpha.DistinctCaller::Execute", "--db", _fixture.DatabasePath);
+            "callees", "Alpha.DistinctCaller::Execute", "--output-format", "json", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains(
-            "new AClass()",
-            result.StandardOutput,
-            StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var calls = document.RootElement.GetProperty("calls").EnumerateArray().ToArray();
+        var dangling = Assert.Single(
+            calls,
+            call => call.GetProperty("callee").GetString() == "new AClass()");
+        Assert.Equal("new AClass()", dangling.GetProperty("unresolvedName").GetString());
+
+        var resolved = calls
+            .Where(call => call.GetProperty("callee").GetString() != "new AClass()")
+            .ToArray();
+        Assert.Equal(2, resolved.Length);
+        Assert.All(resolved, call =>
+            Assert.Equal(JsonValueKind.Null, call.GetProperty("unresolvedName").ValueKind));
     }
 
     [Fact]

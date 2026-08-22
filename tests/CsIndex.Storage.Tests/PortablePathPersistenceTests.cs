@@ -186,6 +186,28 @@ public sealed class PortablePathPersistenceTests
         Assert.Contains("../Shared/Linked.cs", await DumpPortableRowsAsync(databasePath, cancellationToken));
     }
 
+    [Theory]
+    [InlineData("src//A.cs")]
+    [InlineData("src/./A.cs")]
+    [InlineData("src/x/../A.cs")]
+    public async Task Save_RejectsNonCanonicalRelativePathWithoutReplacingPriorRun(string invalidPath)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+        await index.SaveAsync(CreatePortableSnapshot(".."), cancellationToken);
+        var before = await DumpPortableRowsAsync(databasePath, cancellationToken);
+
+        var invalid = CreatePortableSnapshot("..");
+        invalid.InputRoot = invalidPath;
+        invalid.RequestHash[0] = 99;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            index.SaveAsync(invalid, cancellationToken));
+        Assert.Equal(before, await DumpPortableRowsAsync(databasePath, cancellationToken));
+    }
+
     private static IndexSnapshot CreatePortableSnapshot(
         string indexRootAnchor,
         string documentPath = "src/Game.cs")

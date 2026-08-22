@@ -10,6 +10,31 @@ namespace CsIndex.Core.Tests;
 public sealed class ProjectScopedSourceSymbolIdentityTests
 {
     [Fact]
+    public async Task ExtractAsync_RemovesLegacySourcePayloadFromEveryLogicalSymbol()
+    {
+        using var temporary = new TempDirectory();
+        using var workspace = new AdhocWorkspace();
+        var projects = CreateProjects(workspace, temporary);
+        var snapshot = CreateSnapshot(temporary.Path);
+
+        await new SemanticExtractor(new ProjectFingerprintBuilder()).ExtractAsync(
+            projects,
+            snapshot,
+            includeDiagnostics: true,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotEmpty(snapshot.Declarations);
+        Assert.All(snapshot.Symbols.Values, symbol =>
+        {
+            Assert.Null(symbol.SourceDocumentKey);
+            Assert.Null(symbol.SourceStart);
+            Assert.Null(symbol.SourceLength);
+            Assert.Null(symbol.NormalizedSource);
+            Assert.Null(symbol.NormalizedSourceHash);
+        });
+    }
+
+    [Fact]
     public async Task ExtractAsync_ScopesSameAssemblySourceSymbolsByProjectKey()
     {
         using var temporary = new TempDirectory();

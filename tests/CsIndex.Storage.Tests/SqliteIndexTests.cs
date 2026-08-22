@@ -2179,10 +2179,21 @@ public sealed class SqliteIndexTests
                 preferredDeclarationKey = declarationKey;
             }
 
+            var hasCallableDeclaration = snapshot.Declarations.Values.Any(value =>
+                value.SymbolKey.Equals(symbol.StableKey, StringComparison.Ordinal));
+
             snapshot.Symbols[pair.Key] = symbol with
             {
                 Path = path,
                 PreferredDeclarationKey = preferredDeclarationKey,
+                ProjectKey = symbol.Kind == IndexedSymbolKind.Type || hasCallableDeclaration
+                    ? symbol.ProjectKey
+                    : null,
+                SourceDocumentKey = null,
+                SourceStart = null,
+                SourceLength = null,
+                NormalizedSource = null,
+                NormalizedSourceHash = null,
             };
         }
 
@@ -2194,7 +2205,11 @@ public sealed class SqliteIndexTests
         snapshot.Declarations.Clear();
         foreach (var pair in snapshot.Symbols.ToArray())
         {
-            snapshot.Symbols[pair.Key] = pair.Value with { PreferredDeclarationKey = null };
+            snapshot.Symbols[pair.Key] = pair.Value with
+            {
+                ProjectKey = pair.Value.Kind == IndexedSymbolKind.Type ? pair.Value.ProjectKey : null,
+                PreferredDeclarationKey = null,
+            };
         }
     }
 

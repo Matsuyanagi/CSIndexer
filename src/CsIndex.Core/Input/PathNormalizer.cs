@@ -20,7 +20,7 @@ public static class PathNormalizer
         return TrimTrailingSeparators(fullPath);
     }
 
-    internal static string NormalizeRelative(string path)
+    public static string NormalizeRelative(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (IsRooted(path))

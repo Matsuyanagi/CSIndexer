@@ -644,6 +644,11 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             string? executableDisplayPath = null)
         {
             var executablePath = executableDisplayPath ?? $"{methodName}()";
+            var source = $"{methodName}()";
+            var sourceStart = snapshot.Declarations.Count * 10;
+            var document = snapshot.Documents.Single(value => value.ProjectKey == projectKey);
+            var declarationKey =
+                $"{stableKey}|declaration:{document.NormalizedPath}:{sourceStart}:{source.Length}:{(int)DeclarationRole.Ordinary}";
             snapshot.Symbols[stableKey] = new SymbolData
             {
                 StableKey = stableKey,
@@ -655,6 +660,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 TypeMetadataName = typeName,
                 FullyQualifiedName = $"Duplicate.{typeName}.{methodName}()",
                 DisplayName = $"Duplicate.{typeName}::{methodName}()",
+                PreferredDeclarationKey = declarationKey,
                 ContainingSymbolKey = containingSymbolKey,
                 ParameterCount = 0,
                 Accessibility = (int)IndexedAccessibility.Public,
@@ -667,6 +673,18 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                     $"{methodName}()",
                     $"{methodName}()",
                     CallablePathSegmentKind.Named),
+            };
+            snapshot.Declarations[declarationKey] = new SymbolDeclarationData
+            {
+                Key = declarationKey,
+                SymbolKey = stableKey,
+                DocumentKey = document.Key,
+                Role = DeclarationRole.Ordinary,
+                SourceStart = sourceStart,
+                SourceLength = source.Length,
+                NormalizedSource = source,
+                NormalizedSourceHash = HashUtilities.Sha256(source),
+                IsGenerated = false,
             };
         }
 

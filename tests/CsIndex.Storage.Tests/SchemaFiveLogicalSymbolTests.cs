@@ -227,6 +227,14 @@ public sealed class SchemaFiveLogicalSymbolTests
     [InlineData("cross-owned-preferred")]
     [InlineData("implementation-without-definition")]
     [InlineData("unknown-role")]
+    [InlineData("source-callable-missing-declarations")]
+    [InlineData("metadata-callable-with-declaration")]
+    [InlineData("logical-source-document-payload")]
+    [InlineData("logical-source-start-payload")]
+    [InlineData("logical-source-length-payload")]
+    [InlineData("logical-source-text-payload")]
+    [InlineData("logical-source-hash-payload")]
+    [InlineData("type-source-payload")]
     [InlineData("call-declaration-endpoint")]
     [InlineData("candidate-declaration-endpoint")]
     [InlineData("relation-declaration-endpoint")]
@@ -276,12 +284,16 @@ public sealed class SchemaFiveLogicalSymbolTests
     }
 
     [Fact]
-    public async Task Save_PersistsSourceTokenForNonDeclarationDanglingCallee()
+    public async Task Save_DropsResolvedSourceTokenAndRetainsItOnlyForDanglingCallee()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var temporary = new TempDirectory();
         var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
         var snapshot = CreateLogicalSnapshot();
+        snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with
+        {
+            UnresolvedName = "Save()",
+        });
         snapshot.Calls.Add(CreateCall("ordinary", "compiler-only-target", ["another-compiler-target"]) with
         {
             ReferenceKind = ReferenceKind.ObjectCreation,
@@ -292,17 +304,22 @@ public sealed class SchemaFiveLogicalSymbolTests
 
         var repository = index.CreateQueryRepository();
         var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
-        var call = Assert.Single(await repository.GetCallsByCallerAsync(
+        var calls = await repository.GetCallsByCallerAsync(
             profile.Id,
             [(await repository.FindLogicalSymbolCandidatesAsync(
                 profile.Id,
                 name: "Run",
                 cancellationToken: cancellationToken)).Single().Id],
             GeneratedFilter.Include,
-            cancellationToken: cancellationToken));
-        Assert.Null(call.CalleeSymbolId);
-        Assert.Null(call.CalleeDefinitionId);
-        Assert.Equal("new ImplicitConstructor()", call.UnresolvedName);
+            cancellationToken: cancellationToken);
+
+        var resolved = Assert.Single(calls, call => call.CalleeSymbolId is not null);
+        Assert.NotNull(resolved.CalleeDefinitionId);
+        Assert.Null(resolved.UnresolvedName);
+
+        var dangling = Assert.Single(calls, call => call.CalleeSymbolId is null);
+        Assert.Null(dangling.CalleeDefinitionId);
+        Assert.Equal("new ImplicitConstructor()", dangling.UnresolvedName);
     }
 
     private static IndexSnapshot CreateSnapshot() => new()
@@ -369,7 +386,10 @@ public sealed class SchemaFiveLogicalSymbolTests
             "metadata",
             IndexedSymbolKind.Method,
             "Metadata",
-            CreatePath("Metadata()", "Metadata()", CallablePathSegmentKind.Named)));
+            CreatePath("Metadata()", "Metadata()", CallablePathSegmentKind.Named)) with
+        {
+            ProjectKey = null,
+        });
 
         AddOrdinary(snapshot, documentKey, "ordinary", IndexedSymbolKind.Method, "Run", 10,
             "void Run(){}", CreatePath("Run(System.Guid)", "Run(System::Guid)", CallablePathSegmentKind.Named),
@@ -586,6 +606,64 @@ public sealed class SchemaFiveLogicalSymbolTests
                     snapshot.Declarations[original.Key] = original with { Role = (DeclarationRole)99 };
                     break;
                 }
+            case "source-callable-missing-declarations":
+                snapshot.Declarations.Remove(ordinaryDeclaration);
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+                {
+                    PreferredDeclarationKey = null,
+                };
+                break;
+            case "metadata-callable-with-declaration":
+                {
+                    const string source = "void Metadata(){}";
+                    var declarationKey = DeclarationKey(
+                        "metadata",
+                        130,
+                        source.Length,
+                        DeclarationRole.Ordinary);
+                    snapshot.Declarations.Add(declarationKey, CreateDeclaration(
+                        declarationKey,
+                        "metadata",
+                        "project-path:src/Game.csproj|document:src/Game.cs",
+                        DeclarationRole.Ordinary,
+                        130,
+                        source));
+                    snapshot.Symbols["metadata"] = snapshot.Symbols["metadata"] with
+                    {
+                        PreferredDeclarationKey = declarationKey,
+                    };
+                    break;
+                }
+            case "logical-source-document-payload":
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+                {
+                    SourceDocumentKey = "project-path:src/Game.csproj|document:src/Game.cs",
+                };
+                break;
+            case "logical-source-start-payload":
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with { SourceStart = 10 };
+                break;
+            case "logical-source-length-payload":
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with { SourceLength = 12 };
+                break;
+            case "logical-source-text-payload":
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+                {
+                    NormalizedSource = "void Run(){}",
+                };
+                break;
+            case "logical-source-hash-payload":
+                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+                {
+                    NormalizedSourceHash = [99],
+                };
+                break;
+            case "type-source-payload":
+                snapshot.Symbols["type"] = snapshot.Symbols["type"] with
+                {
+                    SourceDocumentKey = "project-path:src/Game.csproj|document:src/Game.cs",
+                };
+                break;
             case "call-declaration-endpoint":
                 snapshot.Calls.Add(CreateCall("ordinary", ordinaryDeclaration, []));
                 break;
