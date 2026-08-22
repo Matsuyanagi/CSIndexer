@@ -1878,6 +1878,21 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task CalleesPresentDanglingImplicitConstructorByCapturedSourceToken()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "callees", "Alpha.DistinctCaller::Execute", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains(
+            "new AClass()",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SymbolFindShortNamesFormatsPresentationName()
     {
         await _fixture.BuildTask;
