@@ -12,9 +12,20 @@ public sealed record CanonicalGenericPlaceholder(
     CanonicalGenericPlaceholderScope Scope,
     int Ordinal);
 
-public sealed record CanonicalTypeSelector(
-    string SyntaxText,
-    IReadOnlyDictionary<string, CanonicalGenericPlaceholder> GenericPlaceholders);
+public sealed record CanonicalTypeSelector
+{
+    public string SyntaxText { get; }
+
+    public IReadOnlyDictionary<string, CanonicalGenericPlaceholder> GenericPlaceholders { get; }
+
+    internal CanonicalTypeSelector(
+        string syntaxText,
+        IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
+    {
+        SyntaxText = syntaxText;
+        GenericPlaceholders = genericPlaceholders;
+    }
+}
 
 public sealed record CanonicalParameterSignature(
     CanonicalTypeSignature Type,

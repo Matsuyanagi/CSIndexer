@@ -109,7 +109,15 @@ public static class SymbolSignatureCanonicalizer
         }
 
         _ = ParseSelectorNode(syntax, genericPlaceholders);
-        return new CanonicalTypeSelector(syntaxText, genericPlaceholders);
+        var snapshot = new Dictionary<string, CanonicalGenericPlaceholder>(StringComparer.Ordinal);
+        foreach (var (name, placeholder) in genericPlaceholders)
+        {
+            snapshot.Add(name, placeholder);
+        }
+
+        return new CanonicalTypeSelector(
+            syntaxText,
+            new System.Collections.ObjectModel.ReadOnlyDictionary<string, CanonicalGenericPlaceholder>(snapshot));
     }
 
     public static bool IsMatch(CanonicalTypeSelector selector, CanonicalTypeSignature candidate)

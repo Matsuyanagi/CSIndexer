@@ -98,6 +98,43 @@ public sealed class SymbolSignatureCanonicalizerTests
     }
 
     [Fact]
+    public void ParseSelectorType_SnapshotsPlaceholderMapAndExposesReadOnlyView()
+    {
+        var placeholders = new Dictionary<string, CanonicalGenericPlaceholder>(StringComparer.Ordinal)
+        {
+            ["T"] = new(CanonicalGenericPlaceholderScope.Type, 0),
+        };
+        var selector = SymbolSignatureCanonicalizer.ParseSelectorType("T", placeholders);
+        var candidate = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterType("T", genericParameters: ["T"]));
+
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(selector, candidate));
+
+        placeholders.Clear();
+        placeholders["T"] = new(CanonicalGenericPlaceholderScope.Type, 99);
+
+        Assert.True(selector.GenericPlaceholders.ContainsKey("T"));
+        Assert.Equal(new(CanonicalGenericPlaceholderScope.Type, 0), selector.GenericPlaceholders["T"]);
+        Assert.True(SymbolSignatureCanonicalizer.IsMatch(selector, candidate));
+
+        var dictionary = Assert.IsAssignableFrom<IDictionary<string, CanonicalGenericPlaceholder>>(
+            selector.GenericPlaceholders);
+        Assert.Throws<NotSupportedException>(() => dictionary.Add(
+            "U",
+            new CanonicalGenericPlaceholder(CanonicalGenericPlaceholderScope.Type, 1)));
+        Assert.Throws<NotSupportedException>(() => dictionary["T"] =
+            new CanonicalGenericPlaceholder(CanonicalGenericPlaceholderScope.Type, 1));
+        Assert.Throws<NotSupportedException>(() => dictionary.Remove("T"));
+        Assert.Throws<NotSupportedException>(() => dictionary.Clear());
+    }
+
+    [Fact]
+    public void CanonicalTypeSelector_HasNoPublicInstanceConstructor()
+    {
+        Assert.Empty(typeof(CanonicalTypeSelector).GetConstructors());
+    }
+
+    [Fact]
     public void CanonicalizeType_FlattensNestedExecutableMethodOrdinals()
     {
         var (outerType, middleType, innerType) = GetNestedExecutablePlaceholderParameterTypes();
