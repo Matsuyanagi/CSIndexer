@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
@@ -138,9 +139,10 @@ public static class TypedConditionCompiler
 
         if (isMethod)
         {
-            var selector = SymbolPathParser.ParseExecutable(
-                condition.Value,
-                condition.Syntax == ConditionSyntax.Glob ? PatternMode.Glob : PatternMode.Literal);
+            var patternMode = condition.Syntax == ConditionSyntax.Glob
+                ? PatternMode.Glob
+                : PatternMode.Literal;
+            var selector = ParseExecutableCondition(condition.Value, patternMode);
             return new CompiledPathCondition(
                 null,
                 null,
@@ -180,6 +182,124 @@ public static class TypedConditionCompiler
             comparison,
             namespaceComparison.Value,
             typeComparison.Value);
+    }
+
+    private static IReadOnlyList<ExecutableSegmentSelector> ParseExecutableCondition(
+        string value,
+        PatternMode patternMode)
+    {
+        if (patternMode != PatternMode.Glob)
+        {
+            return SymbolPathParser.ParseExecutable(value, patternMode);
+        }
+
+        var replacements = new Dictionary<string, string>(StringComparer.Ordinal);
+        var parserInput = ReplaceWholeExplicitOwnerTypeWildcards(value, replacements);
+        var selectors = SymbolPathParser.ParseExecutable(parserInput, patternMode);
+        if (replacements.Count == 0)
+        {
+            return selectors;
+        }
+
+        return selectors.Select(selector => RestoreWholeTypeWildcards(selector, replacements)).ToArray();
+    }
+
+    private static string ReplaceWholeExplicitOwnerTypeWildcards(
+        string value,
+        IDictionary<string, string> replacements)
+    {
+        var result = new StringBuilder(value.Length);
+        var explicitPayloadEnd = -1;
+        var sentinelOrdinal = 0;
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (index > explicitPayloadEnd &&
+                value.AsSpan(index).StartsWith("[explicit:", StringComparison.Ordinal))
+            {
+                explicitPayloadEnd = BalancedTextScanner.FindMatchingDelimiter(value, index);
+            }
+
+            if (index <= explicitPayloadEnd && value[index] == '*')
+            {
+                var wildcardLength = index + 1 < value.Length && value[index + 1] == '*' ? 2 : 1;
+                if (IsWholeGenericArgument(value, index, wildcardLength))
+                {
+                    string sentinelRoot;
+                    do
+                    {
+                        sentinelRoot = $"System.__CsIndexAnyTypeWildcard{sentinelOrdinal++}";
+                    }
+                    while (value.Contains(sentinelRoot, StringComparison.Ordinal));
+
+                    var wildcard = wildcardLength == 1 ? "*" : "**";
+                    var sentinel = sentinelRoot + wildcard;
+                    replacements.Add(sentinel, wildcard);
+                    result.Append(sentinel);
+                    index += wildcardLength - 1;
+                    continue;
+                }
+            }
+
+            result.Append(value[index]);
+        }
+
+        return result.ToString();
+    }
+
+    private static bool IsWholeGenericArgument(string value, int start, int length)
+    {
+        var before = start - 1;
+        while (before >= 0 && char.IsWhiteSpace(value[before]))
+        {
+            before--;
+        }
+
+        var after = start + length;
+        while (after < value.Length && char.IsWhiteSpace(value[after]))
+        {
+            after++;
+        }
+
+        return before >= 0 &&
+               after < value.Length &&
+               value[before] is '<' or ',' &&
+               value[after] is '>' or ',';
+    }
+
+    private static ExecutableSegmentSelector RestoreWholeTypeWildcards(
+        ExecutableSegmentSelector selector,
+        IReadOnlyDictionary<string, string> replacements)
+    {
+        if (selector is not SpecialExecutableSegmentSelector
+            {
+                Member.ContainingTypePattern: { } containingTypePattern,
+            } special)
+        {
+            return selector;
+        }
+
+        var restoredPattern = containingTypePattern;
+        foreach (var (sentinel, wildcard) in replacements)
+        {
+            restoredPattern = restoredPattern.Replace(
+                sentinel,
+                wildcard,
+                StringComparison.Ordinal);
+        }
+
+        if (string.Equals(restoredPattern, containingTypePattern, StringComparison.Ordinal))
+        {
+            return selector;
+        }
+
+        return special with
+        {
+            Member = special.Member! with
+            {
+                ContainingTypePattern = restoredPattern,
+                ContainingType = null,
+            },
+        };
     }
 
     private static CompiledFileCondition CompileFileCondition(
@@ -298,7 +418,9 @@ public static class TypedConditionCompiler
             IReadOnlyList<string> candidate;
             try
             {
-                candidate = SplitComponents(path.NamespacePath);
+                candidate = SplitComponents(path.NamespacePath)
+                    .Select(NormalizeIdentifier)
+                    .ToArray();
             }
             catch (SymbolQueryParseException exception)
             {
@@ -387,10 +509,14 @@ public static class TypedConditionCompiler
                 return false;
             }
 
-            // Type generic arity is constrained only by concrete selector
-            // placeholders.  An omitted generic list is intentionally
-            // arity-agnostic, just as an omitted callable generic list is.
-            return selector.GenericArity == 0 || selector.GenericArity == candidate.GenericArity;
+            if (selector.GenericArity != 0)
+            {
+                return selector.GenericArity == candidate.GenericArity;
+            }
+
+            var wildcardIdentifier = selector.PatternMode == PatternMode.Glob &&
+                selector.IdentifierPattern.Contains('*');
+            return wildcardIdentifier || candidate.GenericArity == 0;
         }
 
         private static TypeCandidate DecodeTypeCandidate(string display, string identity)
@@ -710,25 +836,24 @@ public static class TypedConditionCompiler
                 var displayParts = BalancedTextScanner.SplitTopLevel(displayText, ".");
                 var identityText = StripTypeClassification(candidate.IdentityKey);
                 var identityBoundary = identityText.IndexOf("::", StringComparison.Ordinal);
-                if (identityBoundary < 0)
-                {
-                    throw new InvalidOperationException(
-                        "Stored explicit-interface owner has no namespace/type boundary.");
-                }
-
-                var identityNamespace = identityText[..identityBoundary];
-                var identityType = identityText[(identityBoundary + 2)..];
                 var identityParts = new List<string>();
-                if (!string.IsNullOrEmpty(identityNamespace))
+                var namespaceCount = 0;
+                if (identityBoundary >= 0)
                 {
-                    identityParts.AddRange(identityNamespace.Split('.'));
-                }
+                    var identityNamespace = identityText[..identityBoundary];
+                    var identityType = identityText[(identityBoundary + 2)..];
+                    if (!string.IsNullOrEmpty(identityNamespace))
+                    {
+                        var namespaceParts = identityNamespace.Split('.');
+                        identityParts.AddRange(namespaceParts);
+                        namespaceCount = namespaceParts.Length;
+                    }
 
-                identityParts.AddRange(BalancedTextScanner.SplitTopLevel(identityType, "."));
-                if (displayParts.Count != identityParts.Count)
+                    identityParts.AddRange(BalancedTextScanner.SplitTopLevel(identityType, "."));
+                }
+                else
                 {
-                    throw new InvalidOperationException(
-                        "Stored explicit-interface owner display and identity paths disagree.");
+                    identityParts.Add(identityText);
                 }
 
                 if (parts.Count != displayParts.Count)
@@ -736,18 +861,17 @@ public static class TypedConditionCompiler
                     return false;
                 }
 
-                var namespaceCount = string.IsNullOrEmpty(identityNamespace)
-                    ? 0
-                    : identityNamespace.Split('.').Length;
+                var identityIsAlignable = identityBoundary >= 0 &&
+                    displayParts.Count == identityParts.Count;
                 for (var index = 0; index < parts.Count; index++)
                 {
                     state.CancellationToken.ThrowIfCancellationRequested();
-                    var comparison = index < namespaceCount
+                    var comparison = identityIsAlignable && index < namespaceCount
                         ? state.NamespaceComparison
                         : state.TypeComparison;
                     if (!parts[index].Matches(
                             displayParts[index],
-                            identityParts[index],
+                            identityIsAlignable ? identityParts[index] : null,
                             comparison,
                             state))
                     {
@@ -791,18 +915,25 @@ public static class TypedConditionCompiler
                 string pattern,
                 IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
             {
+                if (pattern is "*" or "**")
+                {
+                    return new CompiledOwnerArgument(null, null, MatchesAnyType: true);
+                }
+
                 if (pattern.Contains('*'))
                 {
                     return new CompiledOwnerArgument(
                         null,
-                        Compile(pattern, genericPlaceholders));
+                        Compile(pattern, genericPlaceholders),
+                        MatchesAnyType: false);
                 }
 
                 try
                 {
                     return new CompiledOwnerArgument(
                         SymbolSignatureCanonicalizer.ParseSelectorType(pattern, genericPlaceholders),
-                        null);
+                        null,
+                        MatchesAnyType: false);
                 }
                 catch (ArgumentException exception)
                 {
@@ -811,12 +942,31 @@ public static class TypedConditionCompiler
                 }
             }
 
-            private static string StripTypeClassification(string identity) =>
-                identity.StartsWith("valuetype:", StringComparison.Ordinal)
-                    ? identity["valuetype:".Length..]
-                    : identity.StartsWith("reftype:", StringComparison.Ordinal)
-                        ? identity["reftype:".Length..]
-                        : identity;
+            private static string StripTypeClassification(string identity)
+            {
+                const string valuePrefix = "valuetype:";
+                const string referencePrefix = "reftype:";
+                if (HasTypeClassificationPrefix(identity, valuePrefix))
+                {
+                    return identity[valuePrefix.Length..];
+                }
+
+                return HasTypeClassificationPrefix(identity, referencePrefix)
+                    ? identity[referencePrefix.Length..]
+                    : identity;
+            }
+
+            private static bool HasTypeClassificationPrefix(string identity, string prefix)
+            {
+                if (!identity.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var payload = identity.AsSpan(prefix.Length);
+                return payload.Length != 0 &&
+                       (payload[0] != ':' || payload.StartsWith("::", StringComparison.Ordinal));
+            }
         }
 
         private sealed record CompiledOwnerPart(
@@ -825,20 +975,24 @@ public static class TypedConditionCompiler
         {
             public bool Matches(
                 string display,
-                string identity,
+                string? identity,
                 StringComparison comparison,
                 ExecutableMatcherState state)
             {
                 var displayPart = DecodeCandidatePart(display);
-                var identityPart = DecodeCandidatePart(identity);
-                if (!string.Equals(
-                        displayPart.Identifier,
-                        identityPart.Identifier,
-                        StringComparison.Ordinal) ||
-                    displayPart.Arguments.Count != identityPart.Arguments.Count)
+                CandidateOwnerPart? identityPart = null;
+                if (identity is not null)
                 {
-                    throw new InvalidOperationException(
-                        "Stored explicit-interface owner display and identity components disagree.");
+                    identityPart = DecodeCandidatePart(identity);
+                    if (!string.Equals(
+                            displayPart.Identifier,
+                            identityPart.Identifier,
+                            StringComparison.Ordinal) ||
+                        displayPart.Arguments.Count != identityPart.Arguments.Count)
+                    {
+                        throw new InvalidOperationException(
+                            "Stored explicit-interface owner display and identity components disagree.");
+                    }
                 }
 
                 if (!StructuralGlobMatcher.MatchComponent(
@@ -856,6 +1010,11 @@ public static class TypedConditionCompiler
                 }
 
                 if (Arguments.Count != displayPart.Arguments.Count)
+                {
+                    return false;
+                }
+
+                if (identityPart is null)
                 {
                     return false;
                 }
@@ -902,10 +1061,12 @@ public static class TypedConditionCompiler
 
         private sealed record CompiledOwnerArgument(
             CanonicalTypeSelector? Exact,
-            CompiledContainingTypeGlob? Glob)
+            CompiledContainingTypeGlob? Glob,
+            bool MatchesAnyType)
         {
             public bool Matches(CanonicalTypeSignature candidate, ExecutableMatcherState state) =>
-                Exact is not null
+                MatchesAnyType ||
+                (Exact is not null
                     ? MatchCanonicalType(
                         Exact,
                         candidate,
@@ -913,7 +1074,7 @@ public static class TypedConditionCompiler
                         state.TypeComparison)
                     : (Glob ?? throw new InvalidOperationException(
                         "A containing-type argument has no compiled matcher."))
-                    .Matches(candidate, state);
+                    .Matches(candidate, state));
         }
 
         private sealed record CandidateOwnerPart(

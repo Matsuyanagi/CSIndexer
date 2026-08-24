@@ -23,6 +23,65 @@ public sealed class StructuralGlobMatcherTests
     }
 
     [Fact]
+    public void MatchComponent_BacktracksAcrossConsecutiveStars()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(StructuralGlobMatcher.MatchComponent(
+            "a*ab",
+            "aaab",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.True(StructuralGlobMatcher.MatchComponent(
+            "*ab*ab",
+            "zzabxxab",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.True(StructuralGlobMatcher.MatchComponent(
+            "a**b***c",
+            "axxbzzc",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.False(StructuralGlobMatcher.MatchComponent(
+            "a*b*c",
+            "ac",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.True(StructuralGlobMatcher.MatchComponent(
+            "A***B",
+            "a---b",
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken));
+    }
+
+    [Fact]
+    public void MatchComponent_AllocationIsBounded()
+    {
+        const long maximumAllocatedBytes = 8 * 1024;
+        const string pattern = "a*a*a*a*a*a*a*a*b";
+        var candidate = new string('a', 4_096) + "b";
+
+        _ = StructuralGlobMatcher.MatchComponent(
+            pattern,
+            candidate,
+            StringComparison.Ordinal,
+            CancellationToken.None);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var matched = StructuralGlobMatcher.MatchComponent(
+            pattern,
+            candidate,
+            StringComparison.Ordinal,
+            CancellationToken.None);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(matched);
+        Assert.True(
+            allocated <= maximumAllocatedBytes,
+            $"Expected at most {maximumAllocatedBytes} bytes but allocated {allocated} bytes.");
+    }
+
+    [Fact]
     public void MatchHierarchy_WholeStarConsumesExactlyOneLevel()
     {
         Assert.True(StructuralGlobMatcher.MatchHierarchy(
@@ -166,6 +225,55 @@ public sealed class StructuralGlobMatcherTests
             "NEED",
             StringComparison.OrdinalIgnoreCase,
             TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void MatchSource_BacktracksAcrossConsecutiveStarsWithoutAnchoring()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(StructuralGlobMatcher.MatchSource(
+            "a*ab",
+            "prefix aaab suffix",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.True(StructuralGlobMatcher.MatchSource(
+            "ab**cd***ef",
+            "prefix abXXcdYYef suffix",
+            StringComparison.Ordinal,
+            cancellationToken));
+        Assert.False(StructuralGlobMatcher.MatchSource(
+            "ab*cd*ef",
+            "prefix abXXcd suffix",
+            StringComparison.Ordinal,
+            cancellationToken));
+    }
+
+    [Fact]
+    public void MatchSource_AllocationIsBounded()
+    {
+        const long maximumAllocatedBytes = 8 * 1024;
+        const string pattern = "a*a*a*a*a*a*a*a*b";
+        var source = "prefix " + new string('a', 4_096) + "b suffix";
+
+        _ = StructuralGlobMatcher.MatchSource(
+            pattern,
+            source,
+            StringComparison.Ordinal,
+            CancellationToken.None);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var matched = StructuralGlobMatcher.MatchSource(
+            pattern,
+            source,
+            StringComparison.Ordinal,
+            CancellationToken.None);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(matched);
+        Assert.True(
+            allocated <= maximumAllocatedBytes,
+            $"Expected at most {maximumAllocatedBytes} bytes but allocated {allocated} bytes.");
     }
 
     [Fact]

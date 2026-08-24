@@ -16,38 +16,12 @@ internal static class StructuralGlobMatcher
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(candidate);
         ValidateComparison(comparison);
-
-        var previous = new bool[candidate.Length + 1];
-        previous[0] = true;
-        for (var patternIndex = 0; patternIndex < pattern.Length; patternIndex++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var character = pattern[patternIndex];
-            var current = new bool[candidate.Length + 1];
-            if (character == '*')
-            {
-                current[0] = previous[0];
-                for (var candidateIndex = 1; candidateIndex <= candidate.Length; candidateIndex++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    current[candidateIndex] = current[candidateIndex - 1] || previous[candidateIndex];
-                }
-            }
-            else
-            {
-                for (var candidateIndex = 1; candidateIndex <= candidate.Length; candidateIndex++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    current[candidateIndex] = previous[candidateIndex - 1] &&
-                        CharEquals(character, candidate[candidateIndex - 1], comparison);
-                }
-            }
-
-            previous = current;
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return previous[candidate.Length];
+        return MatchCharacters(
+            pattern,
+            candidate,
+            comparison,
+            unanchored: false,
+            cancellationToken);
     }
 
     internal static bool MatchHierarchy(
@@ -93,45 +67,12 @@ internal static class StructuralGlobMatcher
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(source);
         ValidateComparison(comparison);
-
-        // The initial row is true for every source prefix, making the match
-        // unanchored while retaining a character-level star implementation.
-        var previous = new bool[source.Length + 1];
-        Array.Fill(previous, true);
-        for (var patternIndex = 0; patternIndex < pattern.Length; patternIndex++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var character = pattern[patternIndex];
-            var current = new bool[source.Length + 1];
-            if (character == '*')
-            {
-                current[0] = previous[0];
-                for (var sourceIndex = 1; sourceIndex <= source.Length; sourceIndex++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    current[sourceIndex] = current[sourceIndex - 1] || previous[sourceIndex];
-                }
-            }
-            else
-            {
-                for (var sourceIndex = 1; sourceIndex <= source.Length; sourceIndex++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    current[sourceIndex] = previous[sourceIndex - 1] &&
-                        CharEquals(character, source[sourceIndex - 1], comparison);
-                }
-            }
-
-            previous = current;
-            if (!previous.Any(value => value))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                return false;
-            }
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return previous.Any(value => value);
+        return MatchCharacters(
+            pattern,
+            source,
+            comparison,
+            unanchored: true,
+            cancellationToken);
     }
 
     internal static bool MatchSequence<TPattern, TCandidate, TState>(
@@ -183,8 +124,84 @@ internal static class StructuralGlobMatcher
             ? []
             : path.Split('/', StringSplitOptions.None);
 
-    private static bool CharEquals(char left, char right, StringComparison comparison) =>
-        string.Equals(left.ToString(), right.ToString(), comparison);
+    private static bool MatchCharacters(
+        string pattern,
+        string candidate,
+        StringComparison comparison,
+        bool unanchored,
+        CancellationToken cancellationToken)
+    {
+        var patternIndex = 0;
+        var candidateIndex = 0;
+        var starResumePatternIndex = unanchored ? 0 : -1;
+        var starCandidateIndex = unanchored ? 0 : -1;
+        cancellationToken.ThrowIfCancellationRequested();
+        while (candidateIndex < candidate.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (unanchored && patternIndex == pattern.Length)
+            {
+                return true;
+            }
+
+            if (patternIndex < pattern.Length && pattern[patternIndex] == '*')
+            {
+                do
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    patternIndex++;
+                }
+                while (patternIndex < pattern.Length && pattern[patternIndex] == '*');
+
+                starResumePatternIndex = patternIndex;
+                starCandidateIndex = candidateIndex;
+                if (patternIndex == pattern.Length)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (patternIndex < pattern.Length &&
+                CharEquals(pattern, patternIndex, candidate, candidateIndex, comparison))
+            {
+                patternIndex++;
+                candidateIndex++;
+                continue;
+            }
+
+            if (starResumePatternIndex >= 0 && starCandidateIndex < candidate.Length)
+            {
+                patternIndex = starResumePatternIndex;
+                candidateIndex = ++starCandidateIndex;
+                continue;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return false;
+        }
+
+        while (patternIndex < pattern.Length && pattern[patternIndex] == '*')
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            patternIndex++;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return patternIndex == pattern.Length;
+    }
+
+    private static bool CharEquals(
+        string left,
+        int leftIndex,
+        string right,
+        int rightIndex,
+        StringComparison comparison) =>
+        comparison == StringComparison.Ordinal
+            ? left[leftIndex] == right[rightIndex]
+            : left.AsSpan(leftIndex, 1).Equals(right.AsSpan(rightIndex, 1), comparison);
 
     private static void ValidateComparison(StringComparison comparison)
     {

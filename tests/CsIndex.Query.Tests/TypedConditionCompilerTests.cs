@@ -291,6 +291,80 @@ public sealed class TypedConditionCompilerTests
     }
 
     [Fact]
+    public void ExplicitInterfaceOwnerGenericWildcardMatchesAnyCanonicalType()
+    {
+        var star = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap<*>.Read]()")]);
+        var doubleStar = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap<**>.Read]()")]);
+        var exactInt = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap<System.Int32>.Read]()")]);
+        var qualifiedWildcard = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap<System.*>.Read]()")]);
+        var alias = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap<int>.Read]()",
+            "[explicit:Game::IMap<System::Int32>.Read]()"));
+        var placeholder = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap<T>.Read]()",
+            "[explicit:Game::IMap<!0>.Read]()"));
+        var wrongExact = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap<string>.Read]()",
+            "[explicit:Game::IMap<System::String>.Read]()"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(star.MatchesLogical(alias, cancellationToken));
+        Assert.True(star.MatchesLogical(placeholder, cancellationToken));
+        Assert.True(doubleStar.MatchesLogical(alias, cancellationToken));
+        Assert.True(doubleStar.MatchesLogical(placeholder, cancellationToken));
+        Assert.False(exactInt.MatchesLogical(wrongExact, cancellationToken));
+        Assert.False(qualifiedWildcard.MatchesLogical(alias, cancellationToken));
+    }
+
+    [Fact]
+    public void ExplicitInterfaceOwnerWildcardPreservesLiteralClassificationNamespace()
+    {
+        var compiled = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:valuetype.IMap<*>.Read]()")]);
+        var literalNamespace = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:valuetype.IMap<int>.Read]()",
+            "[explicit:valuetype::IMap<System::Int32>.Read]()"));
+        var classifiedOwner = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap<*>.Read]()")]);
+        var realClassificationPrefix = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap<int>.Read]()",
+            "[explicit:reftype:Game::IMap<System::Int32>.Read]()"));
+
+        Assert.True(compiled.MatchesLogical(
+            literalNamespace,
+            TestContext.Current.CancellationToken));
+        Assert.True(classifiedOwner.MatchesLogical(
+            realClassificationPrefix,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public void StructuredParametersAndConversionsUseSemanticAliases()
     {
         var method = Compile([new(ConditionCategory.Method, ConditionSyntax.Literal, "Run(System.Int32)")]);
@@ -346,6 +420,37 @@ public sealed class TypedConditionCompilerTests
     }
 
     [Fact]
+    public void NamespaceHierarchyNormalizesEscapedCandidateIdentifiers()
+    {
+        var literalKeyword = Compile([new(
+            ConditionCategory.Namespace,
+            ConditionSyntax.Literal,
+            "@namespace")]);
+        var globKeyword = Compile([new(
+            ConditionCategory.Namespace,
+            ConditionSyntax.Glob,
+            "@name*")]);
+        var namedGlobal = Compile([new(
+            ConditionCategory.Namespace,
+            ConditionSyntax.Literal,
+            "@global")]);
+        var recursiveGlobal = Compile([new(
+            ConditionCategory.Namespace,
+            ConditionSyntax.Glob,
+            "**")]);
+        var escapedKeyword = Symbol(Path("@namespace", "Host", "Run()"));
+        var escapedNamedGlobal = Symbol(Path("@global", "Host", "Run()"));
+        var zeroComponentGlobal = Symbol(Path(string.Empty, "Host", "Run()"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(literalKeyword.MatchesLogical(escapedKeyword, cancellationToken));
+        Assert.True(globKeyword.MatchesLogical(escapedKeyword, cancellationToken));
+        Assert.True(namedGlobal.MatchesLogical(escapedNamedGlobal, cancellationToken));
+        Assert.False(namedGlobal.MatchesLogical(zeroComponentGlobal, cancellationToken));
+        Assert.True(recursiveGlobal.MatchesLogical(zeroComponentGlobal, cancellationToken));
+    }
+
+    [Fact]
     public void StructuredSpecialSegmentsKeepOperatorTokensAndOrdinalWildcardsTyped()
     {
         var operatorCondition = Compile([new(
@@ -390,6 +495,52 @@ public sealed class TypedConditionCompilerTests
                 TypeIdentityPath = "Box`1.Leaf",
             }),
             TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void TypeHierarchyGenericArityFollowsLiteralAndGlobIdentifierRules()
+    {
+        var literalName = Compile([new(
+            ConditionCategory.Type,
+            ConditionSyntax.Literal,
+            "Repository")]);
+        var globName = Compile([new(
+            ConditionCategory.Type,
+            ConditionSyntax.Glob,
+            "Repository")]);
+        var literalGeneric = Compile([new(
+            ConditionCategory.Type,
+            ConditionSyntax.Literal,
+            "Repository<T>")]);
+        var globGeneric = Compile([new(
+            ConditionCategory.Type,
+            ConditionSyntax.Glob,
+            "Repository<T>")]);
+        var globIdentifier = Compile([new(
+            ConditionCategory.Type,
+            ConditionSyntax.Glob,
+            "Repository*")]);
+        var nongeneric = Symbol(Path("Game", "Repository", "Run()"));
+        var generic = Symbol(Path("Game", "Repository<T>", "Run()") with
+        {
+            TypeIdentityPath = "Repository`1",
+        });
+        var arityTwo = Symbol(Path("Game", "Repository<T, U>", "Run()") with
+        {
+            TypeIdentityPath = "Repository`2",
+        });
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(literalName.MatchesLogical(nongeneric, cancellationToken));
+        Assert.False(literalName.MatchesLogical(generic, cancellationToken));
+        Assert.True(globName.MatchesLogical(nongeneric, cancellationToken));
+        Assert.False(globName.MatchesLogical(generic, cancellationToken));
+        Assert.True(literalGeneric.MatchesLogical(generic, cancellationToken));
+        Assert.False(literalGeneric.MatchesLogical(arityTwo, cancellationToken));
+        Assert.True(globGeneric.MatchesLogical(generic, cancellationToken));
+        Assert.False(globGeneric.MatchesLogical(arityTwo, cancellationToken));
+        Assert.True(globIdentifier.MatchesLogical(nongeneric, cancellationToken));
+        Assert.True(globIdentifier.MatchesLogical(generic, cancellationToken));
     }
 
     [Theory]
