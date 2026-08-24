@@ -238,6 +238,72 @@ public sealed class TypedConditionCompilerTests
         Assert.True(compiled.MatchesLogical(Symbol(path), TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public void ExplicitInterfaceOwnerEmbeddedIdentifierGlobIsArityAgnostic()
+    {
+        var identifierGlob = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap*.Read]()")]);
+        var exactIdentifier = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.IMap.Read]()")]);
+        var nongeneric = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap.Read]()",
+            "[explicit:Game::IMap.Read]()"));
+        var generic = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap<int>.Read]()",
+            "[explicit:Game::IMap<System::Int32>.Read]()"));
+        var unrelated = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.ISet.Read]()",
+            "[explicit:Game::ISet.Read]()"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(identifierGlob.MatchesLogical(nongeneric, cancellationToken));
+        Assert.True(identifierGlob.MatchesLogical(generic, cancellationToken));
+        Assert.False(identifierGlob.MatchesLogical(unrelated, cancellationToken));
+        Assert.True(exactIdentifier.MatchesLogical(nongeneric, cancellationToken));
+        Assert.False(exactIdentifier.MatchesLogical(generic, cancellationToken));
+    }
+
+    [Fact]
+    public void ExplicitInterfaceOwnerGlobRequiresAlignedOuterCanonicalPair()
+    {
+        var compiled = Compile([new(
+            ConditionCategory.Method,
+            ConditionSyntax.Glob,
+            "[explicit:Game.I*.Read]()")]);
+        var valid = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap.Read]()",
+            "[explicit:Game::IMap.Read]()"));
+        var missingBoundary = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap.Read]()",
+            "[explicit:Game.IMap.Read]()"));
+        var mismatchedComponents = Symbol(Path(
+            "Game",
+            "Host",
+            "[explicit:Game.IMap.Read]()",
+            "[explicit:Game.Contracts::IMap.Read]()"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        Assert.True(compiled.MatchesLogical(valid, cancellationToken));
+        Assert.Throws<InvalidOperationException>(() =>
+            compiled.MatchesLogical(missingBoundary, cancellationToken));
+        Assert.Throws<InvalidOperationException>(() =>
+            compiled.MatchesLogical(mismatchedComponents, cancellationToken));
+    }
+
     [Theory]
     [InlineData("[explicit:game.Contracts.IMapper.Read]()", ConditionCategory.Namespace)]
     [InlineData("[explicit:Game.Contracts.imapper.Read]()", ConditionCategory.Type)]

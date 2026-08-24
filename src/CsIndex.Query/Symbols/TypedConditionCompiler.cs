@@ -643,7 +643,8 @@ public static class TypedConditionCompiler
                 {
                     containingTypeGlob = CompiledContainingTypeGlob.Compile(
                         containingTypePattern,
-                        activePlaceholders);
+                        activePlaceholders,
+                        CanonicalOwnerPairMode.RequireAlignedOuterOwner);
                 }
 
                 compiled[index] = new CompiledExecutableSegmentSelector(
@@ -801,12 +802,20 @@ public static class TypedConditionCompiler
                 .Matches(candidate.ContainingType, state);
         }
 
+        private enum CanonicalOwnerPairMode
+        {
+            RequireAlignedOuterOwner,
+            AllowUnalignedNestedArgument,
+        }
+
         private sealed class CompiledContainingTypeGlob(
-            IReadOnlyList<CompiledOwnerPart> parts)
+            IReadOnlyList<CompiledOwnerPart> parts,
+            CanonicalOwnerPairMode canonicalPairMode)
         {
             public static CompiledContainingTypeGlob Compile(
                 string pattern,
-                IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders)
+                IReadOnlyDictionary<string, CanonicalGenericPlaceholder> genericPlaceholders,
+                CanonicalOwnerPairMode canonicalPairMode)
             {
                 ArgumentNullException.ThrowIfNull(pattern);
                 ArgumentNullException.ThrowIfNull(genericPlaceholders);
@@ -819,7 +828,7 @@ public static class TypedConditionCompiler
                 var rawParts = BalancedTextScanner.SplitTopLevel(normalizedPattern, ".");
                 return new CompiledContainingTypeGlob(rawParts
                     .Select(part => CompilePart(part, genericPlaceholders))
-                    .ToArray());
+                    .ToArray(), canonicalPairMode);
             }
 
             public bool Matches(
@@ -836,6 +845,13 @@ public static class TypedConditionCompiler
                 var displayParts = BalancedTextScanner.SplitTopLevel(displayText, ".");
                 var identityText = StripTypeClassification(candidate.IdentityKey);
                 var identityBoundary = identityText.IndexOf("::", StringComparison.Ordinal);
+                if (identityBoundary < 0 &&
+                    canonicalPairMode == CanonicalOwnerPairMode.RequireAlignedOuterOwner)
+                {
+                    throw new InvalidOperationException(
+                        "Stored explicit-interface owner identity has no namespace/type boundary.");
+                }
+
                 var identityParts = new List<string>();
                 var namespaceCount = 0;
                 if (identityBoundary >= 0)
@@ -854,6 +870,13 @@ public static class TypedConditionCompiler
                 else
                 {
                     identityParts.Add(identityText);
+                }
+
+                if (displayParts.Count != identityParts.Count &&
+                    canonicalPairMode == CanonicalOwnerPairMode.RequireAlignedOuterOwner)
+                {
+                    throw new InvalidOperationException(
+                        "Stored explicit-interface owner display and identity paths have different component counts.");
                 }
 
                 if (parts.Count != displayParts.Count)
@@ -924,7 +947,10 @@ public static class TypedConditionCompiler
                 {
                     return new CompiledOwnerArgument(
                         null,
-                        Compile(pattern, genericPlaceholders),
+                        Compile(
+                            pattern,
+                            genericPlaceholders,
+                            CanonicalOwnerPairMode.AllowUnalignedNestedArgument),
                         MatchesAnyType: false);
                 }
 
@@ -1006,7 +1032,7 @@ public static class TypedConditionCompiler
 
                 if (Arguments is null)
                 {
-                    return IdentifierPattern is "*" or "**" || displayPart.Arguments.Count == 0;
+                    return IdentifierPattern.Contains('*') || displayPart.Arguments.Count == 0;
                 }
 
                 if (Arguments.Count != displayPart.Arguments.Count)
