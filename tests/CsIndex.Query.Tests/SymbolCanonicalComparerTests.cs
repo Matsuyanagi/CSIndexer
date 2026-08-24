@@ -10,23 +10,23 @@ public sealed class SymbolCanonicalComparerTests
     public void Compare_UsesEachLogicalKeyIndependently()
     {
         AssertSymbolBefore(
-            CreateSymbol(1, "namespace-a", "A", "T", "E", "same.cs", 1),
-            CreateSymbol(2, "namespace-b", "B", "T", "E", "same.cs", 1));
+            CreateSymbol(1, "z-later", "A", "T", "E", "same.cs", 1),
+            CreateSymbol(1, "a-later", "B", "T", "E", "same.cs", 1));
         AssertSymbolBefore(
-            CreateSymbol(1, "type-a", "N", "A", "E", "same.cs", 1),
-            CreateSymbol(2, "type-b", "N", "B", "E", "same.cs", 1));
+            CreateSymbol(1, "z-later", "N", "A", "E", "same.cs", 1),
+            CreateSymbol(1, "a-later", "N", "B", "E", "same.cs", 1));
         AssertSymbolBefore(
-            CreateSymbol(1, "executable-a", "N", "T", "A", "same.cs", 1),
-            CreateSymbol(2, "executable-b", "N", "T", "B", "same.cs", 1));
+            CreateSymbol(1, "z-later", "N", "T", "A", "same.cs", 1),
+            CreateSymbol(1, "a-later", "N", "T", "B", "same.cs", 1));
         AssertSymbolBefore(
-            CreateSymbol(1, "path-a", "N", "T", "E", "a.cs", 1),
-            CreateSymbol(2, "path-b", "N", "T", "E", "b.cs", 1));
+            CreateSymbol(1, "z-later", "N", "T", "E", "a.cs", 1),
+            CreateSymbol(1, "a-later", "N", "T", "E", "b.cs", 1));
         AssertSymbolBefore(
-            CreateSymbol(1, "start-a", "N", "T", "E", "same.cs", 1),
-            CreateSymbol(2, "start-b", "N", "T", "E", "same.cs", 2));
+            CreateSymbol(1, "z-later", "N", "T", "E", "same.cs", 1),
+            CreateSymbol(1, "a-later", "N", "T", "E", "same.cs", 2));
 
         var stableA = CreateSymbol(1, "stable-a", "N", "T", "E", "same.cs", 1);
-        var stableB = CreateSymbol(2, "stable-b", "N", "T", "E", "same.cs", 1);
+        var stableB = CreateSymbol(1, "stable-b", "N", "T", "E", "same.cs", 1);
         Assert.True(SymbolCanonicalComparer.Instance.Compare(stableA, stableB) < 0);
 
         var expected = new[] { stableA, stableB };
@@ -42,14 +42,14 @@ public sealed class SymbolCanonicalComparerTests
     [Fact]
     public void Compare_UsesNullAndEmptyMetadataPathsAndStartsLast()
     {
-        var concretePath = CreateSymbol(1, "concrete-path", "N", "T", "E", "source.cs", 1);
-        var emptyPath = CreateSymbol(2, "empty-path", "N", "T", "E", string.Empty, 1);
-        var missingPath = CreateSymbol(3, "missing-path", "N", "T", "E", null, 1);
+        var concretePath = CreateSymbol(1, "z-later", "N", "T", "E", "source.cs", 1);
+        var emptyPath = CreateSymbol(1, "a-empty-later", "N", "T", "E", string.Empty, 1);
+        var missingPath = CreateSymbol(1, "a-missing-later", "N", "T", "E", null, 1);
         Assert.True(SymbolCanonicalComparer.Instance.Compare(concretePath, emptyPath) < 0);
         Assert.True(SymbolCanonicalComparer.Instance.Compare(concretePath, missingPath) < 0);
 
-        var concreteStart = CreateSymbol(4, "concrete-start", "N", "T", "E", "source.cs", 1);
-        var missingStart = CreateSymbol(5, "missing-start", "N", "T", "E", "source.cs", null);
+        var concreteStart = CreateSymbol(1, "z-later", "N", "T", "E", "source.cs", 1);
+        var missingStart = CreateSymbol(1, "a-later", "N", "T", "E", "source.cs", null);
         Assert.True(SymbolCanonicalComparer.Instance.Compare(concreteStart, missingStart) < 0);
     }
 
@@ -65,23 +65,24 @@ public sealed class SymbolCanonicalComparerTests
     [Fact]
     public void CompareDefinitionDeclarations_UsesRolePathStartAndIdThenRejectsUnknownRole()
     {
-        var definition = CreateDeclaration(20, DeclarationRole.PartialDefinition, "z.cs", 20);
-        var implementation = CreateDeclaration(10, DeclarationRole.PartialImplementation, "a.cs", 1);
-        var ordinary = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
-        Assert.True(SymbolCanonicalComparer.CompareDefinitionDeclarations(definition, implementation) < 0);
-        Assert.True(SymbolCanonicalComparer.CompareDefinitionDeclarations(implementation, ordinary) < 0);
-
-        Assert.True(SymbolCanonicalComparer.CompareDefinitionDeclarations(
+        AssertDefinitionBefore(
+            CreateDeclaration(20, DeclarationRole.PartialDefinition, "z.cs", 9),
+            CreateDeclaration(10, DeclarationRole.PartialImplementation, "a.cs", 1));
+        AssertDefinitionBefore(
+            CreateDeclaration(20, DeclarationRole.PartialImplementation, "z.cs", 9),
+            CreateDeclaration(10, DeclarationRole.Ordinary, "a.cs", 1));
+        AssertDefinitionBefore(
+            CreateDeclaration(20, DeclarationRole.Ordinary, "a.cs", 9),
+            CreateDeclaration(10, DeclarationRole.Ordinary, "b.cs", 1));
+        AssertDefinitionBefore(
+            CreateDeclaration(20, DeclarationRole.Ordinary, "a.cs", 1),
+            CreateDeclaration(10, DeclarationRole.Ordinary, "a.cs", 2));
+        AssertDefinitionBefore(
             CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1),
-            CreateDeclaration(2, DeclarationRole.Ordinary, "b.cs", 1)) < 0);
-        Assert.True(SymbolCanonicalComparer.CompareDefinitionDeclarations(
-            CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1),
-            CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 2)) < 0);
-        Assert.True(SymbolCanonicalComparer.CompareDefinitionDeclarations(
-            CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1),
-            CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 1)) < 0);
+            CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 1));
 
         var unknown = CreateDeclaration(1, (DeclarationRole)99, "a.cs", 1);
+        var ordinary = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
         Assert.Throws<InvalidOperationException>(() => SymbolCanonicalComparer.CompareDefinitionDeclarations(unknown, ordinary));
         Assert.Throws<InvalidOperationException>(() => SymbolCanonicalComparer.CompareDefinitionDeclarations(ordinary, unknown));
     }
@@ -89,41 +90,42 @@ public sealed class SymbolCanonicalComparerTests
     [Fact]
     public void CompareSourceMatches_UsesLogicalPathDeclarationPathStartRoleAndId()
     {
-        var sameLeft = CreateSymbol(1, "same", "A", "T", "E", "z.cs", 9);
-        var sameRight = CreateSymbol(2, "same", "A", "T", "E", "z.cs", 9);
-        var declaration = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
+        var logicalLeft = CreateSymbol(1, "same", "A", "T", "E", "same.cs", 1);
+        var logicalRight = CreateSymbol(1, "same", "B", "T", "E", "same.cs", 1);
+        var sameSymbol = CreateSymbol(1, "same", "N", "T", "E", "same.cs", 1);
 
-        var logicalRight = sameRight with
-        {
-            Path = sameRight.Path! with { NamespacePath = "B" },
-        };
-        Assert.True(SymbolCanonicalComparer.CompareSourceMatches(
-            sameLeft,
-            declaration,
+        AssertSourceMatchBefore(
+            logicalLeft,
+            CreateDeclaration(20, DeclarationRole.Ordinary, "z.cs", 9),
             logicalRight,
-            declaration) < 0);
-
-        var pathA = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 9);
-        var pathB = CreateDeclaration(2, DeclarationRole.Ordinary, "b.cs", 1);
-        Assert.True(SymbolCanonicalComparer.CompareSourceMatches(sameLeft, pathA, sameLeft, pathB) < 0);
-
-        var startA = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
-        var startB = CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 2);
-        Assert.True(SymbolCanonicalComparer.CompareSourceMatches(sameLeft, startA, sameLeft, startB) < 0);
-
-        var roleDefinition = CreateDeclaration(1, DeclarationRole.PartialDefinition, "a.cs", 1);
-        var roleImplementation = CreateDeclaration(2, DeclarationRole.PartialImplementation, "a.cs", 1);
-        Assert.True(SymbolCanonicalComparer.CompareSourceMatches(sameLeft, roleDefinition, sameLeft, roleImplementation) < 0);
-
-        var idA = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
-        var idB = CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 1);
-        Assert.True(SymbolCanonicalComparer.CompareSourceMatches(sameLeft, idA, sameLeft, idB) < 0);
+            CreateDeclaration(10, DeclarationRole.PartialDefinition, "a.cs", 1));
+        AssertSourceMatchBefore(
+            sameSymbol,
+            CreateDeclaration(20, DeclarationRole.Ordinary, "a.cs", 9),
+            sameSymbol,
+            CreateDeclaration(10, DeclarationRole.PartialDefinition, "b.cs", 1));
+        AssertSourceMatchBefore(
+            sameSymbol,
+            CreateDeclaration(20, DeclarationRole.Ordinary, "a.cs", 1),
+            sameSymbol,
+            CreateDeclaration(10, DeclarationRole.PartialDefinition, "a.cs", 2));
+        AssertSourceMatchBefore(
+            sameSymbol,
+            CreateDeclaration(20, DeclarationRole.PartialDefinition, "a.cs", 1),
+            sameSymbol,
+            CreateDeclaration(10, DeclarationRole.PartialImplementation, "a.cs", 1));
+        AssertSourceMatchBefore(
+            sameSymbol,
+            CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1),
+            sameSymbol,
+            CreateDeclaration(2, DeclarationRole.Ordinary, "a.cs", 1));
 
         var unknown = CreateDeclaration(1, (DeclarationRole)99, "a.cs", 1);
+        var declaration = CreateDeclaration(1, DeclarationRole.Ordinary, "a.cs", 1);
         Assert.Throws<InvalidOperationException>(() => SymbolCanonicalComparer.CompareSourceMatches(
-            sameLeft,
+            sameSymbol,
             unknown,
-            sameLeft,
+            sameSymbol,
             declaration));
     }
 
@@ -151,43 +153,67 @@ public sealed class SymbolCanonicalComparerTests
     [Fact]
     public void OrderCalls_UsesCallerDefinitionTargetResolutionAndAllCallKeys()
     {
-        var callerA = CreateSymbol(1, "caller-a", "A", "T", "E", "same.cs", 1);
-        var callerB = CreateSymbol(2, "caller-b", "B", "T", "E", "same.cs", 1);
-        var definitionA = CreateSymbol(3, "definition-a", "A", "T", "E", "same.cs", 1);
-        var definitionB = CreateSymbol(4, "definition-b", "B", "T", "E", "same.cs", 1);
-        var calleeA = CreateSymbol(5, "callee-a", "A", "T", "E", "same.cs", 1);
-        var calleeB = CreateSymbol(6, "callee-b", "B", "T", "E", "same.cs", 1);
-        var symbols = new[] { callerA, callerB, definitionA, definitionB, calleeA, calleeB }
+        var callerA = CreateSymbol(2, "z-caller-later", "A", "T", "E", "same.cs", 1);
+        var callerB = CreateSymbol(1, "a-caller-later", "B", "T", "E", "same.cs", 1);
+        var definitionA = CreateSymbol(4, "z-definition-later", "A", "T", "E", "same.cs", 1);
+        var definitionB = CreateSymbol(3, "a-definition-later", "B", "T", "E", "same.cs", 1);
+        var calleeA = CreateSymbol(6, "z-callee-later", "A", "T", "E", "same.cs", 1);
+        var calleeB = CreateSymbol(5, "a-callee-later", "B", "T", "E", "same.cs", 1);
+        var commonCaller = CreateSymbol(7, "common-caller", "N", "T", "Caller", "same.cs", 1);
+        var commonTarget = CreateSymbol(8, "common-target", "N", "T", "Target", "same.cs", 1);
+        var symbols = new[]
+        {
+            callerA,
+            callerB,
+            definitionA,
+            definitionB,
+            calleeA,
+            calleeB,
+            commonCaller,
+            commonTarget,
+        }
             .ToDictionary(symbol => symbol.Id);
 
         AssertCallBefore(
-            CreateCall(1, callerA.Id, calleeB.Id, definitionA.Id),
-            CreateCall(2, callerB.Id, calleeA.Id, definitionB.Id),
+            CreateCall(20, callerA.Id, commonTarget.Id, commonTarget.Id),
+            CreateCall(10, callerB.Id, commonTarget.Id, commonTarget.Id),
             symbols);
         AssertCallBefore(
-            CreateCall(1, callerA.Id, calleeB.Id, definitionA.Id),
-            CreateCall(2, callerA.Id, calleeA.Id, definitionB.Id),
+            CreateCall(20, commonCaller.Id, calleeB.Id, definitionA.Id),
+            CreateCall(10, commonCaller.Id, calleeA.Id, definitionB.Id),
             symbols);
         AssertCallBefore(
-            CreateCall(1, callerA.Id, calleeA.Id, definitionA.Id),
-            CreateCall(2, callerA.Id, null, null),
+            CreateCall(20, commonCaller.Id, commonTarget.Id, commonTarget.Id),
+            CreateCall(10, commonCaller.Id, null, null),
             symbols);
         AssertCallBefore(
-            CreateCall(1, callerA.Id, calleeA.Id, null),
-            CreateCall(2, callerA.Id, calleeB.Id, null),
+            CreateCall(20, commonCaller.Id, calleeA.Id, null),
+            CreateCall(10, commonCaller.Id, calleeB.Id, null),
             symbols);
 
-        var baseCall = CreateCall(1, callerA.Id, calleeA.Id, definitionA.Id, documentPath: "a.cs");
-        AssertCallBefore(baseCall, baseCall with { DocumentPath = "b.cs", Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { SourceStart = 2, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { SourceLength = 2, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { ReferenceKind = ReferenceKind.ObjectCreation, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { DispatchKind = DispatchKind.Virtual, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { ResolutionStatus = ResolutionStatus.Ambiguous, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { ResolutionReason = ResolutionReason.MissingMetadataReference, Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { AsyncUsageKind = AsyncUsageKind.Awaited, Id = 2 }, symbols);
-        AssertCallBefore(baseCall with { UnresolvedName = "name" }, baseCall with { Id = 2 }, symbols);
-        AssertCallBefore(baseCall, baseCall with { Id = 2 }, symbols);
+        var baseCall = CreateCall(
+            20,
+            commonCaller.Id,
+            commonTarget.Id,
+            commonTarget.Id,
+            documentPath: "a.cs");
+        AssertCallBefore(baseCall, baseCall with { DocumentPath = "b.cs", Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { SourceStart = 2, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { SourceLength = 2, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { ReferenceKind = ReferenceKind.ObjectCreation, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { DispatchKind = DispatchKind.Virtual, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { ResolutionStatus = ResolutionStatus.Ambiguous, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { ResolutionReason = ResolutionReason.MissingMetadataReference, Id = 10 }, symbols);
+        AssertCallBefore(baseCall, baseCall with { AsyncUsageKind = AsyncUsageKind.Awaited, Id = 10 }, symbols);
+        AssertCallBefore(
+            baseCall with { UnresolvedName = "a-name" },
+            baseCall with { UnresolvedName = "b-name", Id = 10 },
+            symbols);
+        AssertCallBefore(
+            baseCall with { UnresolvedName = "name" },
+            baseCall with { Id = 10 },
+            symbols);
+        AssertCallBefore(baseCall with { Id = 1 }, baseCall with { Id = 2 }, symbols);
     }
 
     [Fact]
@@ -220,26 +246,27 @@ public sealed class SymbolCanonicalComparerTests
     [Fact]
     public void OrderRelations_UsesSourceTargetThenKindAndRejectsMissingEndpoints()
     {
-        var sourceA = CreateSymbol(1, "source-a", "A", "T", "E", "a.cs", 1);
-        var sourceB = CreateSymbol(2, "source-b", "B", "T", "E", "a.cs", 1);
-        var targetA = CreateSymbol(3, "target-a", "A", "T", "E", "a.cs", 1);
-        var targetB = CreateSymbol(4, "target-b", "B", "T", "E", "a.cs", 1);
-        var symbols = new[] { sourceA, sourceB, targetA, targetB }.ToDictionary(symbol => symbol.Id);
-        var relations = new[]
-        {
-            new StoredRelation(sourceA.Id, targetA.Id, SymbolRelationKind.Overrides),
-            new StoredRelation(sourceB.Id, targetA.Id, SymbolRelationKind.Overrides),
-            new StoredRelation(sourceA.Id, targetB.Id, SymbolRelationKind.Overrides),
-            new StoredRelation(sourceA.Id, targetA.Id, SymbolRelationKind.Inherits),
-        };
+        var sourceA = CreateSymbol(2, "z-source-later", "A", "T", "E", "a.cs", 1);
+        var sourceB = CreateSymbol(1, "a-source-later", "B", "T", "E", "a.cs", 1);
+        var targetA = CreateSymbol(4, "z-target-later", "A", "T", "E", "a.cs", 1);
+        var targetB = CreateSymbol(3, "a-target-later", "B", "T", "E", "a.cs", 1);
+        var commonSource = CreateSymbol(5, "common-source", "N", "T", "Source", "a.cs", 1);
+        var commonTarget = CreateSymbol(6, "common-target", "N", "T", "Target", "a.cs", 1);
+        var symbols = new[] { sourceA, sourceB, targetA, targetB, commonSource, commonTarget }
+            .ToDictionary(symbol => symbol.Id);
 
-        var ordered = SymbolCanonicalComparer.OrderRelations(relations, symbols, CancellationToken.None);
-        Assert.Equal(
-            [(sourceA.Id, targetA.Id, SymbolRelationKind.Inherits),
-             (sourceA.Id, targetA.Id, SymbolRelationKind.Overrides),
-             (sourceA.Id, targetB.Id, SymbolRelationKind.Overrides),
-             (sourceB.Id, targetA.Id, SymbolRelationKind.Overrides)],
-            ordered.Select(relation => (relation.SourceSymbolId, relation.TargetSymbolId, relation.Kind)));
+        AssertRelationBefore(
+            new StoredRelation(sourceA.Id, targetB.Id, SymbolRelationKind.Overrides),
+            new StoredRelation(sourceB.Id, targetA.Id, SymbolRelationKind.Inherits),
+            symbols);
+        AssertRelationBefore(
+            new StoredRelation(commonSource.Id, targetA.Id, SymbolRelationKind.Overrides),
+            new StoredRelation(commonSource.Id, targetB.Id, SymbolRelationKind.Inherits),
+            symbols);
+        AssertRelationBefore(
+            new StoredRelation(commonSource.Id, commonTarget.Id, SymbolRelationKind.Inherits),
+            new StoredRelation(commonSource.Id, commonTarget.Id, SymbolRelationKind.Overrides),
+            symbols);
 
         Assert.Throws<InvalidOperationException>(() => SymbolCanonicalComparer.OrderRelations(
             [new StoredRelation(99, targetA.Id, SymbolRelationKind.Inherits)], symbols, CancellationToken.None));
@@ -319,18 +346,18 @@ public sealed class SymbolCanonicalComparerTests
     }
 
     [Fact]
-    public void StyleFormattingDoesNotChangeSemanticStableKeyOrder()
+    public void CallerTreeOrderingUsesSemanticIdentityIndependentOfFormattingStyle()
     {
-        var symbolA = CreateSymbol(1, "identity-a", "Game", "A", "Run", "same.cs", 1) with
+        var symbolA = CreateSymbol(1, "z-identity-later", "Game", "A", "Run", "same.cs", 1) with
         {
             Path = new SymbolPathData("Game", "z.Display", "A", "Run()", "Run", "Run()", "Run", CallablePathSegmentKind.Named),
         };
-        var symbolB = CreateSymbol(2, "identity-b", "Game", "B", "Run", "same.cs", 1) with
+        var symbolB = CreateSymbol(2, "a-identity-later", "Game", "B", "Run", "same.cs", 1) with
         {
             Path = new SymbolPathData("Game", "a.Display", "B", "Run()", "Run", "Run()", "Run", CallablePathSegmentKind.Named),
         };
-        var ordered = SymbolCanonicalComparer.OrderSymbols([symbolB, symbolA], CancellationToken.None);
-        Assert.Equal(["identity-a", "identity-b"], ordered.Select(symbol => symbol.StableKey));
+        var ordered = CallerTreeBuilder.OrderCallers([symbolB, symbolA], CancellationToken.None);
+        Assert.Equal(["z-identity-later", "a-identity-later"], ordered.Select(symbol => symbol.StableKey));
 
         var formatter = new CsIndex.Core.Symbols.SymbolPathFormatter();
         foreach (var style in Enum.GetValues<CsIndex.Core.Symbols.SymbolPathStyle>())
@@ -341,7 +368,7 @@ public sealed class SymbolCanonicalComparerTests
                     symbol.Path!,
                     new CsIndex.Core.Symbols.SymbolPathFormatOptions(style, shortNames))).ToArray();
                 Assert.True(StringComparer.Ordinal.Compare(formatted[0], formatted[1]) > 0);
-                Assert.Equal(["identity-a", "identity-b"], ordered.Select(symbol => symbol.StableKey));
+                Assert.Equal(["z-identity-later", "a-identity-later"], ordered.Select(symbol => symbol.StableKey));
             }
         }
     }
@@ -371,13 +398,42 @@ public sealed class SymbolCanonicalComparerTests
             SymbolCanonicalComparer.Instance.Compare(before, after) < 0,
             $"Expected '{before.StableKey}' before '{after.StableKey}'.");
 
+    private static void AssertDefinitionBefore(StoredDeclaration before, StoredDeclaration after) =>
+        Assert.True(
+            SymbolCanonicalComparer.CompareDefinitionDeclarations(before, after) < 0,
+            $"Expected declaration {before.Id} before declaration {after.Id}.");
+
+    private static void AssertSourceMatchBefore(
+        StoredSymbol beforeSymbol,
+        StoredDeclaration beforeDeclaration,
+        StoredSymbol afterSymbol,
+        StoredDeclaration afterDeclaration) =>
+        Assert.True(
+            SymbolCanonicalComparer.CompareSourceMatches(
+                beforeSymbol,
+                beforeDeclaration,
+                afterSymbol,
+                afterDeclaration) < 0,
+            $"Expected source match {beforeDeclaration.Id} before source match {afterDeclaration.Id}.");
+
     private static void AssertCallBefore(
         StoredCall before,
         StoredCall after,
         IReadOnlyDictionary<long, StoredSymbol> symbols)
     {
         var ordered = SymbolCanonicalComparer.OrderCalls([after, before], symbols, CancellationToken.None);
-        Assert.Equal([before.Id, after.Id], ordered.Select(call => call.Id));
+        Assert.Same(before, ordered[0]);
+        Assert.Same(after, ordered[1]);
+    }
+
+    private static void AssertRelationBefore(
+        StoredRelation before,
+        StoredRelation after,
+        IReadOnlyDictionary<long, StoredSymbol> symbols)
+    {
+        var ordered = SymbolCanonicalComparer.OrderRelations([after, before], symbols, CancellationToken.None);
+        Assert.Same(before, ordered[0]);
+        Assert.Same(after, ordered[1]);
     }
 
     private static IEnumerable<StoredSymbol> CancelBeforeYielding(CancellationTokenSource cancellation)
