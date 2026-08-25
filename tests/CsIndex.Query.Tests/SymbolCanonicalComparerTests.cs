@@ -457,8 +457,6 @@ public sealed class SymbolCanonicalComparerTests
         NamespaceName: namespacePath,
         TypeSimpleName: "Type",
         TypeMetadataName: "Type",
-        FullyQualifiedName: stableKey,
-        DisplayName: stableKey,
         ContainingSymbolId: null,
         Arity: 0,
         ParameterCount: 0,

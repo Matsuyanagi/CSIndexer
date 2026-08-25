@@ -1054,37 +1054,38 @@ public sealed class SymbolPathParserTests
             switch (expected[index])
             {
                 case ExpectedSpecialExecutableSegment expectedSpecial:
-                {
-                    var actualSpecial = Assert.IsType<SpecialExecutableSegmentSelector>(actual[index]);
-                    Assert.Equal(expectedSpecial.Tag, actualSpecial.Tag);
-                    Assert.Equal(expectedSpecial.OperatorToken, actualSpecial.OperatorToken);
-                    Assert.Equal(expectedSpecial.ConversionKind, actualSpecial.ConversionKind);
-                    AssertTypeSelector(expectedSpecial.ConversionTarget, actualSpecial.ConversionTarget);
-                    AssertQualifiedMember(expectedSpecial.Member, actualSpecial.Member);
-                    AssertCallableArity(expectedSpecial.Arity, actualSpecial.Arity);
-                    break;
-                }
+                    {
+                        var actualSpecial = Assert.IsType<SpecialExecutableSegmentSelector>(
+                            actual[index]);
+                        Assert.Equal(expectedSpecial.Tag, actualSpecial.Tag);
+                        Assert.Equal(expectedSpecial.OperatorToken, actualSpecial.OperatorToken);
+                        Assert.Equal(expectedSpecial.ConversionKind, actualSpecial.ConversionKind);
+                        AssertTypeSelector(expectedSpecial.ConversionTarget, actualSpecial.ConversionTarget);
+                        AssertQualifiedMember(expectedSpecial.Member, actualSpecial.Member);
+                        AssertCallableArity(expectedSpecial.Arity, actualSpecial.Arity);
+                        break;
+                    }
 
                 case ExpectedLambdaExecutableSegment expectedLambda:
-                {
-                    var actualLambda = Assert.IsType<LambdaExecutableSegmentSelector>(actual[index]);
-                    Assert.Equal(expectedLambda.Ordinal, actualLambda.Ordinal);
-                    break;
-                }
+                    {
+                        var actualLambda = Assert.IsType<LambdaExecutableSegmentSelector>(actual[index]);
+                        Assert.Equal(expectedLambda.Ordinal, actualLambda.Ordinal);
+                        break;
+                    }
 
                 case ExpectedAnonymousMethodExecutableSegment expectedAnonymous:
-                {
-                    var actualAnonymous = Assert.IsType<AnonymousMethodExecutableSegmentSelector>(actual[index]);
-                    Assert.Equal(expectedAnonymous.Ordinal, actualAnonymous.Ordinal);
-                    break;
-                }
+                    {
+                        var actualAnonymous = Assert.IsType<AnonymousMethodExecutableSegmentSelector>(actual[index]);
+                        Assert.Equal(expectedAnonymous.Ordinal, actualAnonymous.Ordinal);
+                        break;
+                    }
 
                 case ExpectedInitializerExecutableSegment expectedInitializer:
-                {
-                    var actualInitializer = Assert.IsType<InitializerExecutableSegmentSelector>(actual[index]);
-                    Assert.Equal(expectedInitializer.MemberPattern, actualInitializer.MemberPattern);
-                    break;
-                }
+                    {
+                        var actualInitializer = Assert.IsType<InitializerExecutableSegmentSelector>(actual[index]);
+                        Assert.Equal(expectedInitializer.MemberPattern, actualInitializer.MemberPattern);
+                        break;
+                    }
 
                 case ExpectedTopLevelStatementsExecutableSegment:
                     Assert.IsType<TopLevelStatementsExecutableSegmentSelector>(actual[index]);

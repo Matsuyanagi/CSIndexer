@@ -337,6 +337,63 @@ public sealed class CallablePathExtractionTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_SameSignatureLocalsUseImmediateExecutableOwnerInStableIdentity()
+    {
+        const string source = """
+            public sealed class Owners
+            {
+                public void Method1()
+                {
+                    void Local() { }
+                    void Outer()
+                    {
+                        void Local() { }
+                        Local();
+                    }
+
+                    Local();
+                    Outer();
+                }
+
+                public void Method2()
+                {
+                    void Local() { }
+                    Local();
+                }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("Owners.cs", source));
+
+        var method1 = FindPath(snapshot, "Method1()");
+        var outer = FindPath(snapshot, "Method1().Outer()");
+        var method2 = FindPath(snapshot, "Method2()");
+        var direct = FindPath(snapshot, "Method1().Local()");
+        var grandchild = FindPath(snapshot, "Method1().Outer().Local()");
+        var otherRoot = FindPath(snapshot, "Method2().Local()");
+
+        Assert.Equal(3, new[] { direct, grandchild, otherRoot }
+            .Select(symbol => symbol.StableKey)
+            .Distinct(StringComparer.Ordinal)
+            .Count());
+        Assert.Equal(method1.StableKey, direct.ContainingSymbolKey);
+        Assert.Equal(outer.StableKey, grandchild.ContainingSymbolKey);
+        Assert.Equal(method2.StableKey, otherRoot.ContainingSymbolKey);
+        Assert.Equal(direct.StableKey, PreferredDeclaration(snapshot, direct).SymbolKey);
+        Assert.Equal(grandchild.StableKey, PreferredDeclaration(snapshot, grandchild).SymbolKey);
+        Assert.Equal(otherRoot.StableKey, PreferredDeclaration(snapshot, otherRoot).SymbolKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == method1.StableKey &&
+            call.CalleeDefinitionKey == direct.StableKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == outer.StableKey &&
+            call.CalleeDefinitionKey == grandchild.StableKey);
+        Assert.Single(snapshot.Calls, call =>
+            call.CallerSymbolKey == method2.StableKey &&
+            call.CalleeDefinitionKey == otherRoot.StableKey);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_InsertingAnonymousFunctionRenumbersOnlyLaterSiblingsOfItsImmediateOwner()
     {
         const string before = """

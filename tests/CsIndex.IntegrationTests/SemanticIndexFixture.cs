@@ -1,6 +1,7 @@
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Storage;
 using Microsoft.Data.Sqlite;
@@ -599,6 +600,11 @@ public sealed class SemanticIndexFixture : IDisposable
     public SemanticQueryService Query => new(new SqliteIndex(DatabasePath).CreateQueryRepository());
     public QueryRepository Repository => new SqliteIndex(DatabasePath).CreateQueryRepository();
 
+    public string FormatPath(StoredSymbol symbol) =>
+        new SymbolPathFormatter().Format(
+            Assert.IsType<SymbolPathData>(symbol.Path),
+            new SymbolPathFormatOptions());
+
     public Task ReindexPrimaryProfileAsync() => BuildProfileAsync(PrimaryProfileName, []);
 
     public async Task<StoredSymbol> GetStoredSymbolAsync(
@@ -612,7 +618,7 @@ public sealed class SemanticIndexFixture : IDisposable
             profile.Id,
             sourceOnly: false,
             cancellationToken);
-        var symbol = symbols.Single(value => value.DisplayName == displayName);
+        var symbol = symbols.Single(value => FormatPath(value) == displayName);
         var preferredDeclarations = await repository.GetPreferredDeclarationsAsync(
             profile.Id,
             [symbol.Id],

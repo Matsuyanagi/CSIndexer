@@ -1,21 +1,38 @@
 using CsIndex.Core.Input;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
 
 namespace CsIndex.Query;
 
-public sealed class SemanticQueryService(QueryRepository repository)
+public sealed class SemanticQueryService
 {
     private static readonly IReadOnlySet<ReferenceKind> CallKinds =
         new HashSet<ReferenceKind> { ReferenceKind.Invocation, ReferenceKind.ObjectCreation };
 
     internal Action<IReadOnlyCollection<long>>? EndpointHydrationObserver { get; init; }
 
-    private readonly SymbolQueryParser _parser = new();
-    private readonly ExecutableTargetResolver _executableTargetResolver = new(repository);
-    private readonly AsyncPathResolver _asyncPathResolver = new(repository);
-    private readonly CallerTreeBuilder _callerTreeBuilder = new(repository);
+    private static readonly SymbolPathFormatter PathFormatter = new();
+    private static readonly SymbolPathFormatOptions DefaultPathFormat = new();
+
+    private readonly QueryRepository repository;
+    private readonly SymbolPathResolver _symbolPathResolver;
+    private readonly ExecutableTargetResolver _executableTargetResolver;
+    private readonly AsyncPathResolver _asyncPathResolver;
+    private readonly CallerTreeBuilder _callerTreeBuilder;
+
+    public SemanticQueryService(QueryRepository repository)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        this.repository = repository;
+        _symbolPathResolver = new SymbolPathResolver(repository);
+        _executableTargetResolver = new ExecutableTargetResolver(
+            _symbolPathResolver,
+            new MethodTargetResolver(repository));
+        _asyncPathResolver = new AsyncPathResolver(repository);
+        _callerTreeBuilder = new CallerTreeBuilder(repository);
+    }
 
     public Task<QueryContext> FindSymbolsAsync(
         string queryText,
@@ -47,105 +64,60 @@ public sealed class SemanticQueryService(QueryRepository repository)
             includeSourceText: false,
             cancellationToken);
 
-    // Temporary Task 5 compatibility surface. Task 10 replaces this with
-    // declaration-aware result projection instead of attaching source to symbols.
-    public async Task<QueryContext> FindSymbolsAsync(
+    public Task<QueryContext> FindSymbolsAsync(
         string queryText,
         FunctionTargetFilter filter,
         string? profileName,
         bool sourceOnly,
         bool includeOverrides,
         bool includeSourceText,
-        CancellationToken cancellationToken)
-    {
-        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
-        if (ExecutableTargetResolver.IsLambdaTargetQuery(queryText))
-        {
-            var lambdaTargets = await _executableTargetResolver.ResolveAsync(
-                profile.Id,
-                queryText,
-                sourceOnly,
-                includeOverrides,
-                filter,
-                cancellationToken);
-            lambdaTargets = SymbolCanonicalComparer.OrderSymbols(lambdaTargets, cancellationToken);
-            return await AttachPreferredSourceIfRequestedAsync(
-                new QueryContext(profile, lambdaTargets),
-                includeSourceText,
-                cancellationToken);
-        }
-
-        var query = _parser.Parse(queryText);
-        if (includeOverrides && !query.IsMethodQuery)
-        {
-            throw new SymbolQueryParseException("--include-overrides requires a method query.");
-        }
-
-        if (query.IsMethodQuery)
-        {
-            var methodTargets = await _executableTargetResolver.ResolveAsync(
-                profile.Id,
-                queryText,
-                sourceOnly,
-                includeOverrides,
-                filter,
-                cancellationToken);
-            methodTargets = SymbolCanonicalComparer.OrderSymbols(methodTargets, cancellationToken);
-            return await AttachPreferredSourceIfRequestedAsync(
-                new QueryContext(profile, methodTargets),
-                includeSourceText,
-                cancellationToken);
-        }
-
-        var candidates = await repository.FindSymbolCandidatesAsync(
-            profile.Id,
-            query.MethodName,
-            query.TypeSimpleName,
-            IndexedSymbolKind.Type,
+        CancellationToken cancellationToken) =>
+        FindSymbolsAsync(
+            CreateStrictSelectionRequest(queryText, filter),
+            profileName,
             sourceOnly,
-            cancellationToken);
-        var matches = new List<StoredSymbol>(candidates.Count);
-        foreach (var symbol in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var isMatch = SymbolMatcher.IsMatch(query, symbol);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (isMatch && filter.Matches(symbol))
-            {
-                matches.Add(symbol);
-            }
-        }
-
-        var orderedMatches = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
-        return await AttachPreferredSourceIfRequestedAsync(
-            new QueryContext(profile, orderedMatches),
+            includeOverrides,
             includeSourceText,
             cancellationToken);
-    }
 
     public async Task<QueryContext> SearchSymbolsAsync(
-        SymbolSearchRequest request,
+        SymbolSelectionRequest request,
+        bool showSource = false,
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        ValidateSearchRequest(request);
-        if (CanUseExactSearch(request))
-        {
-            var exact = await FindSymbolsAsync(
-                request.Pattern!,
-                new FunctionTargetFilter(request.Kind, request.AsyncStatus),
-                profileName: profileName,
-                sourceOnly: false,
-                includeOverrides: false,
-                includeSourceText: request.ShowSource,
-                cancellationToken: cancellationToken);
-            return exact with { ShowSource = request.ShowSource };
-        }
-
-        return await SearchStoredExecutableSymbolsAsync(
+        var context = await FindSymbolsAsync(
             request,
             profileName,
             sourceOnly: false,
+            includeOverrides: false,
+            includeSourceText: showSource,
+            cancellationToken);
+        return context with { ShowSource = showSource };
+    }
+
+    public async Task<QueryContext> FindSymbolsAsync(
+        SymbolSelectionRequest request,
+        string? profileName,
+        bool sourceOnly,
+        bool includeOverrides,
+        bool includeSourceText,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var matches = await _executableTargetResolver.ResolveAsync(
+            profile.Id,
+            request,
+            sourceOnly,
+            includeOverrides,
+            cancellationToken);
+        var context = new QueryContext(
+            profile,
+            SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken));
+        return await AttachPreferredSourceIfRequestedAsync(
+            context,
+            includeSourceText,
             cancellationToken);
     }
 
@@ -162,83 +134,37 @@ public sealed class SemanticQueryService(QueryRepository repository)
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var request = new SymbolSearchRequest(
-            queryText,
-            NamespacePattern: null,
-            TypePattern: null,
-            MethodPattern: null,
-            Kind: filter.Kind,
-            UseRegex: false,
-            IgnoreCase: false,
-            Includes: [],
-            Excludes: [],
-            ShowSource: true,
-            AsyncStatus: filter.AsyncStatus);
-        if (CanUseExecutableTargetResolver(queryText))
-        {
-            var exact = await FindSymbolsAsync(
-                queryText,
-                filter,
-                profileName,
-                sourceOnly: true,
-                includeOverrides: false,
-                cancellationToken);
-            return await AttachPreferredSourceAsync(exact with { ShowSource = true }, cancellationToken);
-        }
-
-        return await SearchStoredExecutableSymbolsAsync(
-            request,
+        var context = await FindSymbolsAsync(
+            CreateStrictSelectionRequest(queryText, filter),
             profileName,
             sourceOnly: true,
+            includeOverrides: false,
+            includeSourceText: true,
             cancellationToken);
+        return context with { ShowSource = true };
     }
 
-    public Task<QueryContext> SearchSourceAsync(
-        IReadOnlyList<string> includes,
-        IReadOnlyList<string> excludes,
-        bool ignoreCase,
-        string? profileName = null,
-        CancellationToken cancellationToken = default) =>
-        SearchSourceAsync(
-            includes,
-            excludes,
-            ignoreCase,
-            filter: default,
-            profileName,
-            cancellationToken);
-
-    public Task<QueryContext> SearchSourceAsync(
-        IReadOnlyList<string> includes,
-        IReadOnlyList<string> excludes,
-        bool ignoreCase,
-        FunctionTargetFilter filter,
+    public async Task<QueryContext> SearchSourceAsync(
+        SymbolSelectionRequest request,
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(includes);
-        ArgumentNullException.ThrowIfNull(excludes);
-        if (includes.Count == 0 && excludes.Count == 0)
+        ArgumentNullException.ThrowIfNull(request);
+        if (!request.Conditions.Any(condition =>
+                condition.Category is ConditionCategory.Include or ConditionCategory.Exclude))
         {
             throw new SymbolQueryParseException(
                 "source search requires at least one include or exclude condition.");
         }
 
-        return SearchStoredExecutableSymbolsAsync(
-            new SymbolSearchRequest(
-                Pattern: null,
-                NamespacePattern: null,
-                TypePattern: null,
-                MethodPattern: null,
-                Kind: filter.Kind,
-                UseRegex: false,
-                IgnoreCase: ignoreCase,
-                Includes: includes,
-                Excludes: excludes,
-                ShowSource: true,
-                AsyncStatus: filter.AsyncStatus),
+        var context = await FindSymbolsAsync(
+            request,
             profileName,
             sourceOnly: true,
+            includeOverrides: false,
+            includeSourceText: true,
             cancellationToken);
+        return context with { ShowSource = true };
     }
 
     public Task<AsyncPathResult> FindAsyncPathAsync(
@@ -736,95 +662,6 @@ public sealed class SemanticQueryService(QueryRepository repository)
         return symbolsById;
     }
 
-    private async Task<QueryContext> SearchStoredExecutableSymbolsAsync(
-        SymbolSearchRequest request,
-        string? profileName,
-        bool sourceOnly,
-        CancellationToken cancellationToken)
-    {
-        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
-        var hasSourceFilters = request.Includes.Count > 0 || request.Excludes.Count > 0;
-        var candidates = await repository.FindExecutableSymbolsAsync(
-            profile.Id,
-            sourceOnly || hasSourceFilters,
-            cancellationToken);
-        if (hasSourceFilters || request.ShowSource)
-        {
-            candidates = await AttachPreferredDeclarationsAsync(
-                profile.Id,
-                candidates,
-                includeSourceText: true,
-                cancellationToken);
-        }
-        var matcher = new SymbolPatternMatcher(request);
-        var comparison = request.IgnoreCase
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        var matches = new List<StoredSymbol>();
-        foreach (var symbol in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var isMatch = matcher.IsMatch(symbol);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!isMatch)
-            {
-                continue;
-            }
-
-            if (hasSourceFilters && !SourceTextFilter.IsMatch(
-                    symbol.NormalizedSource,
-                    request.Includes,
-                    request.Excludes,
-                    comparison,
-                    cancellationToken))
-            {
-                continue;
-            }
-
-            if (sourceOnly && !IsSourceBackedExecutable(symbol))
-            {
-                continue;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            matches.Add(symbol);
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return new QueryContext(
-            profile,
-            SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken),
-            request.ShowSource);
-    }
-
-    private static bool CanUseExactSearch(SymbolSearchRequest request) =>
-        request.Pattern is not null &&
-        !request.Pattern.Contains('*', StringComparison.Ordinal) &&
-        !request.Pattern.Contains("::<lambda#", StringComparison.Ordinal) &&
-        !request.UseRegex &&
-        !request.IgnoreCase &&
-        request.NamespacePattern is null &&
-        request.TypePattern is null &&
-        request.MethodPattern is null &&
-        request.Kind is null &&
-        request.Includes.Count == 0 &&
-        request.Excludes.Count == 0;
-
-    private bool CanUseExecutableTargetResolver(string queryText)
-    {
-        if (ExecutableTargetResolver.IsLambdaTargetQuery(queryText))
-        {
-            return true;
-        }
-
-        return !queryText.Contains('*', StringComparison.Ordinal) && _parser.Parse(queryText).IsMethodQuery;
-    }
-
-    private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
-        symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
-        symbol.PreferredDeclarationId is not null &&
-        symbol.PreferredDocumentPath is not null;
-
     private async Task<QueryContext> AttachPreferredSourceAsync(
         QueryContext context,
         CancellationToken cancellationToken)
@@ -905,12 +742,15 @@ public sealed class SemanticQueryService(QueryRepository repository)
         return SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
     }
 
-    private static void ValidateSearchRequest(SymbolSearchRequest request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(request.Includes);
-        ArgumentNullException.ThrowIfNull(request.Excludes);
-    }
+    private static SymbolSelectionRequest CreateStrictSelectionRequest(
+        string selector,
+        FunctionTargetFilter filter) => new(
+        selector,
+        Conditions: [],
+        Case: new SymbolCaseOptions(),
+        FunctionFilter: filter,
+        KindSpecified: filter.Kind is not null,
+        AsyncStatusSpecified: filter.AsyncStatus != AsyncStatusFilter.All);
 
     private async Task<(StoredProfile Profile, StoredSymbol Root)> ResolveSingleSourceExecutableAsync(
         string queryText,
@@ -919,18 +759,12 @@ public sealed class SemanticQueryService(QueryRepository repository)
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!ExecutableTargetResolver.IsLambdaTargetQuery(queryText) && !_parser.Parse(queryText).IsMethodQuery)
-        {
-            throw new SymbolQueryParseException("Graph queries require an exact source-backed executable query.");
-        }
-
         var profile = await repository.GetProfileAsync(profileName, cancellationToken);
         var matches = await _executableTargetResolver.ResolveAsync(
             profile.Id,
-            queryText,
+            CreateStrictSelectionRequest(queryText, filter),
             sourceOnly: true,
             includeOverrides: false,
-            filter,
             cancellationToken);
         var orderedMatches = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
         if (orderedMatches.Count == 0)
@@ -957,22 +791,30 @@ public sealed class SemanticQueryService(QueryRepository repository)
         foreach (var candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            displayNameCounts.TryGetValue(candidate.DisplayName, out var count);
-            displayNameCounts[candidate.DisplayName] = count + 1;
+            var formattedPath = FormatPath(candidate);
+            displayNameCounts.TryGetValue(formattedPath, out var count);
+            displayNameCounts[formattedPath] = count + 1;
         }
 
         var descriptions = new List<string>(candidates.Count);
         foreach (var candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            descriptions.Add(displayNameCounts[candidate.DisplayName] == 1
-                ? candidate.DisplayName
-                : $"{candidate.DisplayName} [document: {candidate.DocumentPath ?? "<missing>"}; symbol ID: {candidate.Id}]");
+            var formattedPath = FormatPath(candidate);
+            descriptions.Add(displayNameCounts[formattedPath] == 1
+                ? formattedPath
+                : $"{formattedPath} [document: {candidate.PreferredDocumentPath ?? "<missing>"}; symbol ID: {candidate.Id}]");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         return string.Join(", ", descriptions);
     }
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        PathFormatter.Format(
+            symbol.Path ?? throw new InvalidOperationException(
+                $"Stored symbol ID {symbol.Id} has no semantic path data."),
+            DefaultPathFormat);
 
     private static void ValidateDepth(int depth)
     {

@@ -1,6 +1,7 @@
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
@@ -58,7 +59,7 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
                 sourceOnly: true,
                 cancellationToken: cancellationToken);
             var duplicateRuns = runs
-                .Where(symbol => symbol.DisplayName == "Shared.Twin::Run()")
+                .Where(symbol => FormatPath(symbol) == "Shared.Twin::Run()")
                 .ToArray();
             var preferredRuns = (await repository.GetPreferredDeclarationsAsync(
                     profile.Id,
@@ -188,7 +189,7 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
                     kind: IndexedSymbolKind.Method,
                     sourceOnly: true,
                     cancellationToken: cancellationToken))
-                .Where(symbol => symbol.DisplayName == "Shared.Twin::Run()")
+                .Where(symbol => FormatPath(symbol) == "Shared.Twin::Run()")
                 .ToArray();
             Assert.Equal(2, candidates.Length);
             var service = new SemanticQueryService(repository);
@@ -204,7 +205,7 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
             var expected = "Graph query is ambiguous for 'Shared.Twin::Run()'. Candidates: " + string.Join(
                 ", ",
                 candidates.Select(candidate =>
-                    $"{candidate.DisplayName} [document: {candidate.DocumentPath}; symbol ID: {candidate.Id}]"));
+                    $"{FormatPath(candidate)} [document: {candidate.DocumentPath}; symbol ID: {candidate.Id}]"));
 
             Assert.Equal(expected, first.Message);
             Assert.Equal(first.Message, second.Message);
@@ -395,6 +396,11 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
         await connection.OpenAsync(cancellationToken);
         return connection;
     }
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        new SymbolPathFormatter().Format(
+            Assert.IsType<SymbolPathData>(symbol.Path),
+            new SymbolPathFormatOptions());
 
     private sealed record ProjectFixture(AdhocWorkspace Workspace, IReadOnlyList<Project> Items);
 

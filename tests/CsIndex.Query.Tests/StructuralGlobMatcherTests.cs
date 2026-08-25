@@ -329,8 +329,6 @@ public sealed class StructuralGlobMatcherTests
             NamespaceName: "Game",
             TypeSimpleName: "Host",
             TypeMetadataName: "Host",
-            FullyQualifiedName: "unused",
-            DisplayName: "unused",
             ContainingSymbolId: null,
             Arity: 0,
             ParameterCount: 0,

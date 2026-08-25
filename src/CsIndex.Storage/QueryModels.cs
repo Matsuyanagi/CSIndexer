@@ -1,5 +1,4 @@
 using CsIndex.Core.Model;
-using CsIndex.Core.Symbols;
 
 namespace CsIndex.Storage;
 
@@ -42,12 +41,12 @@ public sealed record StoredDeclaration(
     byte[]? NormalizedSourceHash,
     bool IsGenerated);
 
+public sealed record LogicalSymbolCandidateHints(
+    string? ExactLeafName,
+    IndexedSymbolKind? ExactKind);
+
 public sealed record StoredSymbol
 {
-    // Temporary object-projection compatibility bridge. Task 9 deletes these
-    // forwarding members after the declaration-aware matcher conversion.
-    private static readonly SymbolPathFormatter PathFormatter = new();
-
     public StoredSymbol(
         long Id,
         string StableKey,
@@ -56,8 +55,6 @@ public sealed record StoredSymbol
         string NamespaceName,
         string? TypeSimpleName,
         string? TypeMetadataName,
-        string FullyQualifiedName,
-        string DisplayName,
         long? ContainingSymbolId,
         int Arity,
         int? ParameterCount,
@@ -165,15 +162,6 @@ public sealed record StoredSymbol
     public int? Accessibility { get; init; }
     public string? NormalizedSource => PreferredDeclaration?.NormalizedSource;
     public byte[]? NormalizedSourceHash => PreferredDeclaration?.NormalizedSourceHash;
-
-    // Temporary object-projection bridge; neither property is a database column.
-    public string DisplayName => Path is null
-        ? throw new InvalidOperationException(
-            $"Symbol ID {Id} has no semantic path data for presentation.")
-        : PathFormatter.Format(Path, new SymbolPathFormatOptions());
-
-    // Temporary object-projection bridge; Task 9 removes this member.
-    public string FullyQualifiedName => DisplayName;
 }
 
 public sealed record StoredInterfaceMethodBinding(

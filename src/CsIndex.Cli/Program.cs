@@ -46,10 +46,8 @@ internal static class Program
         "--include <text>", "Require normalized source text (repeatable)");
     private static readonly HelpOption ExcludeHelpOption = new(
         "--exclude <text>", "Reject normalized source text (repeatable)");
-    private static readonly HelpOption IgnoreCaseNameAndSourceHelpOption = new(
-        "--ignore-case", "Compare name and source filters without case sensitivity");
-    private static readonly HelpOption IgnoreCaseSourceHelpOption = new(
-        "--ignore-case", "Compare source filters without case sensitivity");
+    private static readonly HelpOption FileHelpOption = new(
+        "--file <pattern>", "Stored source path filter");
 
     public static async Task<int> Main(string[] args)
     {
@@ -249,7 +247,7 @@ internal static class Program
         var parsed = ParseQueryArguments(
             args,
             "db", "profile", "output-format", "output-file", "require-single", "short-names", "include-overrides", "namespace", "type",
-            "method", "kind", "async-status", "regex", "include", "exclude", "ignore-case", "show-source", "source-layout", "help");
+            "method", "file", "kind", "async-status", "include", "exclude", "show-source", "source-layout", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -264,12 +262,11 @@ internal static class Program
                 new HelpOption("--namespace <pattern>", "Namespace component filter"),
                 new HelpOption("--type <pattern>", "Type component filter"),
                 new HelpOption("--method <pattern>", "Method component filter"),
+                FileHelpOption,
                 FunctionKindHelpOption,
                 AsyncStatusHelpOption,
-                new HelpOption("--regex", "Interpret name filters as regular expressions"),
                 IncludeHelpOption,
                 ExcludeHelpOption,
-                IgnoreCaseNameAndSourceHelpOption,
                 new HelpOption("--show-source", "Include normalized source in output"),
                 SourceLayoutHelpOption,
                 new HelpOption(
@@ -279,11 +276,12 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var request = CreateSymbolSearchRequest(parsed);
-        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: request.ShowSource);
+        var request = CreateSymbolSelectionRequest(parsed);
+        var showSource = parsed.HasFlag("show-source");
+        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: showSource);
         if (parsed.HasFlag("include-overrides"))
         {
-            if (request.Kind == IndexedSymbolKind.Lambda)
+            if (request.KindSpecified && request.FunctionFilter.Kind == IndexedSymbolKind.Lambda)
             {
                 throw new CliUsageException("--kind lambda cannot be combined with --include-overrides.");
             }
@@ -291,7 +289,7 @@ internal static class Program
             if (!IsExactOverrideSearch(request))
             {
                 throw new CliUsageException(
-                    "--include-overrides cannot be combined with component, lambda, regex, case, or source filter options.");
+                    "--include-overrides cannot be combined with component, lambda, or declaration filter options.");
             }
         }
 
@@ -301,19 +299,19 @@ internal static class Program
         if (parsed.HasFlag("include-overrides"))
         {
             result = await service.FindSymbolsAsync(
-                request.Pattern!,
-                new FunctionTargetFilter(request.Kind, request.AsyncStatus),
+                request,
                 profileName: parsed.GetSingle("profile"),
                 sourceOnly: false,
                 includeOverrides: true,
-                includeSourceText: request.ShowSource,
+                includeSourceText: showSource,
                 cancellationToken: cancellationToken);
-            result = result with { ShowSource = request.ShowSource };
+            result = result with { ShowSource = showSource };
         }
         else
         {
             result = await service.SearchSymbolsAsync(
                 request,
+                showSource,
                 parsed.GetSingle("profile"),
                 cancellationToken);
         }
@@ -462,7 +460,7 @@ internal static class Program
     {
         var parsed = ParseQueryArguments(
             args,
-            "db", "profile", "output-format", "output-file", "kind", "async-status", "source-layout", "include", "exclude", "ignore-case", "short-names", "help");
+            "db", "profile", "output-format", "output-file", "kind", "async-status", "source-layout", "include", "exclude", "short-names", "help");
         if (parsed.HasFlag("help"))
         {
             WriteCommandHelp(
@@ -476,7 +474,6 @@ internal static class Program
                 OutputFileHelpOption,
                 IncludeHelpOption,
                 ExcludeHelpOption,
-                IgnoreCaseSourceHelpOption,
                 SourceLayoutHelpOption,
                 ShortNamesHelpOption,
                 HelpHelpOption);
@@ -496,13 +493,10 @@ internal static class Program
         }
 
         var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
-        var filter = ParseFunctionTargetFilter(parsed);
+        var request = CreateSymbolSelectionRequest(parsed, requireNameCondition: false);
         using var destination = CreateOutputDestination(parsed, outputDestinationFactory);
         var result = await CreateQueryService(parsed).SearchSourceAsync(
-            includes,
-            excludes,
-            parsed.HasFlag("ignore-case"),
-            filter,
+            request,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
         destination.WritePayload(
@@ -916,7 +910,9 @@ internal static class Program
         return parsed;
     }
 
-    private static SymbolSearchRequest CreateSymbolSearchRequest(CliArguments parsed)
+    private static SymbolSelectionRequest CreateSymbolSelectionRequest(
+        CliArguments parsed,
+        bool requireNameCondition = true)
     {
         if (parsed.Positionals.Count > 1)
         {
@@ -928,24 +924,46 @@ internal static class Program
         var typePattern = parsed.GetSingle("type");
         var methodPattern = parsed.GetSingle("method");
         var filter = ParseFunctionTargetFilter(parsed);
-        if (pattern is null && namespacePattern is null && typePattern is null && methodPattern is null)
+        if (requireNameCondition &&
+            pattern is null &&
+            namespacePattern is null &&
+            typePattern is null &&
+            methodPattern is null)
         {
             throw new CliUsageException(
                 "symbol find requires a pattern or at least one --namespace, --type, or --method condition.");
         }
 
-        return new SymbolSearchRequest(
+        var conditions = new List<TypedCondition>();
+        AddCondition(ConditionCategory.Namespace, namespacePattern);
+        AddCondition(ConditionCategory.Type, typePattern);
+        AddCondition(ConditionCategory.Method, methodPattern);
+        AddCondition(ConditionCategory.File, parsed.GetSingle("file"));
+        foreach (var include in parsed.GetMany("include"))
+        {
+            conditions.Add(new TypedCondition(ConditionCategory.Include, ConditionSyntax.Glob, include));
+        }
+
+        foreach (var exclude in parsed.GetMany("exclude"))
+        {
+            conditions.Add(new TypedCondition(ConditionCategory.Exclude, ConditionSyntax.Glob, exclude));
+        }
+
+        return new SymbolSelectionRequest(
             pattern,
-            namespacePattern,
-            typePattern,
-            methodPattern,
-            filter.Kind,
-            parsed.HasFlag("regex"),
-            parsed.HasFlag("ignore-case"),
-            parsed.GetMany("include"),
-            parsed.GetMany("exclude"),
-            parsed.HasFlag("show-source"),
-            filter.AsyncStatus);
+            conditions,
+            new SymbolCaseOptions(),
+            filter,
+            KindSpecified: parsed.GetSingle("kind") is not null,
+            AsyncStatusSpecified: parsed.GetSingle("async-status") is not null);
+
+        void AddCondition(ConditionCategory category, string? value)
+        {
+            if (value is not null)
+            {
+                conditions.Add(new TypedCondition(category, ConditionSyntax.Glob, value));
+            }
+        }
     }
 
     private static FunctionTargetFilter ParseFunctionTargetFilter(CliArguments parsed)
@@ -970,17 +988,10 @@ internal static class Program
         return new FunctionTargetFilter(kind, asyncStatus);
     }
 
-    private static bool IsExactOverrideSearch(SymbolSearchRequest request) =>
-        request.Pattern is not null &&
-        !request.Pattern.Contains('*') &&
-        !request.Pattern.Contains("::<lambda#", StringComparison.OrdinalIgnoreCase) &&
-        request.NamespacePattern is null &&
-        request.TypePattern is null &&
-        request.MethodPattern is null &&
-        !request.UseRegex &&
-        !request.IgnoreCase &&
-        request.Includes.Count == 0 &&
-        request.Excludes.Count == 0;
+    private static bool IsExactOverrideSearch(SymbolSelectionRequest request) =>
+        request.Selector is not null &&
+        !request.Selector.Contains('*') &&
+        request.Conditions.Count == 0;
 
     private static string ParseOutput(string value, string command, params string[] allowed)
     {
@@ -1243,10 +1254,9 @@ internal static class Program
               --namespace <pattern>        Namespace component filter
               --type <pattern>             Type component filter
               --method <pattern>           Method component filter
-              --regex                      Interpret name filters as regular expressions
+              --file <pattern>             Stored source path filter
               --include <text>             Require normalized source text (repeatable)
               --exclude <text>             Reject normalized source text (repeatable)
-              --ignore-case                Compare name and source filters without case sensitivity
               --show-source                Include normalized source in output
               --source-layout single-line|multi-line
                                           Source table layout (default: single-line)

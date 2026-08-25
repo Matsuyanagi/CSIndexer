@@ -1,4 +1,5 @@
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using Microsoft.Data.Sqlite;
 using System.Reflection;
 
@@ -6,6 +7,8 @@ namespace CsIndex.Storage.Tests;
 
 public sealed class SchemaFiveLogicalSymbolTests
 {
+    private static readonly SymbolPathFormatter PathFormatter = new();
+
     [Fact]
     public void StoredSymbol_SourceBridgeForwardsOnlyFromAttachedPreferredDeclaration()
     {
@@ -27,16 +30,6 @@ public sealed class SchemaFiveLogicalSymbolTests
         Assert.Equal(declaration.NormalizedSource, symbol.NormalizedSource);
         Assert.Same(hash, symbol.NormalizedSourceHash);
         Assert.Equal(declaration.SourceLength, symbol.SourceLength);
-    }
-
-    [Fact]
-    public void StoredSymbol_DisplayBridgeRejectsMissingSemanticPathInsteadOfUsingLegacyText()
-    {
-        var symbol = CreateStoredSymbol() with { Path = null };
-
-        var exception = Assert.Throws<InvalidOperationException>(() => symbol.DisplayName);
-
-        Assert.Contains("semantic path", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -152,7 +145,7 @@ public sealed class SchemaFiveLogicalSymbolTests
         var byKey = symbols.ToDictionary(symbol => symbol.StableKey, StringComparer.Ordinal);
 
         var ordinary = byKey["ordinary"];
-        Assert.Equal("Game.Player::Run(System.Guid)", ordinary.DisplayName);
+        Assert.Equal("Game.Player::Run(System.Guid)", FormatPath(ordinary));
         Assert.Equal("System.Threading.Tasks.Task", ordinary.ReturnTypeDisplay);
         Assert.Equal("System::Guid", ordinary.ConversionTypeKey);
         Assert.Equal("System.Guid", ordinary.ConversionTypeDisplay);
@@ -167,7 +160,7 @@ public sealed class SchemaFiveLogicalSymbolTests
         Assert.Equal("System.Guid", parameter.TypeDisplay);
 
         var type = byKey["type"];
-        Assert.Equal("Game.Player", type.DisplayName);
+        Assert.Equal("Game.Player", FormatPath(type));
         Assert.Null(type.PreferredDeclarationId);
         Assert.Equal(string.Empty, Assert.IsType<SymbolPathData>(type.Path).ExecutableDisplayPath);
         Assert.Null(byKey["metadata"].PreferredDeclarationId);
@@ -838,8 +831,6 @@ public sealed class SchemaFiveLogicalSymbolTests
         NamespaceName: "Game",
         TypeSimpleName: "Player",
         TypeMetadataName: "Player",
-        FullyQualifiedName: string.Empty,
-        DisplayName: string.Empty,
         ContainingSymbolId: null,
         Arity: 0,
         ParameterCount: 0,
@@ -873,4 +864,7 @@ public sealed class SchemaFiveLogicalSymbolTests
             "Run()",
             CallablePathSegmentKind.Named),
     };
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        PathFormatter.Format(Assert.IsType<SymbolPathData>(symbol.Path), new SymbolPathFormatOptions());
 }

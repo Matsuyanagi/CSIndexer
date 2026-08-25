@@ -48,8 +48,6 @@ public sealed class CallerTreeBuilderTests
         NamespaceName: "Example",
         TypeSimpleName: "Caller",
         TypeMetadataName: "Caller",
-        FullyQualifiedName: displayName,
-        DisplayName: displayName,
         ContainingSymbolId: null,
         Arity: 0,
         ParameterCount: 0,

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Storage;
 
@@ -24,8 +25,8 @@ public sealed class OutputFormatterTests
         "Example.Handlers.Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])",
         "Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])")]
     [InlineData(
-        "Example.Handlers.Worker::Run(System.Threading.Tasks.Task)::<lambda#1>",
-        "Worker::Run(System.Threading.Tasks.Task)::<lambda#1>")]
+        "Example.Handlers.Worker::Run(System.Threading.Tasks.Task).<lambda#1>",
+        "Worker::Run(System.Threading.Tasks.Task).<lambda#1>")]
     [InlineData(
         "会社.モデル.サービス::実行(会社.モデル.入力)",
         "サービス::実行(会社.モデル.入力)")]
@@ -363,10 +364,10 @@ public sealed class OutputFormatterTests
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
         var outputRelation = Assert.Single(document.RootElement.GetProperty("relations").EnumerateArray());
         Assert.Equal(
-            CreateEndpointSymbols()[relation.SourceSymbolId].DisplayName,
+            FormatPath(CreateEndpointSymbols()[relation.SourceSymbolId]),
             outputRelation.GetProperty("source").GetString());
         Assert.Equal(
-            CreateEndpointSymbols()[relation.TargetSymbolId].DisplayName,
+            FormatPath(CreateEndpointSymbols()[relation.TargetSymbolId]),
             outputRelation.GetProperty("target").GetString());
         Assert.Equal("Overrides", outputRelation.GetProperty("kind").GetString());
     }
@@ -607,7 +608,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 101,
-            displayName: "Tokyo.Gamer::.ctor(System.String)",
+            displayName: "Tokyo.Gamer::[constructor](string)",
             parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
             namespaceName: "Tokyo",
             name: ".ctor",
@@ -618,7 +619,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 102,
-            displayName: "Tokyo.Gamer::Run()::<lambda#1>",
+            displayName: "Tokyo.Gamer::Run().<lambda#1>",
             namespaceName: "Tokyo",
             kind: IndexedSymbolKind.Lambda,
             name: "<lambda#1>",
@@ -630,8 +631,8 @@ public sealed class OutputFormatterTests
 
         var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(hiddenContext));
         Assert.Equal(
-            "public Tokyo.Gamer::.ctor(System.String)\t" + Environment.NewLine +
-            "System.Int32 Tokyo.Gamer::Run()::<lambda#1>\t" + Environment.NewLine,
+            "public Tokyo.Gamer::[constructor](string)\t" + Environment.NewLine +
+            "System.Int32 Tokyo.Gamer::Run().<lambda#1>\t" + Environment.NewLine,
             table);
         Assert.DoesNotContain("source:", table);
 
@@ -649,11 +650,13 @@ public sealed class OutputFormatterTests
             symbol.GetProperty("id").GetInt64() == constructor.Id);
         var hiddenLambda = Assert.Single(hiddenJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
             symbol.GetProperty("id").GetInt64() == lambda.Id);
-        Assert.Equal("public Tokyo.Gamer::.ctor(System.String)", hiddenConstructor.GetProperty("signature").GetString());
+        Assert.Equal(
+            "public Tokyo.Gamer::[constructor](string)",
+            hiddenConstructor.GetProperty("signature").GetString());
         Assert.Equal(JsonValueKind.Null, hiddenConstructor.GetProperty("returnType").ValueKind);
         Assert.Equal("public", hiddenConstructor.GetProperty("accessibility").GetString());
         Assert.False(hiddenConstructor.TryGetProperty("normalizedSource", out _));
-        Assert.Equal("System.Int32 Tokyo.Gamer::Run()::<lambda#1>", hiddenLambda.GetProperty("signature").GetString());
+        Assert.Equal("System.Int32 Tokyo.Gamer::Run().<lambda#1>", hiddenLambda.GetProperty("signature").GetString());
         Assert.Equal("System.Int32", hiddenLambda.GetProperty("returnType").GetString());
         Assert.Equal(JsonValueKind.Null, hiddenLambda.GetProperty("accessibility").ValueKind);
         Assert.False(hiddenLambda.TryGetProperty("normalizedSource", out _));
@@ -679,7 +682,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 201,
-            displayName: "Test.A::Host()::Local()",
+            displayName: "Test.A::Host().Local()",
             name: "Local",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.LocalFunction,
             returnTypeKey: "System.Int32",
@@ -688,7 +691,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 202,
-            displayName: "Test.A::get_Value()",
+            displayName: "Test.A::[get:Value]()",
             name: "get_Value",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.PropertyGet,
             returnTypeKey: "System.Int32",
@@ -697,7 +700,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 203,
-            displayName: "Test.A::op_Addition(Test.A,Test.A)",
+            displayName: "Test.A::[operator:+](Test.A,Test.A)",
             name: "op_Addition",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.UserDefinedOperator,
             isStatic: true,
@@ -707,7 +710,7 @@ public sealed class OutputFormatterTests
             AsyncRole.None,
             asyncInvolvementDepth: null,
             id: 204,
-            displayName: "Test.A::op_Implicit(Test.A)",
+            displayName: "Test.A::[conversion:implicit:int](Test.A)",
             name: "op_Implicit",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.Conversion,
             isStatic: true,
@@ -717,10 +720,10 @@ public sealed class OutputFormatterTests
 
         var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
         Assert.Equal(
-            "System.Int32 Test.A::Host()::Local()\t" + Environment.NewLine +
-            "public System.Int32 Test.A::get_Value()\t" + Environment.NewLine +
-            "public static Test.A Test.A::op_Addition(Test.A,Test.A)\t" + Environment.NewLine +
-            "public static System.Int32 Test.A::op_Implicit(Test.A)\t" + Environment.NewLine,
+            "System.Int32 Test.A::Host().Local()\t" + Environment.NewLine +
+            "public System.Int32 Test.A::[get:Value]()\t" + Environment.NewLine +
+            "public static Test.A Test.A::[operator:+](Test.A,Test.A)\t" + Environment.NewLine +
+            "public static System.Int32 Test.A::[conversion:implicit:int](Test.A)\t" + Environment.NewLine,
             table);
 
         using var json = CaptureJson(() => new OutputFormatter("json").WriteSymbols(context));
@@ -2119,8 +2122,6 @@ public sealed class OutputFormatterTests
             NamespaceName: namespaceName,
             TypeSimpleName: path.TypeDisplayPath,
             TypeMetadataName: path.TypeIdentityPath,
-            FullyQualifiedName: string.Empty,
-            DisplayName: string.Empty,
             ContainingSymbolId: null,
             Arity: 0,
             ParameterCount: parameters?.Count ?? 0,
@@ -2210,4 +2211,9 @@ public sealed class OutputFormatterTests
         IsGenerated: false,
         UnresolvedName: null,
         ReceiverTypeKey: null);
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        new SymbolPathFormatter().Format(
+            Assert.IsType<SymbolPathData>(symbol.Path),
+            new SymbolPathFormatOptions());
 }

@@ -1,5 +1,6 @@
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Storage.Schema;
 using Microsoft.Data.Sqlite;
 
@@ -7,6 +8,8 @@ namespace CsIndex.Storage.Tests;
 
 public sealed class SqliteIndexTests
 {
+    private static readonly SymbolPathFormatter PathFormatter = new();
+
     [Fact]
     public async Task Save_CreatesSchemaAndCacheEntry()
     {
@@ -890,7 +893,7 @@ public sealed class SqliteIndexTests
             functions.Select(symbol => symbol.Name).Order());
         Assert.Equal(
             ["same-z-generated", "same-m-source-earlier", "same-a-source-later"],
-            functions.Where(symbol => symbol.DisplayName == "Global::Same").Select(symbol => symbol.StableKey));
+            functions.Where(symbol => FormatPath(symbol) == "Global::Same").Select(symbol => symbol.StableKey));
         Assert.Equal(
             ["Nested lambda", "Outer lambda"],
             lambdas.Select(symbol => symbol.Name).Order());
@@ -998,7 +1001,7 @@ public sealed class SqliteIndexTests
         Assert.Equal(2, first.Count);
         Assert.All(first, symbol =>
         {
-            Assert.Equal(first[0].DisplayName, symbol.DisplayName);
+            Assert.Equal(FormatPath(first[0]), FormatPath(symbol));
             Assert.Equal(first[0].DocumentPath, symbol.DocumentPath);
             Assert.Equal(first[0].SourceStart, symbol.SourceStart);
         });
@@ -1006,6 +1009,9 @@ public sealed class SqliteIndexTests
         Assert.Equal(["final-a", "final-z"], first.Select(symbol => symbol.StableKey));
         Assert.Equal(first.Select(symbol => symbol.Id), second.Select(symbol => symbol.Id));
     }
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        PathFormatter.Format(Assert.IsType<SymbolPathData>(symbol.Path), new SymbolPathFormatOptions());
 
     [Fact]
     public async Task GetCallsByCallerIncludingLambdaDescendantsAsync_ReturnsRootsAndNestedLambdaCallers()

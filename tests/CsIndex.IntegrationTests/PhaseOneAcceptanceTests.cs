@@ -1,5 +1,6 @@
 using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Storage;
 
@@ -43,7 +44,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
 
         var definition = Assert.Single(result.Definitions);
-        Assert.Equal("Alpha.AClass::Play()", definition.DisplayName);
+        Assert.Equal("Alpha.AClass::Play()", FormatPath(definition));
         Assert.NotNull(definition.DocumentPath);
     }
 
@@ -58,8 +59,8 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, result.MatchedSymbols.Count);
-        Assert.Contains(result.MatchedSymbols, symbol => symbol.DisplayName == "GameNS.Player::Play()");
-        Assert.Contains(result.MatchedSymbols, symbol => symbol.DisplayName == "PianoNS.Player::Play()");
+        Assert.Contains(result.MatchedSymbols, symbol => FormatPath(symbol) == "GameNS.Player::Play()");
+        Assert.Contains(result.MatchedSymbols, symbol => FormatPath(symbol) == "PianoNS.Player::Play()");
     }
 
     [Fact]
@@ -72,52 +73,25 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Equal(
             ["Alpha.D2::Play()", "Alpha.Game::Play()", "Alpha.IPlayable::Play()",
              "Alpha.InheritedBase::Play()", "Alpha.Pianist::Play()", "Alpha.ProPianist::Play()"],
-            interfaceResult.MatchedSymbols.Select(symbol => symbol.DisplayName).Order(StringComparer.Ordinal));
+            interfaceResult.MatchedSymbols.Select(symbol => FormatPath(symbol)));
 
         var concreteResult = await fixture.Query.FindSymbolsAsync(
             "Alpha.Pianist::Play()", includeOverrides: true,
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(
             ["Alpha.Pianist::Play()", "Alpha.ProPianist::Play()"],
-            concreteResult.MatchedSymbols.Select(symbol => symbol.DisplayName).Order());
+            concreteResult.MatchedSymbols.Select(symbol => FormatPath(symbol)));
     }
 
     [Fact]
-    public async Task IncludeOverridesResolvesInheritedAliasWithinReceiverBranch()
+    public async Task IncludeOverridesDoesNotCreateInheritedAliasRoots()
     {
         await fixture.BuildTask;
         var result = await fixture.Query.FindDefinitionsAsync(
             "Alpha.D1::Play()", includeOverrides: true,
             cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(
-            ["Alpha.D2::Play()", "Alpha.InheritedBase::Play()"],
-            result.Definitions.Select(symbol => symbol.DisplayName).Order());
-        Assert.DoesNotContain(result.Definitions, symbol => symbol.TypeSimpleName == "D1");
-        Assert.DoesNotContain(result.Definitions, symbol => symbol.TypeSimpleName == "OtherBranch");
-    }
 
-    [Fact]
-    public async Task DerivedInterfaceAliasDoesNotIncludeBaseInterfaceSiblingImplementations()
-    {
-        await fixture.BuildTask;
-        var result = await fixture.Query.FindSymbolsAsync(
-            "Alpha.IAdvancedPlayable::Play()", includeOverrides: true,
-            cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Contains(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "InheritedBase");
-        Assert.Contains(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "D2");
-        Assert.DoesNotContain(result.MatchedSymbols, symbol => symbol.TypeSimpleName == "Game");
-    }
-
-    [Fact]
-    public async Task InheritedAliasRequiresOverrideExpansion()
-    {
-        await fixture.BuildTask;
-
-        var result = await fixture.Query.FindSymbolsAsync(
-            "Alpha.D1::Play()",
-            cancellationToken: TestContext.Current.CancellationToken);
-
-        Assert.Empty(result.MatchedSymbols);
+        Assert.Empty(result.Definitions);
     }
 
     [Fact]
@@ -130,29 +104,11 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
 
         var definition = Assert.Single(result.Definitions);
-        Assert.Equal("Alpha.HidingPlayer::Play()", definition.DisplayName);
+        Assert.Equal("Alpha.HidingPlayer::Play()", FormatPath(definition));
     }
 
     [Fact]
-    public async Task SameNameDeclarationSuppressesDeeperBaseOverloads()
-    {
-        await fixture.BuildTask;
-        var cancellationToken = TestContext.Current.CancellationToken;
-
-        var visible = await fixture.Query.FindDefinitionsAsync(
-            "Alpha.HidingLeaf::Select(string)", includeOverrides: true,
-            cancellationToken: cancellationToken);
-        var hidden = await fixture.Query.FindDefinitionsAsync(
-            "Alpha.HidingLeaf::Select(int)", includeOverrides: true,
-            cancellationToken: cancellationToken);
-
-        var definition = Assert.Single(visible.Definitions);
-        Assert.Equal("Alpha.HidingMiddle::Select(string)", definition.DisplayName);
-        Assert.Empty(hidden.Definitions);
-    }
-
-    [Fact]
-    public async Task IncludeOverridesRejectsTypeQueries()
+    public async Task TypeOnlyPositionalSelectorsAreRejectedBeforeOverrideExpansion()
     {
         await fixture.BuildTask;
 
@@ -161,7 +117,9 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 "Alpha.D1", includeOverrides: true,
                 cancellationToken: TestContext.Current.CancellationToken));
 
-        Assert.Equal("--include-overrides requires a method query.", exception.Message);
+        Assert.Equal(
+            "Invalid symbol path: expected exactly one or two top-level '::' separators.",
+            exception.Message);
     }
 
     [Fact]
@@ -204,12 +162,12 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Contains(references.Calls, call => CalleeName(references, call)!.Contains("ProPianist"));
 
         var callees = await fixture.Query.FindCalleesAsync(
-            "Alpha.D1::Play()", GeneratedFilter.Include,
+            "Alpha.InheritedBase::Play()", GeneratedFilter.Include,
             includeOverrides: true,
             cancellationToken: cancellationToken);
         Assert.Contains(callees.Calls, call => CalleeName(callees, call)!.Contains("BaseBody"));
         Assert.Contains(callees.Calls, call => CalleeName(callees, call)!.Contains("D2Body"));
-        Assert.DoesNotContain(callees.Calls, call => CalleeName(callees, call)!.Contains("OtherBody"));
+        Assert.Contains(callees.Calls, call => CalleeName(callees, call)!.Contains("OtherBody"));
     }
 
     [Fact]
@@ -274,37 +232,37 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
 
         var symbols = await fixture.Query.FindSymbolsAsync(
-            "Alpha.LocalPlayer::Local()",
+            "Alpha.LocalPlayer::Execute().Local()",
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
         var definitions = await fixture.Query.FindDefinitionsAsync(
-            "Alpha.LocalPlayer::Local()",
+            "Alpha.LocalPlayer::Execute().Local()",
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
         var references = await fixture.Query.FindReferencesAsync(
-            "Alpha.LocalPlayer::Local()",
+            "Alpha.LocalPlayer::Execute().Local()",
             GeneratedFilter.Include,
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
         var callers = await fixture.Query.FindCallersAsync(
-            "Alpha.LocalPlayer::Local()",
+            "Alpha.LocalPlayer::Execute().Local()",
             GeneratedFilter.Include,
             DispatchSearchMode.Static,
             CallerScope.Direct,
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
         var callees = await fixture.Query.FindCalleesAsync(
-            "Alpha.LocalPlayer::Local()",
+            "Alpha.LocalPlayer::Execute().Local()",
             GeneratedFilter.Include,
             includeOverrides: includeOverrides,
             cancellationToken: cancellationToken);
 
         const string localPath = "Alpha.LocalPlayer::Execute().Local()";
-        Assert.Equal(localPath, Assert.Single(symbols.MatchedSymbols).DisplayName);
-        Assert.Equal(localPath, Assert.Single(definitions.Definitions).DisplayName);
-        Assert.Equal(localPath, Assert.Single(references.Context.MatchedSymbols).DisplayName);
-        Assert.Equal(localPath, Assert.Single(callers.Context.MatchedSymbols).DisplayName);
-        Assert.Equal(localPath, Assert.Single(callees.Context.MatchedSymbols).DisplayName);
+        Assert.Equal(localPath, FormatPath(Assert.Single(symbols.MatchedSymbols)));
+        Assert.Equal(localPath, FormatPath(Assert.Single(definitions.Definitions)));
+        Assert.Equal(localPath, FormatPath(Assert.Single(references.Context.MatchedSymbols)));
+        Assert.Equal(localPath, FormatPath(Assert.Single(callers.Context.MatchedSymbols)));
+        Assert.Equal(localPath, FormatPath(Assert.Single(callees.Context.MatchedSymbols)));
         Assert.Single(references.Calls);
         Assert.Single(callers.Calls);
         var callee = Assert.Single(callees.Calls);
@@ -313,7 +271,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
-    public async Task OverrideAwareExactTargetsSuppressInheritedFallbackPerReceiverTypeId()
+    public async Task ExactRootsDoNotUseSameNamedReceiverFallbackAndSharedTypeAncestorsRemainValid()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Path.Combine(
@@ -328,25 +286,62 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             await index.SaveAsync(CreateDuplicateReceiverSnapshot(), cancellationToken);
             var query = new SemanticQueryService(index.CreateQueryRepository());
 
-            var result = await query.FindSymbolsAsync(
-                "Duplicate.Receiver::Local()",
+            var exactResult = await query.FindSymbolsAsync(
+                "Duplicate.Receiver::Execute().Local()",
                 includeOverrides: true,
                 cancellationToken: cancellationToken);
-            var cyclicResult = await query.FindSymbolsAsync(
-                    "Duplicate.Receiver::CycleLocal()",
-                    includeOverrides: true,
-                    cancellationToken: cancellationToken)
-                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            var sharedAncestorResult = await query.FindSymbolsAsync(
+                "Duplicate.Receiver::**.CycleLocal()",
+                cancellationToken: cancellationToken);
 
             Assert.Equal(
-                ["Duplicate.LocalBaseB::Local()", "Duplicate.Receiver::Execute().Local()"],
-                result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+                ["Duplicate.Receiver::Execute().Local()"],
+                exactResult.MatchedSymbols.Select(symbol => FormatPath(symbol)));
             Assert.DoesNotContain(
-                result.MatchedSymbols,
-                symbol => symbol.DisplayName == "Duplicate.LocalBaseA::Local()");
+                exactResult.MatchedSymbols,
+                symbol => symbol.TypeSimpleName is "LocalBaseA" or "LocalBaseB");
             Assert.Equal(
-                "Duplicate.Receiver::CycleOwnerA().CycleLocal()",
-                Assert.Single(cyclicResult.MatchedSymbols).DisplayName);
+                [
+                    "Duplicate.Receiver::CycleOwnerA().CycleLocal()",
+                    "Duplicate.Receiver::CycleOwnerB().CycleLocal()",
+                ],
+                sharedAncestorResult.MatchedSymbols.Select(symbol => FormatPath(symbol)));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MalformedPersistedContainmentCycleThrowsClearInvariantFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "csindex-containment-cycle-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var index = new SqliteIndex(Path.Combine(root, "index.sqlite"));
+            await index.SaveAsync(
+                CreateDuplicateReceiverSnapshot(malformedContainmentCycle: true),
+                cancellationToken);
+            var query = new SemanticQueryService(index.CreateQueryRepository());
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => query.FindSymbolsAsync(
+                "Duplicate.Receiver::**.CycleLocal()",
+                cancellationToken: cancellationToken));
+
+            Assert.Contains(
+                "Stored containment chain for candidate symbol ID",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("cycle detected at symbol ID", exception.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -373,7 +368,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         Assert.Contains(functions.MatchedSymbols, symbol =>
-            symbol.DisplayName == "Alpha.AClass::Play()" && symbol.Kind == IndexedSymbolKind.Method);
+            FormatPath(symbol) == "Alpha.AClass::Play()" && symbol.Kind == IndexedSymbolKind.Method);
         Assert.Contains(functions.MatchedSymbols, symbol =>
             symbol.Kind == IndexedSymbolKind.Lambda && symbol.TypeSimpleName == "LambdaPlayer");
         Assert.All(functions.MatchedSymbols, symbol =>
@@ -396,7 +391,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Contains(symbols.MatchedSymbols, symbol =>
             symbol.Kind == IndexedSymbolKind.Lambda && symbol.TypeSimpleName == "AsyncPlayer");
         Assert.DoesNotContain(symbols.MatchedSymbols, symbol =>
-            symbol.DisplayName == "Alpha.AsyncPlayer::Sync()");
+            FormatPath(symbol) == "Alpha.AsyncPlayer::Sync()");
         Assert.All(symbols.MatchedSymbols, symbol => Assert.NotNull(symbol.AsyncInvolvementDepth));
     }
 
@@ -446,7 +441,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             CallerScope.Direct,
             cancellationToken: cancellationToken);
         var generic = await fixture.Query.FindReferencesAsync(
-            "Alpha.Converter::Convert(System.Object)",
+            "Alpha.Converter::Convert<T>(object)",
             GeneratedFilter.Include,
             cancellationToken: cancellationToken);
 
@@ -543,7 +538,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Single(result.Definitions);
     }
 
-    private static IndexSnapshot CreateDuplicateReceiverSnapshot()
+    private static IndexSnapshot CreateDuplicateReceiverSnapshot(bool malformedContainmentCycle = false)
     {
         var snapshot = new IndexSnapshot
         {
@@ -570,8 +565,18 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         AddType("a-receiver", "Receiver", "project-a");
         AddMethod("a-owner", "Receiver", "a-receiver", "Execute", "project-a");
         AddMethod("a-local", "Receiver", "a-owner", "Local", "project-a", "Execute().Local()");
-        AddMethod("cycle-owner-a", "Receiver", "cycle-owner-b", "CycleOwnerA", "project-a");
-        AddMethod("cycle-owner-b", "Receiver", "cycle-owner-a", "CycleOwnerB", "project-a");
+        AddMethod(
+            "cycle-owner-a",
+            "Receiver",
+            malformedContainmentCycle ? "cycle-owner-b" : "a-receiver",
+            "CycleOwnerA",
+            "project-a");
+        AddMethod(
+            "cycle-owner-b",
+            "Receiver",
+            malformedContainmentCycle ? "cycle-owner-a" : "a-receiver",
+            "CycleOwnerB",
+            "project-a");
         AddMethod(
             "cycle-local",
             "Receiver",
@@ -579,6 +584,13 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             "CycleLocal",
             "project-a",
             "CycleOwnerA().CycleLocal()");
+        AddMethod(
+            "cycle-local-b",
+            "Receiver",
+            "cycle-owner-b",
+            "CycleLocal",
+            "project-a",
+            "CycleOwnerB().CycleLocal()");
         AddRelation("a-receiver", "a-base");
 
         AddType("b-base", "LocalBaseB", "project-b");
@@ -699,14 +711,19 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         }
     }
 
+    private static string FormatPath(StoredSymbol symbol) =>
+        new SymbolPathFormatter().Format(
+            Assert.IsType<SymbolPathData>(symbol.Path),
+            new SymbolPathFormatOptions());
+
     private static string? CalleeName(CallResult result, StoredCall call)
     {
         var id = call.CalleeDefinitionId ?? call.CalleeSymbolId;
         return id is long endpointId && result.SymbolsById.TryGetValue(endpointId, out var symbol)
-            ? symbol.DisplayName
+            ? FormatPath(symbol)
             : call.UnresolvedName;
     }
 
     private static string CallerName(CallResult result, StoredCall call) =>
-        result.SymbolsById[call.CallerSymbolId].DisplayName;
+        FormatPath(result.SymbolsById[call.CallerSymbolId]);
 }

@@ -23,10 +23,10 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
 
         Assert.True(result.Found);
         Assert.False(result.Truncated);
-        Assert.Equal("Alpha.AsyncGraph::Start()", result.Root.DisplayName);
+        Assert.Equal("Alpha.AsyncGraph::Start()", FormatPath(result.Root));
         Assert.Equal(
             ["Alpha.AsyncGraph::Start()", "Alpha.AsyncGraph::Middle()", "Alpha.AsyncGraph::EndAsync()"],
-            result.Nodes.Select(node => node.DisplayName));
+            result.Nodes.Select(node => FormatPath(node)));
         Assert.Equal([2, 1, 0], result.Nodes.Select(node => node.AsyncInvolvementDepth));
         Assert.Null(result.Nodes[^1].AsyncNextSymbolId);
     }
@@ -39,12 +39,12 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         var filter = new FunctionTargetFilter(IndexedSymbolKind.Lambda, AsyncStatusFilter.Sync);
 
         var first = await fixture.Query.FindAsyncPathAsync(
-            "Alpha.AsyncGraph::ALambdaPathOwner()::<lambda#1>",
+            "Alpha.AsyncGraph::ALambdaPathOwner().<lambda#1>",
             filter: filter,
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
         var second = await fixture.Query.FindAsyncPathAsync(
-            "Alpha.AsyncGraph::ZLambdaPathOwner()::<lambda#1>",
+            "Alpha.AsyncGraph::ZLambdaPathOwner().<lambda#1>",
             filter: filter,
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
@@ -58,11 +58,11 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 "Alpha.AsyncGraph::Middle()",
                 "Alpha.AsyncGraph::EndAsync()",
             ],
-            first.Nodes.Select(node => node.DisplayName));
+            first.Nodes.Select(node => FormatPath(node)));
         Assert.Contains(first.Nodes, node => node.Kind == IndexedSymbolKind.Method);
         Assert.Contains(first.Nodes, node => node.AsyncRole != AsyncRole.None);
         Assert.True(second.Found);
-        Assert.Equal("Alpha.AsyncGraph::ZLambdaPathOwner().<lambda#1>", second.Root.DisplayName);
+        Assert.Equal("Alpha.AsyncGraph::ZLambdaPathOwner().<lambda#1>", FormatPath(second.Root));
     }
 
     [Fact]
@@ -82,10 +82,10 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
 
         Assert.True(self.Found);
         Assert.False(self.Truncated);
-        Assert.Equal(["Alpha.AsyncGraph::SelfAsync()"], self.Nodes.Select(node => node.DisplayName));
+        Assert.Equal(["Alpha.AsyncGraph::SelfAsync()"], self.Nodes.Select(node => FormatPath(node)));
         Assert.False(unreachable.Found);
         Assert.False(unreachable.Truncated);
-        Assert.Equal("Alpha.AsyncGraph::Unreachable()", unreachable.Root.DisplayName);
+        Assert.Equal("Alpha.AsyncGraph::Unreachable()", FormatPath(unreachable.Root));
         Assert.Empty(unreachable.Nodes);
     }
 
@@ -113,24 +113,24 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 selected.Id,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             var result = await fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             Assert.Equal(
-                [root.DisplayName, selected.DisplayName, "Alpha.AsyncGraph::EqualEndAsync()"],
-                result.Nodes.Select(node => node.DisplayName));
+                [FormatPath(root), FormatPath(selected), "Alpha.AsyncGraph::EqualEndAsync()"],
+                result.Nodes.Select(node => FormatPath(node)));
         }
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 root.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -159,9 +159,9 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         var afterNextId = Assert.IsType<long>(after.Root.AsyncNextSymbolId);
         var afterNext = Assert.Single(after.Nodes, node => node.Id == afterNextId);
 
-        Assert.Equal(before.Nodes.Select(node => node.DisplayName), after.Nodes.Select(node => node.DisplayName));
-        Assert.Equal(beforeNext.DisplayName, afterNext.DisplayName);
-        Assert.Contains(afterNext.DisplayName, new[] { "Alpha.AsyncGraph::EqualLeft()", "Alpha.AsyncGraph::EqualRight()" });
+        Assert.Equal(before.Nodes.Select(node => FormatPath(node)), after.Nodes.Select(node => FormatPath(node)));
+        Assert.Equal(FormatPath(beforeNext), FormatPath(afterNext));
+        Assert.Contains(FormatPath(afterNext), new[] { "Alpha.AsyncGraph::EqualLeft()", "Alpha.AsyncGraph::EqualRight()" });
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         Assert.False(result.Truncated);
         Assert.Equal(
             ["Alpha.AsyncGraph::CycleStart()", "Alpha.AsyncGraph::CycleMiddle()", "Alpha.AsyncGraph::EndAsync()"],
-            result.Nodes.Select(node => node.DisplayName));
+            result.Nodes.Select(node => FormatPath(node)));
     }
 
     [Fact]
@@ -194,7 +194,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
 
         Assert.True(result.Found);
         Assert.True(result.Truncated);
-        Assert.Equal(["Alpha.AsyncGraph::Start()"], result.Nodes.Select(node => node.DisplayName));
+        Assert.Equal(["Alpha.AsyncGraph::Start()"], result.Nodes.Select(node => FormatPath(node)));
     }
 
     [Fact]
@@ -218,7 +218,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
             Assert.Contains("non-origin", exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -268,7 +268,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                symbol.DisplayName,
+                FormatPath(symbol),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
             Assert.Contains(detail, exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -303,7 +303,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             sourceOnly: false,
             cancellationToken: cancellationToken);
         var target = Assert.Single(kind == IndexedSymbolKind.Type
-            ? candidates.Where(symbol => symbol.DisplayName == "Alpha.AsyncGraph")
+            ? candidates.Where(symbol => FormatPath(symbol) == "Alpha.AsyncGraph")
             : candidates.Take(1));
 
         try
@@ -317,7 +317,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 maxNodes: 1,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
@@ -362,7 +362,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var metadataException = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 maxNodes: 1,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
@@ -405,7 +405,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var exception = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 maxNodes: 1,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
@@ -442,7 +442,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 cancellationToken);
 
             var exception = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
             Assert.Equal(
@@ -492,19 +492,19 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         var filter = new FunctionTargetFilter(IndexedSymbolKind.Lambda, AsyncStatusFilter.Sync);
 
         var asyncPath = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindAsyncPathAsync(
-            "::<lambda#1>",
+            "**::**.<lambda#1>",
             filter: filter,
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken));
         var callerTree = await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.FindCallerTreeAsync(
-            "::<lambda#1>",
+            "**::**.<lambda#1>",
             filter: filter,
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken));
 
         Assert.Equal(asyncPath.Message, callerTree.Message);
         Assert.StartsWith(
-            "Graph query is ambiguous for '::<lambda#1>'. Candidates: ",
+            "Graph query is ambiguous for '**::**.<lambda#1>'. Candidates: ",
             asyncPath.Message,
             StringComparison.Ordinal);
         var firstCandidate = asyncPath.Message.IndexOf(
@@ -530,20 +530,20 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 asyncNextSymbolId: null,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
         }
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 root.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -563,21 +563,21 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 long.MaxValue,
                 fixture.PrimaryProfileName,
                 allowMissingTarget: true,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
         }
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 root.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -597,14 +597,14 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 long.MaxValue,
                 fixture.PrimaryProfileName,
                 allowMissingTarget: true,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 maxNodes: 1,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
@@ -612,7 +612,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 root.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -632,7 +632,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                middle.DisplayName,
+                FormatPath(middle),
                 asyncNextSymbolId: null,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -646,7 +646,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                middle.DisplayName,
+                FormatPath(middle),
                 middle.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -670,13 +670,13 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                origin.DisplayName,
+                FormatPath(origin),
                 middle.Id,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                middle.DisplayName,
+                FormatPath(middle),
                 maxNodes: 1,
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
@@ -684,7 +684,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                origin.DisplayName,
+                FormatPath(origin),
                 origin.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -708,20 +708,20 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 otherProfileSymbol.Id,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                root.DisplayName,
+                FormatPath(root),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
         }
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                root.DisplayName,
+                FormatPath(root),
                 root.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -749,37 +749,37 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         try
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                middle.DisplayName,
+                FormatPath(middle),
                 start.Id,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             var cycleException = await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                start.DisplayName,
+                FormatPath(start),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
             Assert.Contains("cycle", cycleException.Message, StringComparison.OrdinalIgnoreCase);
 
             await fixture.SetAsyncNextSymbolIdAsync(
-                origin.DisplayName,
+                FormatPath(origin),
                 middle.Id,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
             await Assert.ThrowsAsync<IndexDatabaseException>(() => fixture.Query.FindAsyncPathAsync(
-                origin.DisplayName,
+                FormatPath(origin),
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken));
         }
         finally
         {
             await fixture.SetAsyncNextSymbolIdAsync(
-                middle.DisplayName,
+                FormatPath(middle),
                 middle.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
             await fixture.SetAsyncNextSymbolIdAsync(
-                origin.DisplayName,
+                FormatPath(origin),
                 origin.AsyncNextSymbolId,
                 fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
@@ -810,8 +810,8 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 ("Alpha.CallerGraph::DepthTwo()", 2),
                 ("Alpha.CallerGraph::DepthThree()", 3),
             ],
-            bounded.Nodes.Select(node => (node.Symbol.DisplayName, node.Depth)));
-        Assert.DoesNotContain(bounded.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::DepthFour()");
+            bounded.Nodes.Select(node => (FormatPath(node.Symbol), node.Depth)));
+        Assert.DoesNotContain(bounded.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::DepthFour()");
         Assert.Equal(
             [
                 ("Alpha.CallerGraph::DepthTarget()", 0),
@@ -820,7 +820,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 ("Alpha.CallerGraph::DepthThree()", 3),
                 ("Alpha.CallerGraph::DepthFour()", 4),
             ],
-            unlimited.Nodes.Select(node => (node.Symbol.DisplayName, node.Depth)));
+            unlimited.Nodes.Select(node => (FormatPath(node.Symbol), node.Depth)));
     }
 
     [Fact]
@@ -834,15 +834,15 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
         var objectCreation = await fixture.Query.FindCallerTreeAsync(
-            "Alpha.GraphCreated::.ctor()",
+            "Alpha.GraphCreated::[constructor]()",
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
         var directCaller = Assert.Single(invocation.Nodes, node => node.Depth == 1).Symbol;
         var objectCreator = Assert.Single(objectCreation.Nodes, node => node.Depth == 1).Symbol;
 
-        Assert.Equal("Alpha.CallerGraph::DirectCaller()", directCaller.DisplayName);
+        Assert.Equal("Alpha.CallerGraph::DirectCaller()", FormatPath(directCaller));
         Assert.Contains(new CallerTreeEdge(directCaller.Id, invocation.Root.Id), invocation.Edges);
-        Assert.Equal("Alpha.CallerGraph::ObjectCreator()", objectCreator.DisplayName);
+        Assert.Equal("Alpha.CallerGraph::ObjectCreator()", FormatPath(objectCreator));
         Assert.Contains(new CallerTreeEdge(objectCreator.Id, objectCreation.Root.Id), objectCreation.Edges);
     }
 
@@ -856,8 +856,8 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             depth: 0,
             profileName: fixture.PrimaryProfileName,
             cancellationToken: TestContext.Current.CancellationToken);
-        var right = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::RecursiveRight()").Symbol;
-        var left = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::RecursiveLeft()").Symbol;
+        var right = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::RecursiveRight()").Symbol;
+        var left = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::RecursiveLeft()").Symbol;
 
         Assert.Equal(result.Nodes.Count, result.Nodes.Select(node => node.Symbol.Id).Distinct().Count());
         Assert.Equal(result.Edges.Count, result.Edges.Distinct().Count());
@@ -877,8 +877,8 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
         var root = result.Root;
-        var left = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::BoundaryLeft()").Symbol;
-        var right = Assert.Single(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::BoundaryRight()").Symbol;
+        var left = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::BoundaryLeft()").Symbol;
+        var right = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::BoundaryRight()").Symbol;
         var expected = new[]
         {
             new CallerTreeEdge(left.Id, root.Id),
@@ -886,7 +886,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             new CallerTreeEdge(right.Id, left.Id),
             new CallerTreeEdge(left.Id, right.Id),
         };
-        var symbolIds = result.Nodes.ToDictionary(node => node.Symbol.DisplayName, node => node.Symbol.Id, StringComparer.Ordinal);
+        var symbolIds = result.Nodes.ToDictionary(node => FormatPath(node.Symbol), node => node.Symbol.Id, StringComparer.Ordinal);
         var formatter = new GraphOutputFormatter(shortNames: false);
 
         Assert.Equal(expected, result.Edges);
@@ -913,8 +913,8 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             cancellationToken: TestContext.Current.CancellationToken);
         var lambda = Assert.Single(result.Nodes, node => node.Depth == 1).Symbol;
 
-        Assert.Contains("Alpha.CallerGraph::LambdaOwner().<lambda#1>", lambda.DisplayName, StringComparison.Ordinal);
-        Assert.DoesNotContain(result.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::LambdaOwner()");
+        Assert.Contains("Alpha.CallerGraph::LambdaOwner().<lambda#1>", FormatPath(lambda), StringComparison.Ordinal);
+        Assert.DoesNotContain(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::LambdaOwner()");
         Assert.Contains(new CallerTreeEdge(lambda.Id, result.Root.Id), result.Edges);
     }
 
@@ -923,7 +923,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
     {
         await fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
-        const string lambdaQuery = "Alpha.CallerGraph::LambdaTreeOwner()::<lambda#1>";
+        const string lambdaQuery = "Alpha.CallerGraph::LambdaTreeOwner().<lambda#1>";
         const string lambdaDisplay = "Alpha.CallerGraph::LambdaTreeOwner().<lambda#1>";
         await fixture.AddResolvedCallAsync(
             "Alpha.CallerGraph::LambdaRootCaller()",
@@ -938,14 +938,14 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellationToken);
 
-        Assert.Equal(lambdaDisplay, result.Root.DisplayName);
+        Assert.Equal(lambdaDisplay, FormatPath(result.Root));
         Assert.Equal(IndexedSymbolKind.Lambda, result.Root.Kind);
         var caller = Assert.Single(result.Nodes, node => node.Depth == 1).Symbol;
-        Assert.Equal("Alpha.CallerGraph::LambdaRootCaller()", caller.DisplayName);
+        Assert.Equal("Alpha.CallerGraph::LambdaRootCaller()", FormatPath(caller));
         Assert.Equal(IndexedSymbolKind.Method, caller.Kind);
         Assert.DoesNotContain(
             result.Nodes,
-            node => node.Symbol.DisplayName == "Alpha.CallerGraph::LambdaTreeOwner()");
+            node => FormatPath(node.Symbol) == "Alpha.CallerGraph::LambdaTreeOwner()");
         Assert.Contains(new CallerTreeEdge(caller.Id, result.Root.Id), result.Edges);
     }
 
@@ -972,7 +972,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 "Alpha.CallerGraph::ACaller()",
                 "Alpha.CallerGraph::ZCaller()",
             ],
-            ordering.Nodes.Select(node => node.Symbol.DisplayName));
+            ordering.Nodes.Select(node => FormatPath(node.Symbol)));
         Assert.All(metadata.Nodes, node =>
         {
             Assert.NotNull(node.Symbol.DocumentPath);
@@ -1004,7 +1004,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 "Alpha.CallerGraph::FilterTarget()",
                 "Alpha.CallerGraph::AllowedFilterCaller()",
             ],
-            result.Nodes.Select(node => node.Symbol.DisplayName));
+            result.Nodes.Select(node => FormatPath(node.Symbol)));
         Assert.All(result.Nodes, node =>
         {
             Assert.NotNull(node.Symbol.DocumentPath);
@@ -1040,7 +1040,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 "Alpha.CallerGraph::A2()",
                 "Alpha.CallerGraph::Z2()",
             ],
-            unlimited.Nodes.Select(node => node.Symbol.DisplayName));
+            unlimited.Nodes.Select(node => FormatPath(node.Symbol)));
         Assert.Equal(
             [
                 "Alpha.CallerGraph::Root()",
@@ -1048,10 +1048,10 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 "Alpha.CallerGraph::Z()",
                 "Alpha.CallerGraph::A2()",
             ],
-            limited.Nodes.Select(node => node.Symbol.DisplayName));
+            limited.Nodes.Select(node => FormatPath(node.Symbol)));
         Assert.True(limited.Truncated);
-        Assert.Contains(limited.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::A2()");
-        Assert.DoesNotContain(limited.Nodes, node => node.Symbol.DisplayName == "Alpha.CallerGraph::Z2()");
+        Assert.Contains(limited.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::A2()");
+        Assert.DoesNotContain(limited.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::Z2()");
     }
 
     [Fact]
@@ -1087,7 +1087,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             profileName: fixture.SecondaryProfileName,
             cancellationToken: cancellationToken);
         Assert.Equal(fixture.SecondaryProfileName, secondary.Profile.Name);
-        Assert.Equal(["Tokyo.SecondaryOnly::Play()"], secondary.Nodes.Select(node => node.Symbol.DisplayName));
+        Assert.Equal(["Tokyo.SecondaryOnly::Play()"], secondary.Nodes.Select(node => FormatPath(node.Symbol)));
 
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -1171,6 +1171,8 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             edge.GetProperty("callerSymbolId").GetInt64(),
             edge.GetProperty("calleeSymbolId").GetInt64()))
         .ToArray();
+
+    private string FormatPath(StoredSymbol symbol) => fixture.FormatPath(symbol);
 
     private static string EdgeKey(CallerTreeEdge edge) =>
         $"{edge.CallerSymbolId:D20}->{edge.CalleeSymbolId:D20}";

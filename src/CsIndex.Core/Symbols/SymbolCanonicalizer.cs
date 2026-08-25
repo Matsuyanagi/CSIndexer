@@ -154,10 +154,12 @@ public sealed class SymbolCanonicalizer
         string? containingSymbolKey = null,
         SymbolPathData? containingPath = null)
     {
-        var stableKey = GetDefinitionStableKey(NormalizeLogicalMethod(method), projectKey);
         var containingType = method.ContainingType;
         var methodSignature = SymbolSignatureCanonicalizer.CanonicalizeMethod(method);
         var segment = CreateMethodSegment(method, methodSignature);
+        var stableKey = method.MethodKind == MethodKind.LocalFunction
+            ? $"{containingSymbolKey ?? throw new InvalidOperationException("A local function requires an immediate containing symbol key.")}|local:{segment.Identity}"
+            : GetDefinitionStableKey(NormalizeLogicalMethod(method), projectKey);
         var path = CreatePath(containingType, segment, containingPath);
         var displayName = FormatDisplayName(path);
         return new SymbolData

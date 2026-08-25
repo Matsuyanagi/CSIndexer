@@ -1,5 +1,8 @@
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
+using CsIndex.Query;
 using CsIndex.Query.Symbols;
+using CsIndex.Storage;
 
 namespace CsIndex.IntegrationTests;
 
@@ -18,8 +21,8 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
         var actual = await fixture.Query.SearchSymbolsAsync(
             Request("Alpha.AClass::Play"),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
 
         Assert.Equal(
             expected.MatchedSymbols.Select(symbol => symbol.Id),
@@ -27,33 +30,26 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
-    public async Task PatternSearch_MatchesWildcardComponentAndRegexRequests()
+    public async Task PatternSearch_MatchesWildcardAndTypedComponentRequests()
     {
         await fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
 
         var wildcard = await fixture.Query.SearchSymbolsAsync(
             Request("*.Gamer::Play"),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var components = await fixture.Query.SearchSymbolsAsync(
             Request(null, namespacePattern: "Tokyo", typePattern: "Gamer", methodPattern: "Play"),
-            fixture.PrimaryProfileName,
-            cancellationToken);
-        var regex = await fixture.Query.SearchSymbolsAsync(
-            Request("^(Tokyo|Fukuoka)\\.Gamer::P[lr]ay$", useRegex: true),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
 
         Assert.Equal(
             ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
-            wildcard.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            wildcard.MatchedSymbols.Select(FormatPath));
         Assert.Equal(
-            wildcard.MatchedSymbols.Select(symbol => symbol.DisplayName),
-            components.MatchedSymbols.Select(symbol => symbol.DisplayName));
-        Assert.Equal(
-            ["Fukuoka.Gamer::Pray()", "Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
-            regex.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            wildcard.MatchedSymbols.Select(FormatPath),
+            components.MatchedSymbols.Select(FormatPath));
     }
 
     [Fact]
@@ -63,25 +59,25 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
 
         var suffix = await fixture.Query.SearchSymbolsAsync(
-            Request("*.<lambda#1>", typePattern: "LambdaSearch", kind: IndexedSymbolKind.Lambda),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            Request(null, typePattern: "LambdaSearch", methodPattern: "**.<lambda#1>", kind: IndexedSymbolKind.Lambda),
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var ownerSuffix = await fixture.Query.SearchSymbolsAsync(
-            Request("*Function().<lambda#2>", kind: IndexedSymbolKind.Lambda),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            Request(null, methodPattern: "**.Function().<lambda#2>", kind: IndexedSymbolKind.Lambda),
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var fullName = await fixture.Query.SearchSymbolsAsync(
             Request("Tokyo.LambdaSearch::Function().<lambda#2>", kind: IndexedSymbolKind.Lambda),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var nestedOwnerSuffix = await fixture.Query.SearchSymbolsAsync(
-            Request("*Function().<lambda#2>.<lambda#1>", kind: IndexedSymbolKind.Lambda),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            Request(null, methodPattern: "**.Function().<lambda#2>.<lambda#1>", kind: IndexedSymbolKind.Lambda),
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var nestedFullName = await fixture.Query.SearchSymbolsAsync(
             Request("Tokyo.LambdaSearch::Function().<lambda#2>.<lambda#1>", kind: IndexedSymbolKind.Lambda),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
 
         Assert.Equal(
             new[]
@@ -92,16 +88,16 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
                 "Tokyo.LambdaSearch::Function().<lambda#1>",
                 "Tokyo.LambdaSearch::Function().<lambda#2>.<lambda#1>",
             }.Order(StringComparer.Ordinal),
-            suffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            suffix.MatchedSymbols.Select(FormatPath));
         Assert.Equal(
             ["Tokyo.LambdaSearch::Function().<lambda#2>"],
-            ownerSuffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            ownerSuffix.MatchedSymbols.Select(FormatPath));
         Assert.Equal(
             ["Tokyo.LambdaSearch::Function().<lambda#2>"],
-            fullName.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            fullName.MatchedSymbols.Select(FormatPath));
         Assert.Equal(
             ["Tokyo.LambdaSearch::Function().<lambda#2>.<lambda#1>"],
-            nestedOwnerSuffix.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            nestedOwnerSuffix.MatchedSymbols.Select(FormatPath));
         Assert.Equal(
             nestedOwnerSuffix.MatchedSymbols.Select(symbol => symbol.Id),
             nestedFullName.MatchedSymbols.Select(symbol => symbol.Id));
@@ -117,10 +113,10 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
                 "Tokyo.Gamer::Play",
                 includes: ["PrintVar(", "\"required\""],
                 excludes: ["BlockedMarker("]),
-            fixture.PrimaryProfileName,
-            TestContext.Current.CancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.Equal(["Tokyo.Gamer::Play()"], result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.Equal(["Tokyo.Gamer::Play()"], result.MatchedSymbols.Select(FormatPath));
         Assert.False(result.ShowSource);
     }
 
@@ -137,7 +133,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         Assert.True(result.ShowSource);
         Assert.Equal(
             ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
-            result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            result.MatchedSymbols.Select(FormatPath));
         Assert.All(result.MatchedSymbols, symbol => Assert.NotNull(symbol.NormalizedSource));
     }
 
@@ -153,7 +149,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
 
         Assert.Equal(
             ["Tokyo.Gamer::Play()", "Tokyo.Gamer::Play(string)"],
-            result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            result.MatchedSymbols.Select(FormatPath));
         Assert.All(result.MatchedSymbols, symbol =>
         {
             Assert.True(symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda);
@@ -178,7 +174,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
                 "Tokyo.Gamer::Play(string)",
                 "Tokyo.Gamer::PrintVar(string)",
             ],
-            result.MatchedSymbols.Select(symbol => symbol.DisplayName));
+            result.MatchedSymbols.Select(FormatPath));
         Assert.All(result.MatchedSymbols, symbol => Assert.NotNull(symbol.NormalizedSource));
     }
 
@@ -188,15 +184,16 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         await fixture.BuildTask;
 
         var result = await fixture.Query.SearchSourceAsync(
-            includes: ["PrintVar(", "\"required\""],
-            excludes: ["BlockedMarker("],
-            ignoreCase: false,
+            Request(
+                null,
+                includes: ["PrintVar(", "\"required\""],
+                excludes: ["BlockedMarker("]),
             profileName: fixture.PrimaryProfileName,
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(result.ShowSource);
-        Assert.Contains(result.MatchedSymbols, symbol => symbol.DisplayName == "Tokyo.SourceBodies::Match()");
-        Assert.DoesNotContain(result.MatchedSymbols, symbol => symbol.DisplayName == "Tokyo.SourceBodies::Excluded()");
+        Assert.Contains(result.MatchedSymbols, symbol => FormatPath(symbol) == "Tokyo.SourceBodies::Match()");
+        Assert.DoesNotContain(result.MatchedSymbols, symbol => FormatPath(symbol) == "Tokyo.SourceBodies::Excluded()");
     }
 
     [Fact]
@@ -205,20 +202,16 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         await fixture.BuildTask;
 
         var literal = await fixture.Query.SearchSourceAsync(
-            includes: ["/*keep*/ //keep"],
-            excludes: [],
-            ignoreCase: false,
+            Request(null, includes: ["/*keep*/ //keep"]),
             profileName: fixture.PrimaryProfileName,
             cancellationToken: TestContext.Current.CancellationToken);
         var comment = await fixture.Query.SearchSourceAsync(
-            includes: ["comment-only-marker"],
-            excludes: [],
-            ignoreCase: false,
+            Request(null, includes: ["comment-only-marker"]),
             profileName: fixture.PrimaryProfileName,
             cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.Contains(literal.MatchedSymbols, symbol => symbol.DisplayName == "Tokyo.SourceBodies::Match()");
-        Assert.DoesNotContain(comment.MatchedSymbols, symbol => symbol.DisplayName == "Tokyo.SourceBodies::Match()");
+        Assert.Contains(literal.MatchedSymbols, symbol => FormatPath(symbol) == "Tokyo.SourceBodies::Match()");
+        Assert.DoesNotContain(comment.MatchedSymbols, symbol => FormatPath(symbol) == "Tokyo.SourceBodies::Match()");
     }
 
     [Fact]
@@ -229,13 +222,13 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
 
         var allMethods = await fixture.Query.SearchSymbolsAsync(
             Request(null, kind: IndexedSymbolKind.Method),
-            fixture.PrimaryProfileName,
-            cancellationToken);
-        var sourceLess = allMethods.MatchedSymbols.First(symbol => symbol.NormalizedSource is null);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+        var sourceLess = allMethods.MatchedSymbols.First(symbol => symbol.PreferredDeclarationId is null);
         var filtered = await fixture.Query.SearchSymbolsAsync(
-            Request(sourceLess.DisplayName, includes: ["unreachable source term"]),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            Request(FormatPath(sourceLess), includes: ["unreachable source term"]),
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
 
         Assert.DoesNotContain(filtered.MatchedSymbols, symbol => symbol.Id == sourceLess.Id);
     }
@@ -248,15 +241,15 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
 
         var primary = await fixture.Query.SearchSymbolsAsync(
             Request("Tokyo.SecondaryOnly::Play()"),
-            fixture.PrimaryProfileName,
-            cancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
         var secondary = await fixture.Query.SearchSymbolsAsync(
             Request("Tokyo.SecondaryOnly::Play()"),
-            fixture.SecondaryProfileName,
-            cancellationToken);
+            profileName: fixture.SecondaryProfileName,
+            cancellationToken: cancellationToken);
 
         Assert.Empty(primary.MatchedSymbols);
-        Assert.Equal(["Tokyo.SecondaryOnly::Play()"], secondary.MatchedSymbols.Select(symbol => symbol.DisplayName));
+        Assert.Equal(["Tokyo.SecondaryOnly::Play()"], secondary.MatchedSymbols.Select(FormatPath));
     }
 
     [Fact]
@@ -266,10 +259,10 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
 
         var result = await fixture.Query.SearchSymbolsAsync(
             Request("*::Play"),
-            fixture.PrimaryProfileName,
-            TestContext.Current.CancellationToken);
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: TestContext.Current.CancellationToken);
         var expected = result.MatchedSymbols
-            .OrderBy(symbol => symbol.DisplayName, StringComparer.Ordinal)
+            .OrderBy(FormatPath, StringComparer.Ordinal)
             .ThenBy(symbol => symbol.DocumentPath ?? string.Empty, StringComparer.Ordinal)
             .ThenBy(symbol => symbol.SourceStart ?? -1)
             .ThenBy(symbol => symbol.Id)
@@ -284,9 +277,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         await fixture.BuildTask;
 
         await Assert.ThrowsAsync<SymbolQueryParseException>(() => fixture.Query.SearchSourceAsync(
-            includes: [],
-            excludes: [],
-            ignoreCase: false,
+            Request(null),
             profileName: fixture.PrimaryProfileName,
             cancellationToken: TestContext.Current.CancellationToken));
     }
@@ -299,32 +290,47 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Query.SearchSourceAsync(
-            includes: ["PrintVar("],
-            excludes: [],
-            ignoreCase: false,
+            Request(null, includes: ["PrintVar("]),
             profileName: fixture.PrimaryProfileName,
             cancellationToken: cancellation.Token));
     }
 
-    private static SymbolSearchRequest Request(
-        string? pattern,
+    private static SymbolSelectionRequest Request(
+        string? selector,
         string? namespacePattern = null,
         string? typePattern = null,
         string? methodPattern = null,
         IndexedSymbolKind? kind = null,
-        bool useRegex = false,
-        bool ignoreCase = false,
         IReadOnlyList<string>? includes = null,
-        IReadOnlyList<string>? excludes = null,
-        bool showSource = false) => new(
-        pattern,
-        namespacePattern,
-        typePattern,
-        methodPattern,
-        kind,
-        useRegex,
-        ignoreCase,
-        includes ?? [],
-        excludes ?? [],
-        showSource);
+        IReadOnlyList<string>? excludes = null)
+    {
+        var conditions = new List<TypedCondition>();
+        Add(ConditionCategory.Namespace, namespacePattern);
+        Add(ConditionCategory.Type, typePattern);
+        Add(ConditionCategory.Method, methodPattern);
+        conditions.AddRange((includes ?? []).Select(value =>
+            new TypedCondition(ConditionCategory.Include, ConditionSyntax.Glob, value)));
+        conditions.AddRange((excludes ?? []).Select(value =>
+            new TypedCondition(ConditionCategory.Exclude, ConditionSyntax.Glob, value)));
+        return new SymbolSelectionRequest(
+            selector,
+            conditions,
+            new SymbolCaseOptions(),
+            new FunctionTargetFilter(kind, AsyncStatusFilter.All),
+            KindSpecified: kind is not null,
+            AsyncStatusSpecified: false);
+
+        void Add(ConditionCategory category, string? value)
+        {
+            if (value is not null)
+            {
+                conditions.Add(new TypedCondition(category, ConditionSyntax.Glob, value));
+            }
+        }
+    }
+
+    private static string FormatPath(StoredSymbol symbol) =>
+        new SymbolPathFormatter().Format(
+            Assert.IsType<SymbolPathData>(symbol.Path),
+            new SymbolPathFormatOptions());
 }
