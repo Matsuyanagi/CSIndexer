@@ -744,13 +744,22 @@ public sealed class SemanticQueryService
 
     private static SymbolSelectionRequest CreateStrictSelectionRequest(
         string selector,
-        FunctionTargetFilter filter) => new(
-        selector,
-        Conditions: [],
-        Case: new SymbolCaseOptions(),
-        FunctionFilter: filter,
-        KindSpecified: filter.Kind is not null,
-        AsyncStatusSpecified: filter.AsyncStatus != AsyncStatusFilter.All);
+        FunctionTargetFilter filter)
+    {
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            throw new SymbolQueryParseException(
+                "Invalid symbol path: Symbol path cannot be empty.");
+        }
+
+        return new SymbolSelectionRequest(
+            selector,
+            Conditions: [],
+            Case: new SymbolCaseOptions(),
+            FunctionFilter: filter,
+            KindSpecified: filter.Kind is not null,
+            AsyncStatusSpecified: filter.AsyncStatus != AsyncStatusFilter.All);
+    }
 
     private async Task<(StoredProfile Profile, StoredSymbol Root)> ResolveSingleSourceExecutableAsync(
         string queryText,
@@ -858,23 +867,6 @@ public sealed class SemanticQueryService
             sourceOnly: false,
             includeOverrides,
             cancellationToken);
-        var matches = new List<StoredSymbol>(metadataContext.MatchedSymbols.Count);
-        foreach (var symbol in metadataContext.MatchedSymbols)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var isConstructedOrReduced =
-                symbol.StableKey.Contains("|constructed:", StringComparison.Ordinal) ||
-                symbol.StableKey.Contains("|reduced:", StringComparison.Ordinal);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!isConstructedOrReduced)
-            {
-                matches.Add(symbol);
-            }
-        }
-
-        return metadataContext with
-        {
-            MatchedSymbols = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken),
-        };
+        return metadataContext;
     }
 }

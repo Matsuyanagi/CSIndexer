@@ -158,7 +158,12 @@ public sealed class SymbolCanonicalizer
         var methodSignature = SymbolSignatureCanonicalizer.CanonicalizeMethod(method);
         var segment = CreateMethodSegment(method, methodSignature);
         var stableKey = method.MethodKind == MethodKind.LocalFunction
-            ? $"{containingSymbolKey ?? throw new InvalidOperationException("A local function requires an immediate containing symbol key.")}|local:{segment.Identity}"
+            ? CreateLocalFunctionStableKey(
+                containingSymbolKey,
+                segment.Identity,
+                documentKey,
+                sourceStart,
+                sourceLength)
             : GetDefinitionStableKey(NormalizeLogicalMethod(method), projectKey);
         var path = CreatePath(containingType, segment, containingPath);
         var displayName = FormatDisplayName(path);
@@ -198,6 +203,40 @@ public sealed class SymbolCanonicalizer
             IsGenerated = isGenerated,
             Parameters = CreateParameters(method, methodSignature),
         };
+    }
+
+    private static string CreateLocalFunctionStableKey(
+        string? containingSymbolKey,
+        string segmentIdentity,
+        string? documentKey,
+        int? sourceStart,
+        int? sourceLength)
+    {
+        if (string.IsNullOrWhiteSpace(containingSymbolKey))
+        {
+            throw new InvalidOperationException(
+                "A local function requires an immediate containing symbol key.");
+        }
+
+        if (string.IsNullOrWhiteSpace(documentKey))
+        {
+            throw new InvalidOperationException(
+                "A local function requires a portable project-scoped document key.");
+        }
+
+        if (sourceStart is null or < 0)
+        {
+            throw new InvalidOperationException(
+                "A local function requires a nonnegative source start.");
+        }
+
+        if (sourceLength is null or < 0)
+        {
+            throw new InvalidOperationException(
+                "A local function requires a nonnegative source length.");
+        }
+
+        return $"{containingSymbolKey}|local:{segmentIdentity}|document:{documentKey}|span:{sourceStart}:{sourceLength}";
     }
 
     public SymbolData CreateAnonymousFunction(

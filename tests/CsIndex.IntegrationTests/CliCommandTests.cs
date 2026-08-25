@@ -39,6 +39,16 @@ public sealed class CliCommandTests : IDisposable
         Assert.Empty(parsed.Positionals);
     }
 
+    [Theory]
+    [InlineData("--regex")]
+    [InlineData("--ignore-case")]
+    public void RemovedGlobalSwitchesAreNotRegisteredAsBareFlags(string option)
+    {
+        var exception = Assert.Throws<CliUsageException>(() => CliArguments.Parse([option]));
+
+        Assert.Contains(option, exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void OutputFileAliasesNormalizeExactlyAndRejectMissingEmptyOrDuplicateValues()
     {
@@ -1318,19 +1328,19 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         var removedRegex = await RunAsync(
-            "symbol", "find", "Tokyo.*::Play", "--regex", "--db", _fixture.DatabasePath);
+            "symbol", "find", "Tokyo.*::Play", "--db", _fixture.DatabasePath, "--regex");
         var removedIgnoreCase = await RunAsync(
-            "symbol", "find", "TOKYO.GAMER::PLAY", "--ignore-case", "--db", _fixture.DatabasePath);
+            "symbol", "find", "TOKYO.GAMER::PLAY", "--db", _fixture.DatabasePath, "--ignore-case");
         var removedSourceIgnoreCase = await RunAsync(
-            "source", "search", "--include", "PrintVar(", "--ignore-case", "--db", _fixture.DatabasePath);
+            "source", "search", "--include", "PrintVar(", "--db", _fixture.DatabasePath, "--ignore-case");
         var noNameCondition = await RunAsync("symbol", "find", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, removedRegex.ExitCode);
-        Assert.Contains("Unknown option(s): --regex", removedRegex.StandardError);
+        Assert.Contains("--regex", removedRegex.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, removedIgnoreCase.ExitCode);
-        Assert.Contains("Unknown option(s): --ignore-case", removedIgnoreCase.StandardError);
+        Assert.Contains("--ignore-case", removedIgnoreCase.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, removedSourceIgnoreCase.ExitCode);
-        Assert.Contains("Unknown option(s): --ignore-case", removedSourceIgnoreCase.StandardError);
+        Assert.Contains("--ignore-case", removedSourceIgnoreCase.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, noNameCondition.ExitCode);
         Assert.Contains("symbol find requires a pattern", noNameCondition.StandardError);
     }

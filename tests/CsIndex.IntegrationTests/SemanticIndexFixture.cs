@@ -627,6 +627,36 @@ public sealed class SemanticIndexFixture : IDisposable
         return symbol with { PreferredDeclaration = preferredDeclarations.SingleOrDefault() };
     }
 
+    public async Task SetSymbolStableKeyAsync(
+        long symbolId,
+        string stableKey,
+        string? profileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await Repository.GetProfileAsync(profileName, cancellationToken);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = DatabasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE symbols
+            SET stable_key = $stable_key
+            WHERE analysis_profile_id = $profile_id
+              AND id = $symbol_id;
+            """;
+        command.Parameters.AddWithValue("$stable_key", stableKey);
+        command.Parameters.AddWithValue("$profile_id", profile.Id);
+        command.Parameters.AddWithValue("$symbol_id", symbolId);
+        var changed = await command.ExecuteNonQueryAsync(cancellationToken);
+        Assert.Equal(1, changed);
+    }
+
     public async Task SetAsyncNextSymbolIdAsync(
         string displayName,
         long? asyncNextSymbolId,

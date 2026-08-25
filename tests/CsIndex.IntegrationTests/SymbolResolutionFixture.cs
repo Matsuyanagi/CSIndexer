@@ -110,6 +110,25 @@ public sealed class SymbolResolutionFixture : IDisposable
             }
         }
 
+        namespace SiblingScopes
+        {
+            public sealed class Host
+            {
+                public void Run()
+                {
+                    {
+                        void Local() { }
+                        Local();
+                    }
+
+                    {
+                        void Local() { }
+                        Local();
+                    }
+                }
+            }
+        }
+
         #if SECONDARY
         namespace ProfileScope
         {

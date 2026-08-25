@@ -305,6 +305,26 @@ public sealed class SymbolPathResolverTests(SymbolResolutionFixture fixture)
     }
 
     [Fact]
+    public async Task SamePathLocalsInSiblingBlocksPersistAsDistinctLogicalRootsAndDeclarationSpans()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (profile, resolver) = await CreateResolverAsync(cancellationToken: cancellationToken);
+
+        var roots = await ResolveAsync(
+            resolver,
+            profile.Id,
+            "SiblingScopes::Host::Run().Local()",
+            cancellationToken);
+
+        Assert.Equal(2, roots.Count);
+        Assert.Equal(2, roots.Select(root => root.Symbol.Id).Distinct().Count());
+        Assert.All(roots, root => Assert.Equal("Run().Local()", root.Symbol.Path!.ExecutableDisplayPath));
+        var declarations = roots.SelectMany(root => root.MatchingDeclarations).ToArray();
+        Assert.Equal(2, declarations.Length);
+        Assert.Equal(2, declarations.Select(declaration => declaration.SourceStart).Distinct().Count());
+    }
+
+    [Fact]
     public async Task LambdaAndAnonymousOrdinalsStayWithinTheirImmediateOwner()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

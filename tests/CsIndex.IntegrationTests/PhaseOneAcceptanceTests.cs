@@ -538,6 +538,99 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         Assert.Single(result.Definitions);
     }
 
+    [Fact]
+    public async Task MetadataFallbackRetainsLogicalRootsWhoseStableKeyContainsLegacyTokenText()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var profile = await fixture.Repository.GetProfileAsync(
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var metadata = (await fixture.Repository.FindExecutableSymbolsAsync(
+                profile.Id,
+                sourceOnly: false,
+                cancellationToken))
+            .First(symbol =>
+                symbol.DocumentPath is null &&
+                (symbol.NamespaceName == "System" ||
+                 symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal)));
+        var selector = fixture.FormatPath(metadata);
+        var originalStableKey = metadata.StableKey;
+
+        try
+        {
+            await fixture.SetSymbolStableKeyAsync(
+                metadata.Id,
+                $"{originalStableKey}|constructed:review-regression",
+                fixture.PrimaryProfileName,
+                cancellationToken);
+
+            var result = await fixture.Query.FindDefinitionsAsync(
+                selector,
+                profileName: fixture.PrimaryProfileName,
+                cancellationToken: cancellationToken);
+
+            Assert.Contains(result.Context.MatchedSymbols, symbol => symbol.Id == metadata.Id);
+        }
+        finally
+        {
+            await fixture.SetSymbolStableKeyAsync(
+                metadata.Id,
+                originalStableKey,
+                fixture.PrimaryProfileName,
+                cancellationToken);
+        }
+    }
+
+    [Theory]
+    [InlineData("search", null)]
+    [InlineData("search", " \t ")]
+    [InlineData("show", null)]
+    [InlineData("show", " \t ")]
+    [InlineData("graph", null)]
+    [InlineData("graph", " \t ")]
+    [InlineData("reference", null)]
+    [InlineData("reference", " \t ")]
+    public async Task StringQueryApisRejectNullOrWhitespaceBeforeReadingSource(
+        string operation,
+        string? selector)
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var sourceCellReads = 0;
+        var repository = fixture.Repository;
+        repository.NormalizedSourceCellReadObserver = () => sourceCellReads++;
+        var query = new SemanticQueryService(repository);
+
+        async Task InvokeAsync()
+        {
+            switch (operation)
+            {
+                case "search":
+                    await query.FindSymbolsAsync(selector!, cancellationToken: cancellationToken);
+                    break;
+                case "show":
+                    await query.ShowSourceAsync(selector!, cancellationToken: cancellationToken);
+                    break;
+                case "graph":
+                    await query.FindCallerTreeAsync(selector!, cancellationToken: cancellationToken);
+                    break;
+                case "reference":
+                    await query.FindReferencesAsync(
+                        selector!,
+                        GeneratedFilter.Include,
+                        cancellationToken: cancellationToken);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown test operation '{operation}'.");
+            }
+        }
+
+        var exception = await Assert.ThrowsAsync<CsIndex.Query.Symbols.SymbolQueryParseException>(InvokeAsync);
+        Assert.Equal("Invalid symbol path: Symbol path cannot be empty.", exception.Message);
+        Assert.Equal(0, sourceCellReads);
+    }
+
     private static IndexSnapshot CreateDuplicateReceiverSnapshot(bool malformedContainmentCycle = false)
     {
         var snapshot = new IndexSnapshot

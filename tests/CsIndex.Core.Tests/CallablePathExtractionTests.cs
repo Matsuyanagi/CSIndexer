@@ -394,6 +394,51 @@ public sealed class CallablePathExtractionTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_SameSignatureLocalsInSiblingBlocksKeepDistinctPortableStableKeys()
+    {
+        const string source = """
+            public sealed class SiblingScopes
+            {
+                public void Run()
+                {
+                    {
+                        void Local() { }
+                        Local();
+                    }
+
+                    {
+                        void Local() { }
+                        Local();
+                    }
+                }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("SiblingScopes.cs", source));
+
+        Assert.All(snapshot.CompilationSummaries, summary => Assert.Equal(0, summary.Errors));
+        var run = FindPath(snapshot, "Run()");
+        var locals = snapshot.Symbols.Values
+            .Where(symbol => symbol.Path?.ExecutableDisplayPath == "Run().Local()")
+            .OrderBy(symbol => PreferredDeclaration(snapshot, symbol).SourceStart)
+            .ToArray();
+        Assert.Equal(2, locals.Length);
+        Assert.Single(locals.Select(symbol => symbol.Path!.ExecutableDisplayPath).Distinct(StringComparer.Ordinal));
+        Assert.Equal(2, locals.Select(symbol => symbol.StableKey).Distinct(StringComparer.Ordinal).Count());
+        Assert.All(locals, local => Assert.Equal(run.StableKey, local.ContainingSymbolKey));
+        Assert.Equal(
+            2,
+            locals.Select(local => PreferredDeclaration(snapshot, local).SourceStart).Distinct().Count());
+        var callTargets = snapshot.Calls
+            .Where(call => call.CallerSymbolKey == run.StableKey &&
+                           locals.Any(local => local.StableKey == call.CalleeDefinitionKey))
+            .Select(call => call.CalleeDefinitionKey)
+            .ToArray();
+        Assert.Equal(2, callTargets.Length);
+        Assert.Equal(2, callTargets.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_InsertingAnonymousFunctionRenumbersOnlyLaterSiblingsOfItsImmediateOwner()
     {
         const string before = """
