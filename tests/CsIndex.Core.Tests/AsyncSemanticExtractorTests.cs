@@ -145,6 +145,39 @@ public sealed class AsyncSemanticExtractorTests
         Assert.Null(leaf.AsyncNextSymbolKey);
     }
 
+    // Catches limiting async graph propagation to Method/Lambda after synthetic executables are indexed.
+    [Fact]
+    public async Task AnalyzeAsync_PropagatesAsyncInvolvementThroughInitializerAndTopLevelStatements()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            TopOriginAsync();
+
+            static Task TopOriginAsync() => Task.CompletedTask;
+
+            public sealed class InitializerHost
+            {
+                public Task Pending = OriginAsync();
+
+                private static Task OriginAsync() => Task.CompletedTask;
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(source);
+        var initializer = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.Initializer && symbol.Name == "<initializer:Pending>");
+        var topLevel = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.Kind == IndexedSymbolKind.TopLevelStatements);
+        var initializerOrigin = GetMethod(snapshot, "OriginAsync", "InitializerHost");
+        var topLevelOrigin = GetMethod(snapshot, "TopOriginAsync", "Program");
+
+        Assert.Equal(1, initializer.AsyncInvolvementDepth);
+        Assert.Equal(initializerOrigin.StableKey, initializer.AsyncNextSymbolKey);
+        Assert.Equal(1, topLevel.AsyncInvolvementDepth);
+        Assert.Equal(topLevelOrigin.StableKey, topLevel.AsyncNextSymbolKey);
+    }
+
     [Fact]
     public async Task AnalyzeAsync_DoesNotPersistAPathThroughMetadataAwaitableCallee()
     {

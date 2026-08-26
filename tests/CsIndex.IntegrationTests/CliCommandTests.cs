@@ -930,6 +930,45 @@ public sealed class CliCommandTests : IDisposable
         Assert.DoesNotContain("Alpha.AsyncOverrideDerived::Run()", syncOnly.StandardOutput);
     }
 
+    // Catches counting physical definition rows instead of logical selected roots for --require-single.
+    [Fact]
+    public async Task DefinitionRequireSingleTreatsPartialPairAsOneLogicalRoot()
+    {
+        using var resolutionFixture = new SymbolResolutionFixture();
+        await resolutionFixture.BuildTask;
+
+        var result = await RunAsync(
+            "definition", "Partials::PartialHost::PartialWork()", "--require-single", "--output-format", "json",
+            "--db", resolutionFixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(2, document.RootElement.GetProperty("definitions").GetArrayLength());
+    }
+
+    // Catches JSON definition projection using the logical preferred declaration for every physical row.
+    [Fact]
+    public async Task DefinitionJsonPreservesPhysicalPartialDeclarationLocations()
+    {
+        using var resolutionFixture = new SymbolResolutionFixture();
+        await resolutionFixture.BuildTask;
+
+        var result = await RunAsync(
+            "definition", "Partials::PartialHost::PartialWork()", "--output-format", "json",
+            "--db", resolutionFixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var definitions = document.RootElement.GetProperty("definitions").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["PartialDefinition.cs", "PartialImplementation.cs"],
+            definitions.Select(definition => definition.GetProperty("location").GetProperty("path").GetString()));
+        Assert.NotEqual(
+            definitions[0].GetProperty("location").GetProperty("offset").GetInt32(),
+            definitions[1].GetProperty("location").GetProperty("offset").GetInt32());
+    }
+
     [Theory]
     [InlineData("symbol-find")]
     [InlineData("symbol-list")]

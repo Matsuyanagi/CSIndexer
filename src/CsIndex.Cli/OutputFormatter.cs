@@ -94,7 +94,10 @@ internal sealed class OutputFormatter
                     cancellationToken),
                 definitions = SelectWithCancellation(
                     result.Definitions,
-                    row => ToSymbolObject(row.Symbol, _shortNames, includeSource: false),
+                    row => ToSymbolObject(
+                        ApplyDeclaration(row.Symbol, row.Declaration),
+                        _shortNames,
+                        includeSource: false),
                     cancellationToken),
             });
             return;

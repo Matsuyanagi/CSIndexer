@@ -54,6 +54,16 @@ public sealed class RootSelectionOrchestrationTests(
         Assert.Contains(
             callers.EffectiveCallers,
             caller => FormatPath(caller) == "GeneratedCode.GeneratedCaller::Execute(GameNS.Player)");
+
+        var callerTree = await query.FindCallerTreeAsync(
+            selection,
+            depth: 1,
+            maxNodes: 20,
+            cancellationToken);
+        Assert.Contains(
+            callerTree.Nodes,
+            node => node.Symbol.DocumentPath == "GeneratedCaller.g.cs" &&
+                FormatPath(node.Symbol) == "GeneratedCode.GeneratedCaller::Execute(GameNS.Player)");
     }
 
     // Catches graph traversal before root cardinality validation and partial-root splitting.
@@ -301,6 +311,77 @@ public sealed class RootSelectionOrchestrationTests(
         Assert.NotEqual(AsyncRole.None, topLevel.Symbol.AsyncRole);
     }
 
+    // Catches graph traversal narrowing source-backed executables back to Method/Lambda.
+    [Fact]
+    public async Task GraphResolvers_KeepInitializerAndTopLevelStatementsEligible()
+    {
+        await resolutionFixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var query = new SemanticQueryService(resolutionFixture.Repository);
+
+        var initializerSelection = await query.SelectRootsAsync(
+            Request("Catalog::AsyncInitializerHost::<initializer:AsyncFactory>"),
+            resolutionFixture.PrimaryProfileName,
+            sourceOnly: true,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+        var initializerPath = await query.FindAsyncPathAsync(
+            initializerSelection,
+            maxNodes: 20,
+            cancellationToken);
+        Assert.True(
+            initializerPath.Found,
+            $"initializer depth={initializerPath.Root.AsyncInvolvementDepth}, " +
+            $"next={initializerPath.Root.AsyncNextSymbolId}");
+        Assert.Equal(IndexedSymbolKind.Initializer, initializerPath.Root.Kind);
+        Assert.Contains(initializerPath.Nodes, node =>
+            node.Kind == IndexedSymbolKind.Method &&
+            FormatPath(node) == "Catalog.AsyncInitializerHost::OriginAsync()");
+
+        var topLevelSelection = await query.SelectRootsAsync(
+            Request("global::Program::<top-level-statements>"),
+            resolutionFixture.PrimaryProfileName,
+            sourceOnly: true,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+        var topLevelPath = await query.FindAsyncPathAsync(
+            topLevelSelection,
+            maxNodes: 20,
+            cancellationToken);
+        Assert.True(topLevelPath.Found);
+        Assert.Equal(IndexedSymbolKind.TopLevelStatements, topLevelPath.Root.Kind);
+
+        var originSelection = await query.SelectRootsAsync(
+            Request("Catalog::AsyncInitializerHost::OriginAsync()"),
+            resolutionFixture.PrimaryProfileName,
+            sourceOnly: true,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+        var initializerCallerTree = await query.FindCallerTreeAsync(
+            originSelection,
+            depth: 1,
+            maxNodes: 20,
+            cancellationToken);
+        Assert.Contains(initializerCallerTree.Nodes, node =>
+            node.Symbol.Kind == IndexedSymbolKind.Initializer &&
+            FormatPath(node.Symbol) == "Catalog.AsyncInitializerHost::<initializer:AsyncFactory>");
+
+        var topLocalSelection = await query.SelectRootsAsync(
+            Request("global::Program::<top-level-statements>.TopLocal()"),
+            resolutionFixture.PrimaryProfileName,
+            sourceOnly: true,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+        var topLevelCallerTree = await query.FindCallerTreeAsync(
+            topLocalSelection,
+            depth: 1,
+            maxNodes: 20,
+            cancellationToken);
+        Assert.Contains(
+            topLevelCallerTree.Nodes,
+            node => node.Symbol.Kind == IndexedSymbolKind.TopLevelStatements);
+    }
+
     // Catches applying the root generated predicate again to calls and caller documents.
     [Fact]
     public async Task GeneratedFiltering_HappensAtRootAndIndependentlyDuringTraversal()
@@ -345,6 +426,50 @@ public sealed class RootSelectionOrchestrationTests(
         Assert.DoesNotContain(excludeGenerated.Calls, call => call.IsGenerated);
     }
 
+    // Catches treating metadata's unknown generated state as source-generated or source-ordinary.
+    [Fact]
+    public async Task MetadataOnlyRootsWithUnknownGeneratedStateMatchOnlyInclude()
+    {
+        await semanticFixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var repository = semanticFixture.Repository;
+        var query = new SemanticQueryService(repository);
+        var profile = await repository.GetProfileAsync(
+            semanticFixture.PrimaryProfileName,
+            cancellationToken);
+        var metadata = (await repository.FindExecutableSymbolsAsync(
+                profile.Id,
+                sourceOnly: false,
+                cancellationToken))
+            .First(symbol => symbol.DocumentPath is null && symbol.PreferredIsGenerated is null);
+        var request = Request(FormatPath(metadata));
+
+        var include = await query.SelectRootsAsync(
+            request,
+            semanticFixture.PrimaryProfileName,
+            sourceOnly: false,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+        var exclude = await query.SelectRootsAsync(
+            request,
+            semanticFixture.PrimaryProfileName,
+            sourceOnly: false,
+            rootGeneratedFilter: GeneratedFilter.Exclude,
+            cancellationToken);
+        var only = await query.SelectRootsAsync(
+            request,
+            semanticFixture.PrimaryProfileName,
+            sourceOnly: false,
+            rootGeneratedFilter: GeneratedFilter.Only,
+            cancellationToken);
+
+        var selected = Assert.Single(include.Roots);
+        Assert.Equal(metadata.Id, selected.Symbol.Id);
+        Assert.Null(selected.Symbol.PreferredIsGenerated);
+        Assert.Empty(exclude.Roots);
+        Assert.Empty(only.Roots);
+    }
+
     // Catches override expansion reapplying root predicates and accepting lambda roots.
     [Fact]
     public async Task OverrideExpansion_AddsNonmatchingMethodsAfterBaseSelection()
@@ -381,6 +506,62 @@ public sealed class RootSelectionOrchestrationTests(
         await Assert.ThrowsAsync<SymbolQueryParseException>(() => query.ExpandOverrideRootsAsync(
             lambdaSelection,
             cancellationToken));
+    }
+
+    // Catches expansion filtering again, discarding the original match rows, or loading expanded declarations with source text.
+    [Fact]
+    public async Task OverrideExpansion_PreservesOriginalMatchesAndLoadsAllExpandedPartialDeclarations()
+    {
+        await resolutionFixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var repository = resolutionFixture.Repository;
+        var query = new SemanticQueryService(repository);
+        var selection = await query.SelectRootsAsync(
+            Request(
+                "Partials::IPartialRunner::Run(int)",
+                [Condition(ConditionCategory.Include, "interfaceMarker")],
+                kind: IndexedSymbolKind.Method,
+                kindSpecified: true),
+            resolutionFixture.PrimaryProfileName,
+            sourceOnly: true,
+            rootGeneratedFilter: GeneratedFilter.Include,
+            cancellationToken);
+
+        var original = Assert.Single(selection.Roots);
+        var originalMatches = original.MatchingDeclarations;
+        Assert.Single(originalMatches);
+
+        var expanded = await query.ExpandOverrideRootsAsync(selection, cancellationToken);
+        Assert.Equal(
+            ["Partials.IPartialRunner::Run(int)", "Partials.PartialRunner::Run(int)"],
+            expanded.Roots.Select(root => FormatPath(root.Symbol)));
+
+        var preservedOriginal = Assert.Single(expanded.Roots, root => root.Symbol.Id == original.Symbol.Id);
+        Assert.Same(original, preservedOriginal);
+        Assert.Same(originalMatches, preservedOriginal.MatchingDeclarations);
+
+        var expandedRunner = Assert.Single(
+            expanded.Roots,
+            root => FormatPath(root.Symbol) == "Partials.PartialRunner::Run(int)");
+        Assert.Equal(
+            ["PartialDefinition.cs", "PartialImplementation.cs"],
+            expandedRunner.MatchingDeclarations.Select(declaration => declaration.DocumentPath));
+        Assert.All(expandedRunner.MatchingDeclarations, declaration =>
+        {
+            Assert.Null(declaration.NormalizedSource);
+            Assert.Null(declaration.NormalizedSourceHash);
+        });
+
+        var fullDeclarations = await repository.GetDeclarationsAsync(
+            expanded.Profile.Id,
+            [expandedRunner.Symbol.Id],
+            includeSourceText: true,
+            cancellationToken);
+        Assert.Equal(2, fullDeclarations.Count);
+        Assert.All(fullDeclarations, declaration => Assert.NotNull(declaration.NormalizedSource));
+        Assert.DoesNotContain(
+            fullDeclarations,
+            declaration => declaration.NormalizedSource!.Contains("interfaceMarker", StringComparison.Ordinal));
     }
 
     // Catches absolute-path persistence, suffix document matching, and file reads during metadata projection.

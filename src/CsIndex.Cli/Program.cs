@@ -624,7 +624,7 @@ internal static class Program
                 cancellationToken: cancellationToken);
         }
 
-        if (RequiresSingleFailure(parsed, result.Definitions.Count))
+        if (RequiresSingleFailure(parsed, result.Selection.Roots.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }

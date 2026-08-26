@@ -219,6 +219,62 @@ public sealed class ProjectScopedSourceSymbolPersistenceTests
         }
     }
 
+    [Fact]
+    public async Task FindDefinitionAt_ExplainsDuplicateStoredPathAcrossProjects()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "csindex-project-document-path-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var projects = CreateProjects(root, out _, out _);
+            using var workspace = projects.Workspace;
+            var firstDocument = projects.Items[0].Documents.Single();
+            var secondDocument = projects.Items[1].Documents.Single();
+            var solution = workspace.CurrentSolution.WithDocumentFilePath(
+                secondDocument.Id,
+                firstDocument.FilePath!);
+            Assert.True(workspace.TryApplyChanges(solution));
+            var indexedProjects = projects.Items
+                .Select(project => workspace.CurrentSolution.GetProject(project.Id)!)
+                .ToArray();
+            var snapshot = CreateSnapshot(root);
+            await new SemanticExtractor(new ProjectFingerprintBuilder()).ExtractAsync(
+                indexedProjects,
+                snapshot,
+                includeDiagnostics: true,
+                cancellationToken);
+
+            var databasePath = Path.Combine(root, "index.sqlite");
+            var index = new SqliteIndex(databasePath);
+            await index.SaveAsync(snapshot, cancellationToken);
+            var repository = index.CreateQueryRepository();
+            var profile = await repository.GetProfileAsync(snapshot.Profile.Name, cancellationToken);
+            var documents = await repository.FindDocumentsAsync(
+                profile.Id,
+                "First/Twin.cs",
+                cancellationToken);
+            Assert.Equal(2, documents.Count);
+
+            var service = new SemanticQueryService(repository, root);
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.FindDefinitionAtAsync(
+                $"{documents[0].Path}:1:1",
+                profile.Name,
+                cancellationToken));
+            Assert.Equal(
+                "Document path is ambiguous because the selected profile contains the same stored path in multiple projects: " +
+                documents[0].Path,
+                exception.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static ProjectFixture CreateProjects(
         string root,
         out string firstProjectPath,

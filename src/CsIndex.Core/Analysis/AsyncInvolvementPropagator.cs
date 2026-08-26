@@ -191,7 +191,10 @@ public static class AsyncInvolvementPropagator
         foreach (var symbol in snapshot.Symbols.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
+            if ((symbol.Kind is IndexedSymbolKind.Method or
+                    IndexedSymbolKind.Lambda or
+                    IndexedSymbolKind.Initializer or
+                    IndexedSymbolKind.TopLevelStatements) &&
                 HasSourceDeclaration(snapshot, symbol))
             {
                 eligible.Add(symbol.StableKey);

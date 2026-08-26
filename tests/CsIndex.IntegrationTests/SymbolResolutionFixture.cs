@@ -236,6 +236,9 @@ public sealed class SymbolResolutionFixture : IDisposable
             public sealed class AsyncInitializerHost
             {
                 public Func<Task> Factory = async () => await Task.Yield();
+                public Task AsyncFactory = OriginAsync();
+
+                private static async Task OriginAsync() => await Task.Yield();
             }
         }
         """;
@@ -248,6 +251,16 @@ public sealed class SymbolResolutionFixture : IDisposable
             partial void PartialWork();
             partial void DefinitionOnly();
         }
+
+        public interface IPartialRunner
+        {
+            void Run(int interfaceMarker);
+        }
+
+        public partial class PartialRunner : IPartialRunner
+        {
+            public partial void Run(int ignored);
+        }
         """;
 
     private const string PartialImplementationSource = """
@@ -255,9 +268,19 @@ public sealed class SymbolResolutionFixture : IDisposable
 
         public partial class PartialHost
         {
+            // Implementation declaration has a distinct physical source location.
             partial void PartialWork()
             {
                 const string marker = "ImplementationMarker";
+                _ = marker;
+            }
+        }
+
+        public partial class PartialRunner
+        {
+            public partial void Run(int ignored)
+            {
+                const string marker = "PartialRunnerImplementationMarker";
                 _ = marker;
             }
         }

@@ -638,7 +638,8 @@ public sealed class SemanticQueryService
         if (documents.Count > 1)
         {
             throw new InvalidOperationException(
-                $"Document path is ambiguous. Use a longer path: {string.Join(", ", documents.Select(document => document.Path))}");
+                "Document path is ambiguous because the selected profile contains the same stored path in multiple projects: " +
+                storedDocumentPath);
         }
 
         var document = documents[0];
