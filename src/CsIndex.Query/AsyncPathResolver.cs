@@ -17,7 +17,7 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
         AsyncRole.UsesAwaitUsing;
 
     public async Task<AsyncPathResult> ResolveAsync(
-        StoredProfile profile,
+        RootSelection selection,
         StoredSymbol root,
         int maxNodes,
         CancellationToken cancellationToken)
@@ -32,7 +32,7 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
             ValidateNode(current);
             if (current.AsyncInvolvementDepth is null)
             {
-                return new AsyncPathResult(profile, root, [], Found: false, Truncated: false);
+                return new AsyncPathResult(selection, root, [], Found: false, Truncated: false);
             }
 
             if (!visitedIds.Add(current.Id))
@@ -45,12 +45,12 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
             nodes.Add(current);
             if (currentDepth == 0)
             {
-                return new AsyncPathResult(profile, root, nodes, Found: true, Truncated: false);
+                return new AsyncPathResult(selection, root, nodes, Found: true, Truncated: false);
             }
 
             var nextSymbolId = current.AsyncNextSymbolId!.Value;
 
-            var next = await GetNextSymbolAsync(profile.Id, nextSymbolId, cancellationToken);
+            var next = await GetNextSymbolAsync(selection.Profile.Id, nextSymbolId, cancellationToken);
             if (visitedIds.Contains(next.Id))
             {
                 throw IntegrityFailure($"a cycle was encountered through symbol ID {next.Id}");
@@ -65,7 +65,7 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
 
             if (nodes.Count == maxNodes)
             {
-                return new AsyncPathResult(profile, root, nodes, Found: true, Truncated: true);
+                return new AsyncPathResult(selection, root, nodes, Found: true, Truncated: true);
             }
 
             current = next;
@@ -150,7 +150,10 @@ internal sealed class AsyncPathResolver(QueryRepository repository)
     }
 
     private static bool IsSourceBackedExecutable(StoredSymbol symbol) =>
-        (symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda) &&
+        (symbol.Kind is IndexedSymbolKind.Method or
+            IndexedSymbolKind.Lambda or
+            IndexedSymbolKind.Initializer or
+            IndexedSymbolKind.TopLevelStatements) &&
         symbol.PreferredDeclarationId is not null &&
         symbol.PreferredDocumentPath is not null;
 

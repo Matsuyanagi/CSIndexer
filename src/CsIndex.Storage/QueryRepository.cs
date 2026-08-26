@@ -8,9 +8,12 @@ namespace CsIndex.Storage;
 
 public sealed class QueryRepository(string databasePath, SchemaMigrator migrator)
 {
+    private const string PathIdentityCollation = "CSINDEX_PATH_IDENTITY";
+
     private readonly string _databasePath = PathNormalizer.Normalize(databasePath);
 
     internal Action? NormalizedSourceCellReadObserver { get; set; }
+    internal Action<TraversalOperation>? TraversalObserver { get; set; }
 
     public string DatabasePath => _databasePath;
 
@@ -186,6 +189,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.SymbolEndpointsById);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, values);
@@ -296,7 +300,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         await using var command = connection.CreateCommand();
         command.CommandText = BuildSymbolSelect("""
             s.analysis_profile_id = $profile_id
-              AND s.kind IN ($method_kind, $lambda_kind)
+              AND s.kind IN ($method_kind, $lambda_kind, $initializer_kind, $top_level_kind)
               AND ($kind IS NULL OR s.kind = $kind)
               AND (
                   $async_status = $all_async_status
@@ -312,6 +316,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$kind", kind is null ? DBNull.Value : (int)kind.Value);
         command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+        command.Parameters.AddWithValue("$initializer_kind", (int)IndexedSymbolKind.Initializer);
+        command.Parameters.AddWithValue("$top_level_kind", (int)IndexedSymbolKind.TopLevelStatements);
         command.Parameters.AddWithValue("$async_status", (int)asyncStatus);
         command.Parameters.AddWithValue("$all_async_status", (int)AsyncStatusFilter.All);
         command.Parameters.AddWithValue("$async_status_async", (int)AsyncStatusFilter.Async);
@@ -329,7 +335,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         await using var command = connection.CreateCommand();
         var whereClause = """
             s.analysis_profile_id = $profile_id
-              AND s.kind IN ($method_kind, $lambda_kind)
+              AND s.kind IN ($method_kind, $lambda_kind, $initializer_kind, $top_level_kind)
             """;
         if (sourceOnly)
         {
@@ -341,6 +347,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$method_kind", (int)IndexedSymbolKind.Method);
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
+        command.Parameters.AddWithValue("$initializer_kind", (int)IndexedSymbolKind.Initializer);
+        command.Parameters.AddWithValue("$top_level_kind", (int)IndexedSymbolKind.TopLevelStatements);
         return await ReadSymbolsAsync(connection, command, cancellationToken);
     }
 
@@ -513,6 +521,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.OverrideInterfaceExpansion);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var seedRows = AddMethodSearchSeedParameters(command, values);
@@ -602,6 +611,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.OverrideInterfaceExpansion);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var seedRows = AddInterfaceSearchSeedParameters(command, values);
@@ -682,6 +692,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.CallsByCallee);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
@@ -718,6 +729,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.CallsByCaller);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
@@ -748,6 +760,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.CallsByCallerIncludingLambdaDescendants);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
@@ -799,6 +812,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.RelationsByTarget);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
@@ -832,6 +846,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return [];
         }
 
+        TraversalObserver?.Invoke(TraversalOperation.RelationsBySource);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
@@ -858,23 +873,20 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         string path,
         CancellationToken cancellationToken = default)
     {
-        var normalizedInput = path.Replace('/', Path.DirectorySeparatorChar);
-        var fullPath = Path.IsPathRooted(normalizedInput) ? PathNormalizer.Normalize(normalizedInput) : null;
+        var normalizedInput = PathNormalizer.NormalizeRelative(path);
         await using var connection = await OpenAsync(cancellationToken);
+        RegisterPathIdentityCollation(connection);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT d.id, d.normalized_path, d.is_generated
             FROM documents d
             JOIN projects p ON p.id = d.project_id
             WHERE p.analysis_profile_id = $profile_id
-              AND ($full_path IS NOT NULL AND d.normalized_path = $full_path COLLATE NOCASE
-                   OR d.normalized_path LIKE $suffix ESCAPE '\' COLLATE NOCASE)
+              AND d.normalized_path = $path COLLATE CSINDEX_PATH_IDENTITY
             ORDER BY d.normalized_path;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
-        command.Parameters.AddWithValue("$full_path", (object?)fullPath ?? DBNull.Value);
-        var escaped = normalizedInput.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
-        command.Parameters.AddWithValue("$suffix", $"%{Path.DirectorySeparatorChar}{escaped}");
+        command.Parameters.AddWithValue("$path", normalizedInput);
         var result = new List<StoredDocument>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -885,12 +897,21 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         return result;
     }
 
+    private static void RegisterPathIdentityCollation(SqliteConnection connection)
+    {
+        var comparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        connection.CreateCollation(PathIdentityCollation, comparer.Compare);
+    }
+
     public async Task<StoredCall?> FindCallAtAsync(
         long profileId,
         long documentId,
         int position,
         CancellationToken cancellationToken = default)
     {
+        TraversalObserver?.Invoke(TraversalOperation.CallAtPosition);
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = BuildCallSelect("""

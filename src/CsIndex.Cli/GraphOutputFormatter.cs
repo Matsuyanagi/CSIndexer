@@ -126,7 +126,7 @@ internal sealed class GraphOutputFormatter
 
         OutputFormatter.WriteJson(new
         {
-            profile = result.Profile.Name,
+            profile = result.Selection.Profile.Name,
             found = result.Found,
             truncated = result.Truncated,
             root = OutputFormatter.ToSymbolObject(result.Root, _shortNames, includeSource: false),
@@ -285,7 +285,7 @@ internal sealed class GraphOutputFormatter
 
         OutputFormatter.WriteJson(new
         {
-            profile = result.Profile.Name,
+            profile = result.Selection.Profile.Name,
             truncated = result.Truncated,
             root = OutputFormatter.ToSymbolObject(result.Root, _shortNames, includeSource: false),
             nodes,

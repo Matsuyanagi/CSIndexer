@@ -182,6 +182,7 @@ public sealed class SymbolResolutionFixture : IDisposable
 
     private const string SpecialSource = """
         using System;
+        using System.Threading.Tasks;
 
         namespace Catalog
         {
@@ -231,6 +232,11 @@ public sealed class SymbolResolutionFixture : IDisposable
                 void IContract.Run() { }
                 void IDisposable.Dispose() { }
             }
+
+            public sealed class AsyncInitializerHost
+            {
+                public Func<Task> Factory = async () => await Task.Yield();
+            }
         }
         """;
 
@@ -240,6 +246,7 @@ public sealed class SymbolResolutionFixture : IDisposable
         public partial class PartialHost
         {
             partial void PartialWork();
+            partial void DefinitionOnly();
         }
         """;
 
@@ -258,6 +265,7 @@ public sealed class SymbolResolutionFixture : IDisposable
 
     private const string TopLevelSource = """
         using System;
+        using System.Threading.Tasks;
 
         void TopLocal()
         {
@@ -266,6 +274,7 @@ public sealed class SymbolResolutionFixture : IDisposable
         }
 
         TopLocal();
+        await Task.Yield();
         """;
 
     public SymbolResolutionFixture()

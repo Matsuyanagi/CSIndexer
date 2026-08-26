@@ -13,7 +13,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         new HashSet<ReferenceKind> { ReferenceKind.Invocation, ReferenceKind.ObjectCreation };
 
     public async Task<CallerTreeResult> BuildAsync(
-        StoredProfile profile,
+        RootSelection selection,
         StoredSymbol root,
         int depth,
         int maxNodes,
@@ -39,7 +39,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var calls = await repository.GetCallsByCalleeAsync(
-                    profile.Id,
+                    selection.Profile.Id,
                     [calleeNode.Symbol.Id],
                     GeneratedFilter.Include,
                     CallKinds,
@@ -89,7 +89,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
             }
 
             var callerCandidates = await repository.GetSymbolsByIdsAsync(
-                profile.Id,
+                selection.Profile.Id,
                 callerIds,
                 cancellationToken);
             var callersById = new Dictionary<long, StoredSymbol>();
@@ -164,7 +164,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
             edges,
             nodesById,
             cancellationToken);
-        return new CallerTreeResult(profile, root, nodes, orderedEdges, truncated);
+        return new CallerTreeResult(selection, root, nodes, orderedEdges, truncated);
     }
 
     internal static IReadOnlyList<StoredSymbol> OrderCallers(
@@ -180,7 +180,10 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         (call.CalleeDefinitionId is null && call.CalleeSymbolId == calleeId);
 
     private static bool IsSourceBackedNonSystemExecutable(StoredSymbol symbol) =>
-        symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda &&
+        (symbol.Kind is IndexedSymbolKind.Method or
+            IndexedSymbolKind.Lambda or
+            IndexedSymbolKind.Initializer or
+            IndexedSymbolKind.TopLevelStatements) &&
         symbol.DocumentPath is not null &&
         symbol.NamespaceName != "System" &&
         !symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal);

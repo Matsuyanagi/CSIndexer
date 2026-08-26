@@ -2,6 +2,18 @@ using CsIndex.Core.Model;
 
 namespace CsIndex.Storage;
 
+internal enum TraversalOperation
+{
+    SymbolEndpointsById = 1,
+    CallsByCallee = 2,
+    CallsByCaller = 3,
+    CallsByCallerIncludingLambdaDescendants = 4,
+    RelationsByTarget = 5,
+    RelationsBySource = 6,
+    OverrideInterfaceExpansion = 7,
+    CallAtPosition = 8,
+}
+
 public enum GeneratedFilter
 {
     Include = 0,

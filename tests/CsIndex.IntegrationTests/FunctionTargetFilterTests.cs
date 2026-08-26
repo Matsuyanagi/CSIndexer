@@ -98,7 +98,7 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             filter: new(IndexedSymbolKind.Method, AsyncStatusFilter.All),
             cancellationToken: TestContext.Current.CancellationToken);
 
-        var definition = Assert.Single(result.Definitions);
+        var definition = Assert.Single(result.Definitions).Symbol;
         Assert.Equal(expectedDisplayName, FormatPath(definition));
         Assert.Equal(IndexedSymbolKind.Method, definition.Kind);
         Assert.Equal((int)expectedMethodKind, definition.MethodKind);
@@ -125,7 +125,7 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             "Alpha.HidingMiddle::Select(string)",
             cancellationToken: cancellationToken);
 
-        Assert.Equal(stored.Id, Assert.Single(result.Definitions).Id);
+        Assert.Equal(stored.Id, Assert.Single(result.Definitions).Symbol.Id);
     }
 
     [Fact]
@@ -203,9 +203,9 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             cancellationToken: cancellationToken);
 
         Assert.NotEmpty(lambdaDefinition.Definitions);
-        Assert.All(lambdaDefinition.Definitions, symbol => Assert.Equal(IndexedSymbolKind.Lambda, symbol.Kind));
-        Assert.Equal(omitted.Definitions.Select(symbol => symbol.Id), explicitAll.Definitions.Select(symbol => symbol.Id));
-        Assert.Equal("Alpha.AClass::Play()", FormatPath(Assert.Single(methodAt.Definitions)));
+        Assert.All(lambdaDefinition.Definitions, row => Assert.Equal(IndexedSymbolKind.Lambda, row.Symbol.Kind));
+        Assert.Equal(omitted.Definitions.Select(row => row.Symbol.Id), explicitAll.Definitions.Select(row => row.Symbol.Id));
+        Assert.Equal("Alpha.AClass::Play()", FormatPath(Assert.Single(methodAt.Definitions).Symbol));
         Assert.Empty(lambdaAt.Definitions);
     }
 
@@ -260,12 +260,12 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
             filter: new(IndexedSymbolKind.Method, AsyncStatusFilter.All),
             cancellationToken: cancellationToken);
 
-        Assert.Equal(IndexedSymbolKind.Lambda, Assert.Single(lambdaCallees.Context.MatchedSymbols).Kind);
+        Assert.Equal(IndexedSymbolKind.Lambda, Assert.Single(lambdaCallees.Selection.Roots).Symbol.Kind);
         var callee = Assert.Single(lambdaCallees.Calls);
         Assert.Equal(
             "Alpha.LambdaPlayer::Play()",
             FormatPath(lambdaCallees.SymbolsById[callee.CalleeDefinitionId!.Value]));
-        Assert.Empty(excludedRoot.Context.MatchedSymbols);
+        Assert.Empty(excludedRoot.Selection.Roots);
         Assert.Empty(excludedRoot.Calls);
     }
 
@@ -292,9 +292,9 @@ public sealed class FunctionTargetFilterTests(SemanticIndexFixture fixture)
 
         Assert.Equal(
             ["Alpha.AsyncOverrideBase::Run()", "Alpha.AsyncOverrideDerived::Run()"],
-            syncDefinitions.Definitions.Select(FormatPath));
+            syncDefinitions.Definitions.Select(row => FormatPath(row.Symbol)));
         Assert.Empty(asyncDefinitions.Definitions);
-        Assert.Equal("Alpha.AsyncOverrideBase::Run()", FormatPath(Assert.Single(overrideRelations.Context.MatchedSymbols)));
+        Assert.Equal("Alpha.AsyncOverrideBase::Run()", FormatPath(Assert.Single(overrideRelations.Selection.Roots).Symbol));
         Assert.Contains(
             overrideRelations.Relations,
             relation => FormatPath(overrideRelations.SymbolsById[relation.SourceSymbolId]) ==

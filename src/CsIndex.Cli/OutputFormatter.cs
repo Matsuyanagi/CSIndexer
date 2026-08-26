@@ -87,23 +87,24 @@ internal sealed class OutputFormatter
         {
             WriteJsonPayload(new
             {
-                profile = result.Context.Profile.Name,
+                profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
-                    result.Context.MatchedSymbols,
+                    result.Selection.Roots.Select(root => root.Symbol),
                     symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
                     cancellationToken),
                 definitions = SelectWithCancellation(
                     result.Definitions,
-                    symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
+                    row => ToSymbolObject(row.Symbol, _shortNames, includeSource: false),
                     cancellationToken),
             });
             return;
         }
 
         _writer.WriteLine($"{result.Definitions.Count} definition(s):");
-        foreach (var definition in result.Definitions)
+        foreach (var row in result.Definitions)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var definition = ApplyDeclaration(row.Symbol, row.Declaration);
             _writer.WriteLine($"  {SymbolSignatureFormatter.Format(definition, _shortNames)}{FormatDefinitionLocation(definition)}");
             if (definition.DocumentPath is null)
             {
@@ -119,9 +120,9 @@ internal sealed class OutputFormatter
         {
             WriteJsonPayload(new
             {
-                profile = result.Context.Profile.Name,
+                profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
-                    result.Context.MatchedSymbols,
+                    result.Selection.Roots.Select(root => root.Symbol),
                     symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
                     cancellationToken),
                 calls = SelectWithCancellation(
@@ -159,7 +160,7 @@ internal sealed class OutputFormatter
             return;
         }
 
-        _writer.WriteLine($"{result.Context.MatchedSymbols.Count} matched symbol(s); {result.Calls.Count} {heading}:");
+        _writer.WriteLine($"{result.Selection.Roots.Count} matched symbol(s); {result.Calls.Count} {heading}:");
         foreach (var call in result.Calls)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -198,9 +199,9 @@ internal sealed class OutputFormatter
         {
             WriteJsonPayload(new
             {
-                profile = result.Context.Profile.Name,
+                profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
-                    result.Context.MatchedSymbols,
+                    result.Selection.Roots.Select(root => root.Symbol),
                     symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
                     cancellationToken),
                 relations = SelectWithCancellation(
@@ -323,6 +324,18 @@ internal sealed class OutputFormatter
         return $"  {point.Path}:{point.Line}:{point.Column}";
     }
 
+    private static StoredSymbol ApplyDeclaration(StoredSymbol symbol, StoredDeclaration declaration) =>
+        symbol with
+        {
+            PreferredDeclaration = declaration,
+            PreferredDocumentPath = declaration.DocumentPath,
+            PreferredSourceStart = declaration.SourceStart,
+            PreferredIsGenerated = declaration.IsGenerated,
+            DocumentPath = declaration.DocumentPath,
+            SourceStart = declaration.SourceStart,
+            IsGenerated = declaration.IsGenerated,
+        };
+
     private static string FormatDefinitionLocationField(StoredSymbol symbol)
     {
         if (symbol.DocumentPath is null || symbol.SourceStart is null)
@@ -351,6 +364,10 @@ internal sealed class OutputFormatter
             return SourcePositionResolver.ResolveOffset(path, offset);
         }
         catch (IOException)
+        {
+            return new SourcePoint(path, 0, 0, offset);
+        }
+        catch (ArgumentException)
         {
             return new SourcePoint(path, 0, 0, offset);
         }

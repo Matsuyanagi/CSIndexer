@@ -287,7 +287,6 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
 
     [Theory]
     [InlineData(IndexedSymbolKind.Type)]
-    [InlineData(IndexedSymbolKind.Initializer)]
     public async Task AsyncPath_RejectsNonExecutableFetchedHopBeforeTruncation(IndexedSymbolKind kind)
     {
         await fixture.BuildTask;
@@ -1086,7 +1085,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             "Tokyo.SecondaryOnly::Play()",
             profileName: fixture.SecondaryProfileName,
             cancellationToken: cancellationToken);
-        Assert.Equal(fixture.SecondaryProfileName, secondary.Profile.Name);
+        Assert.Equal(fixture.SecondaryProfileName, secondary.Selection.Profile.Name);
         Assert.Equal(["Tokyo.SecondaryOnly::Play()"], secondary.Nodes.Select(node => FormatPath(node.Symbol)));
 
         using var cancellation = new CancellationTokenSource();

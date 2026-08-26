@@ -43,7 +43,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             fixture.GetLocation("a.Play()"),
             cancellationToken: TestContext.Current.CancellationToken);
 
-        var definition = Assert.Single(result.Definitions);
+        var definition = Assert.Single(result.Definitions).Symbol;
         Assert.Equal("Alpha.AClass::Play()", FormatPath(definition));
         Assert.NotNull(definition.DocumentPath);
     }
@@ -103,7 +103,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             "Alpha.HidingPlayer::Play()", includeOverrides: true,
             cancellationToken: TestContext.Current.CancellationToken);
 
-        var definition = Assert.Single(result.Definitions);
+        var definition = Assert.Single(result.Definitions).Symbol;
         Assert.Equal("Alpha.HidingPlayer::Play()", FormatPath(definition));
     }
 
@@ -200,8 +200,8 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
 
         Assert.Single(included.Calls);
         Assert.Empty(excluded.Calls);
-        Assert.Single(only.Calls);
-        Assert.True(only.Calls[0].IsGenerated);
+        Assert.Empty(only.Selection.Roots);
+        Assert.Empty(only.Calls);
     }
 
     [Fact]
@@ -259,10 +259,10 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
 
         const string localPath = "Alpha.LocalPlayer::Execute().Local()";
         Assert.Equal(localPath, FormatPath(Assert.Single(symbols.MatchedSymbols)));
-        Assert.Equal(localPath, FormatPath(Assert.Single(definitions.Definitions)));
-        Assert.Equal(localPath, FormatPath(Assert.Single(references.Context.MatchedSymbols)));
-        Assert.Equal(localPath, FormatPath(Assert.Single(callers.Context.MatchedSymbols)));
-        Assert.Equal(localPath, FormatPath(Assert.Single(callees.Context.MatchedSymbols)));
+        Assert.Equal(localPath, FormatPath(Assert.Single(definitions.Definitions).Symbol));
+        Assert.Equal(localPath, FormatPath(Assert.Single(references.Selection.Roots).Symbol));
+        Assert.Equal(localPath, FormatPath(Assert.Single(callers.Selection.Roots).Symbol));
+        Assert.Equal(localPath, FormatPath(Assert.Single(callees.Selection.Roots).Symbol));
         Assert.Single(references.Calls);
         Assert.Single(callers.Calls);
         var callee = Assert.Single(callees.Calls);
@@ -353,7 +353,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
-    public async Task ListSymbolsDefaultsToFunctionKindsAndCanLimitToLambdas()
+    public async Task ListSymbolsDefaultsToAllExecutableKindsAndCanLimitToLambdas()
     {
         await fixture.BuildTask;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -371,8 +371,14 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             FormatPath(symbol) == "Alpha.AClass::Play()" && symbol.Kind == IndexedSymbolKind.Method);
         Assert.Contains(functions.MatchedSymbols, symbol =>
             symbol.Kind == IndexedSymbolKind.Lambda && symbol.TypeSimpleName == "LambdaPlayer");
+        Assert.Contains(functions.MatchedSymbols, symbol =>
+            symbol.Kind == IndexedSymbolKind.Initializer);
         Assert.All(functions.MatchedSymbols, symbol =>
-            Assert.True(symbol.Kind is IndexedSymbolKind.Method or IndexedSymbolKind.Lambda));
+            Assert.True(symbol.Kind is
+                IndexedSymbolKind.Method or
+                IndexedSymbolKind.Lambda or
+                IndexedSymbolKind.Initializer or
+                IndexedSymbolKind.TopLevelStatements));
         Assert.NotEmpty(lambdas.MatchedSymbols);
         Assert.All(lambdas.MatchedSymbols, symbol => Assert.Equal(IndexedSymbolKind.Lambda, symbol.Kind));
     }
@@ -570,7 +576,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 profileName: fixture.PrimaryProfileName,
                 cancellationToken: cancellationToken);
 
-            Assert.Contains(result.Context.MatchedSymbols, symbol => symbol.Id == metadata.Id);
+            Assert.Contains(result.Selection.Roots, root => root.Symbol.Id == metadata.Id);
         }
         finally
         {

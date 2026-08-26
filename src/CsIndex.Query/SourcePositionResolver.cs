@@ -4,6 +4,7 @@ public static class SourcePositionResolver
 {
     public static SourcePoint ResolveOffset(string path, int offset)
     {
+        ValidateAbsolutePath(path);
         var text = File.ReadAllText(path);
         var bounded = Math.Clamp(offset, 0, text.Length);
         var line = 1;
@@ -36,6 +37,7 @@ public static class SourcePositionResolver
 
     public static int ResolveLineColumn(string path, int line, int column)
     {
+        ValidateAbsolutePath(path);
         if (line < 1 || column < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(line), "Line and column are one-based positive values.");
@@ -80,6 +82,17 @@ public static class SourcePositionResolver
         }
 
         return result;
+    }
+
+    private static void ValidateAbsolutePath(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!Path.IsPathFullyQualified(path))
+        {
+            throw new ArgumentException(
+                "Source position paths must be absolute filesystem paths.",
+                nameof(path));
+        }
     }
 
     public static (string Path, int Line, int Column) ParseAt(string value)

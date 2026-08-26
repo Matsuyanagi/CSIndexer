@@ -28,44 +28,21 @@ public readonly record struct FunctionTargetFilter(
 }
 
 internal sealed class ExecutableTargetResolver(
-    SymbolPathResolver symbolPathResolver,
-    MethodTargetResolver methodTargetResolver)
+    SymbolPathResolver symbolPathResolver)
 {
-    public async Task<IReadOnlyList<StoredSymbol>> ResolveAsync(
+    public async Task<IReadOnlyList<ResolvedLogicalRoot>> ResolveAsync(
         long profileId,
         SymbolSelectionRequest request,
         bool sourceOnly,
-        bool includeOverrides,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
-        if (includeOverrides &&
-            request.KindSpecified &&
-            request.FunctionFilter.Kind == IndexedSymbolKind.Lambda)
-        {
-            throw new SymbolQueryParseException("--kind lambda cannot be combined with --include-overrides.");
-        }
-
         var roots = await symbolPathResolver.ResolveLogicalRootsAsync(
             profileId,
             request,
             sourceOnly,
             cancellationToken);
-        if (!includeOverrides)
-        {
-            return roots.Select(root => root.Symbol).ToArray();
-        }
-
-        if (roots.Any(root => root.Symbol.Kind != IndexedSymbolKind.Method))
-        {
-            throw new SymbolQueryParseException("--include-overrides requires an exact method query.");
-        }
-
-        return await methodTargetResolver.ExpandAsync(
-            profileId,
-            roots,
-            sourceOnly,
-            cancellationToken);
+        return roots;
     }
 }

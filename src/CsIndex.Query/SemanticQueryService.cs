@@ -17,21 +17,347 @@ public sealed class SemanticQueryService
     private static readonly SymbolPathFormatOptions DefaultPathFormat = new();
 
     private readonly QueryRepository repository;
+    private readonly string? baseDirectory;
     private readonly SymbolPathResolver _symbolPathResolver;
     private readonly ExecutableTargetResolver _executableTargetResolver;
     private readonly AsyncPathResolver _asyncPathResolver;
     private readonly CallerTreeBuilder _callerTreeBuilder;
 
-    public SemanticQueryService(QueryRepository repository)
+    public SemanticQueryService(QueryRepository repository, string? baseDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
         this.repository = repository;
+        this.baseDirectory = baseDirectory;
         _symbolPathResolver = new SymbolPathResolver(repository);
-        _executableTargetResolver = new ExecutableTargetResolver(
-            _symbolPathResolver,
-            new MethodTargetResolver(repository));
+        _executableTargetResolver = new ExecutableTargetResolver(_symbolPathResolver);
         _asyncPathResolver = new AsyncPathResolver(repository);
         _callerTreeBuilder = new CallerTreeBuilder(repository);
+    }
+
+    public async Task<RootSelection> SelectRootsAsync(
+        SymbolSelectionRequest request,
+        string? profileName,
+        bool sourceOnly,
+        GeneratedFilter rootGeneratedFilter,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var roots = await _executableTargetResolver.ResolveAsync(
+            profile.Id,
+            request,
+            sourceOnly,
+            cancellationToken);
+        var byId = new Dictionary<long, ResolvedLogicalRoot>();
+        foreach (var root in roots)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var include = rootGeneratedFilter switch
+            {
+                GeneratedFilter.Include => true,
+                GeneratedFilter.Exclude => root.Symbol.PreferredIsGenerated == false,
+                GeneratedFilter.Only => root.Symbol.PreferredIsGenerated == true,
+                _ => throw new ArgumentOutOfRangeException(nameof(rootGeneratedFilter)),
+            };
+            if (include)
+            {
+                byId.TryAdd(root.Symbol.Id, root);
+            }
+        }
+
+        var orderedSymbols = SymbolCanonicalComparer.OrderSymbols(
+            byId.Values.Select(root => root.Symbol),
+            cancellationToken);
+        var orderedRoots = new List<ResolvedLogicalRoot>(orderedSymbols.Count);
+        foreach (var symbol in orderedSymbols)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            orderedRoots.Add(byId[symbol.Id]);
+        }
+
+        return new RootSelection(
+            profile,
+            orderedRoots);
+    }
+
+    public async Task<SourceSearchResult> SelectSourceRowsAsync(
+        SymbolSelectionRequest request,
+        string? profileName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
+        var rows = await _symbolPathResolver.ResolveDeclarationRowsAsync(
+            profile.Id,
+            request,
+            cancellationToken);
+        var result = new List<DeclarationResultRow>(rows.Count);
+        foreach (var row in rows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(new DeclarationResultRow(row.Symbol, row.Declaration));
+        }
+
+        return new SourceSearchResult(profile, result);
+    }
+
+    public async Task<IReadOnlyList<LogicalSymbolResultRow>> LoadLogicalRowsAsync(
+        RootSelection selection,
+        bool includeSourceText,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var roots = selection.Roots;
+        var declarations = await repository.GetPreferredDeclarationsAsync(
+            selection.Profile.Id,
+            roots.Select(root => root.Symbol.Id),
+            includeSourceText,
+            cancellationToken);
+        var byId = declarations.ToDictionary(declaration => declaration.SymbolId);
+        var result = new List<LogicalSymbolResultRow>(roots.Count);
+        foreach (var root in roots)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            byId.TryGetValue(root.Symbol.Id, out var preferred);
+            var symbol = preferred is null
+                ? root.Symbol
+                : ApplyPreferredDeclaration(root.Symbol, preferred);
+            result.Add(new LogicalSymbolResultRow(symbol, preferred));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    public Task<RootSelection> ExpandOverrideRootsAsync(
+        RootSelection selection,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (selection.Roots.Any(root => root.Symbol.Kind != IndexedSymbolKind.Method))
+        {
+            throw new SymbolQueryParseException(
+                "--include-overrides requires an exact method query.");
+        }
+
+        return new MethodTargetResolver(repository).ExpandAsync(selection, cancellationToken);
+    }
+
+    public async Task<DefinitionResult> FindDefinitionsAsync(
+        RootSelection selection,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var roots = selection.Roots;
+        var declarations = await repository.GetDeclarationsAsync(
+            selection.Profile.Id,
+            roots.Select(root => root.Symbol.Id),
+            includeSourceText: false,
+            cancellationToken);
+        var declarationsById = new Dictionary<long, List<StoredDeclaration>>();
+        foreach (var declaration in declarations)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!declarationsById.TryGetValue(declaration.SymbolId, out var rowsForSymbol))
+            {
+                rowsForSymbol = [];
+                declarationsById.Add(declaration.SymbolId, rowsForSymbol);
+            }
+
+            rowsForSymbol.Add(declaration);
+        }
+
+        var rows = new List<DeclarationResultRow>();
+        foreach (var root in roots)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!declarationsById.TryGetValue(root.Symbol.Id, out var symbolDeclarations))
+            {
+                continue;
+            }
+
+            var orderedDeclarations = SymbolCanonicalComparer.OrderDefinitionDeclarations(
+                symbolDeclarations,
+                cancellationToken);
+            foreach (var declaration in orderedDeclarations)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                rows.Add(new DeclarationResultRow(root.Symbol, declaration));
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return new DefinitionResult(selection, rows);
+    }
+
+    public async Task<CallResult> FindReferencesAsync(
+        RootSelection selection,
+        GeneratedFilter generatedFilter,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var calls = await repository.GetCallsByCalleeAsync(
+            selection.Profile.Id,
+            selection.Roots.Select(root => root.Symbol.Id),
+            generatedFilter,
+            cancellationToken: cancellationToken);
+        var hydration = await HydrateCallResultAsync(
+            selection.Profile.Id,
+            calls,
+            CallerScope.Direct,
+            [],
+            cancellationToken);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        return new CallResult(selection, orderedCalls, hydration.EffectiveCallers, [], hydration.SymbolsById);
+    }
+
+    public async Task<CallResult> FindCallersAsync(
+        RootSelection selection,
+        GeneratedFilter generatedFilter,
+        DispatchSearchMode dispatchMode,
+        CallerScope callerScope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var rootIds = selection.Roots.Select(root => root.Symbol.Id).ToArray();
+        var calls = await repository.GetCallsByCalleeAsync(
+            selection.Profile.Id,
+            rootIds,
+            generatedFilter,
+            CallKinds,
+            cancellationToken);
+        IReadOnlyList<StoredRelation> possibleTargets = [];
+        if (dispatchMode != DispatchSearchMode.Static)
+        {
+            var kinds = dispatchMode == DispatchSearchMode.Virtual
+                ? new HashSet<SymbolRelationKind> { SymbolRelationKind.Overrides }
+                : new HashSet<SymbolRelationKind>
+                {
+                    SymbolRelationKind.Overrides,
+                    SymbolRelationKind.ExplicitlyImplements,
+                    SymbolRelationKind.ImplicitlyImplements,
+                };
+            possibleTargets = await repository.GetRelationsByTargetAsync(
+                selection.Profile.Id,
+                rootIds,
+                kinds,
+                cancellationToken);
+        }
+
+        var hydration = await HydrateCallResultAsync(
+            selection.Profile.Id,
+            calls,
+            callerScope,
+            possibleTargets,
+            cancellationToken);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        var orderedTargets = SymbolCanonicalComparer.OrderRelations(
+            possibleTargets,
+            hydration.SymbolsById,
+            cancellationToken);
+        return new CallResult(
+            selection,
+            orderedCalls,
+            hydration.EffectiveCallers,
+            orderedTargets,
+            hydration.SymbolsById);
+    }
+
+    public async Task<CallResult> FindCalleesAsync(
+        RootSelection selection,
+        GeneratedFilter generatedFilter,
+        bool includeLambdaCalls,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var rootIds = selection.Roots.Select(root => root.Symbol.Id).ToArray();
+        var calls = includeLambdaCalls
+            ? await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
+                selection.Profile.Id,
+                rootIds,
+                generatedFilter,
+                CallKinds,
+                cancellationToken)
+            : await repository.GetCallsByCallerAsync(
+                selection.Profile.Id,
+                rootIds,
+                generatedFilter,
+                CallKinds,
+                cancellationToken);
+        var hydration = await HydrateCallResultAsync(
+            selection.Profile.Id,
+            calls,
+            CallerScope.Direct,
+            [],
+            cancellationToken);
+        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
+            calls,
+            hydration.SymbolsById,
+            cancellationToken);
+        return new CallResult(selection, orderedCalls, [], [], hydration.SymbolsById);
+    }
+
+    public async Task<RelationResult> FindOverridesAsync(
+        RootSelection selection,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (selection.Roots.Any(root => root.Symbol.Kind != IndexedSymbolKind.Method))
+        {
+            throw new SymbolQueryParseException("--kind lambda is not applicable to overrides.");
+        }
+
+        var relations = await repository.GetRelationsByTargetAsync(
+            selection.Profile.Id,
+            selection.Roots.Select(root => root.Symbol.Id),
+            new HashSet<SymbolRelationKind> { SymbolRelationKind.Overrides },
+            cancellationToken);
+        var symbolsById = await HydrateRelationEndpointsAsync(
+            selection.Profile.Id,
+            relations,
+            cancellationToken);
+        var orderedRelations = SymbolCanonicalComparer.OrderRelations(
+            relations,
+            symbolsById,
+            cancellationToken);
+        return new RelationResult(selection, orderedRelations, symbolsById);
+    }
+
+    public async Task<AsyncPathResult> FindAsyncPathAsync(
+        RootSelection selection,
+        int maxNodes,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateMaxNodes(maxNodes);
+        var root = RequireSingleGraphRoot(selection, "async path");
+        return await _asyncPathResolver.ResolveAsync(selection, root, maxNodes, cancellationToken);
+    }
+
+    public async Task<CallerTreeResult> FindCallerTreeAsync(
+        RootSelection selection,
+        int depth,
+        int maxNodes,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateDepth(depth);
+        ValidateMaxNodes(maxNodes);
+        var root = RequireSingleGraphRoot(selection, "caller tree");
+        return await _callerTreeBuilder.BuildAsync(selection, root, depth, maxNodes, cancellationToken);
     }
 
     public Task<QueryContext> FindSymbolsAsync(
@@ -104,21 +430,21 @@ public sealed class SemanticQueryService
         bool includeSourceText,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
-        var matches = await _executableTargetResolver.ResolveAsync(
-            profile.Id,
+        var selection = await SelectRootsAsync(
             request,
+            profileName,
             sourceOnly,
-            includeOverrides,
+            GeneratedFilter.Include,
             cancellationToken);
-        var context = new QueryContext(
-            profile,
-            SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken));
-        return await AttachPreferredSourceIfRequestedAsync(
-            context,
-            includeSourceText,
-            cancellationToken);
+        if (includeOverrides)
+        {
+            selection = await ExpandOverrideRootsAsync(selection, cancellationToken);
+        }
+
+        var rows = await LoadLogicalRowsAsync(selection, includeSourceText, cancellationToken);
+        return new QueryContext(
+            selection.Profile,
+            rows.Select(row => row.Symbol).ToArray());
     }
 
     public Task<QueryContext> ShowSourceAsync(
@@ -150,21 +476,20 @@ public sealed class SemanticQueryService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!request.Conditions.Any(condition =>
-                condition.Category is ConditionCategory.Include or ConditionCategory.Exclude))
+        if (request.Selector is null &&
+            request.Conditions.Count == 0 &&
+            !request.KindSpecified &&
+            !request.AsyncStatusSpecified)
         {
             throw new SymbolQueryParseException(
-                "source search requires at least one include or exclude condition.");
+                "source search requires a bounded selector, condition, kind, or async status.");
         }
 
-        var context = await FindSymbolsAsync(
-            request,
-            profileName,
-            sourceOnly: true,
-            includeOverrides: false,
-            includeSourceText: true,
-            cancellationToken);
-        return context with { ShowSource = true };
+        var result = await SelectSourceRowsAsync(request, profileName, cancellationToken);
+        var symbols = result.Matches
+            .Select(row => ApplyPreferredDeclaration(row.Symbol, row.Declaration))
+            .ToArray();
+        return new QueryContext(result.Profile, symbols, ShowSource: true);
     }
 
     public Task<AsyncPathResult> FindAsyncPathAsync(
@@ -182,12 +507,12 @@ public sealed class SemanticQueryService
         CancellationToken cancellationToken = default)
     {
         ValidateMaxNodes(maxNodes);
-        var (profile, root) = await ResolveSingleSourceExecutableAsync(
+        var selection = await ResolveSingleSourceSelectionAsync(
             queryText,
             profileName,
             filter,
             cancellationToken);
-        return await _asyncPathResolver.ResolveAsync(profile, root, maxNodes, cancellationToken);
+        return await FindAsyncPathAsync(selection, maxNodes, cancellationToken);
     }
 
     public Task<CallerTreeResult> FindCallerTreeAsync(
@@ -208,17 +533,12 @@ public sealed class SemanticQueryService
     {
         ValidateDepth(depth);
         ValidateMaxNodes(maxNodes);
-        var (profile, root) = await ResolveSingleSourceExecutableAsync(
+        var selection = await ResolveSingleSourceSelectionAsync(
             queryText,
             profileName,
             filter,
             cancellationToken);
-        return await _callerTreeBuilder.BuildAsync(
-            profile,
-            root,
-            depth,
-            maxNodes,
-            cancellationToken);
+        return await FindCallerTreeAsync(selection, depth, maxNodes, cancellationToken);
     }
 
     public Task<QueryContext> ListSymbolsAsync(
@@ -271,13 +591,14 @@ public sealed class SemanticQueryService
         bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(
+        var selection = await ResolveTargetSelectionAsync(
             queryText,
             profileName,
             includeOverrides,
             filter,
+            GeneratedFilter.Include,
             cancellationToken);
-        return new DefinitionResult(context, context.MatchedSymbols);
+        return await FindDefinitionsAsync(selection, cancellationToken);
     }
 
     public Task<DefinitionResult> FindDefinitionsAsync(
@@ -303,7 +624,7 @@ public sealed class SemanticQueryService
         var paths = IndexPathResolver.CreateForQuery(
             repository.DatabasePath,
             profile.IndexRootAnchor,
-            baseDirectory: null);
+            baseDirectory);
         var storedDocumentPath = paths.NormalizeLocationInputToStoredPath(parsed.Path);
         var documents = await repository.FindDocumentsAsync(
             profile.Id,
@@ -328,15 +649,18 @@ public sealed class SemanticQueryService
         var call = await repository.FindCallAtAsync(profile.Id, document.Id, offset, cancellationToken);
         if (call is null)
         {
-            return new DefinitionResult(new QueryContext(profile, []), []);
+            return new DefinitionResult(new RootSelection(profile, []), []);
         }
 
         var targetId = call.CalleeDefinitionId ?? call.CalleeSymbolId;
         var candidates = targetId is null
             ? []
             : await repository.GetSymbolsByIdsAsync(profile.Id, [targetId.Value], cancellationToken);
-        var definitions = FilterSymbols(candidates, filter, cancellationToken);
-        return new DefinitionResult(new QueryContext(profile, definitions), definitions);
+        var filtered = FilterSymbols(candidates, filter, cancellationToken);
+        var selection = new RootSelection(
+            profile,
+            filtered.Select(symbol => new ResolvedLogicalRoot(symbol, [])).ToArray());
+        return await FindDefinitionsAsync(selection, cancellationToken);
     }
 
     public Task<CallResult> FindReferencesAsync(
@@ -361,28 +685,14 @@ public sealed class SemanticQueryService
         bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(
+        var selection = await ResolveTargetSelectionAsync(
             queryText,
             profileName,
             includeOverrides,
             filter,
-            cancellationToken);
-        var calls = await repository.GetCallsByCalleeAsync(
-            context.Profile.Id,
-            context.MatchedSymbols.Select(symbol => symbol.Id),
             generatedFilter,
-            cancellationToken: cancellationToken);
-        var hydration = await HydrateCallResultAsync(
-            context.Profile.Id,
-            calls,
-            CallerScope.Direct,
-            [],
             cancellationToken);
-        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
-            calls,
-            hydration.SymbolsById,
-            cancellationToken);
-        return new CallResult(context, orderedCalls, hydration.EffectiveCallers, [], hydration.SymbolsById);
+        return await FindReferencesAsync(selection, generatedFilter, cancellationToken);
     }
 
     public Task<CallResult> FindCallersAsync(
@@ -413,56 +723,19 @@ public sealed class SemanticQueryService
         bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(
+        var selection = await ResolveTargetSelectionAsync(
             queryText,
             profileName,
             includeOverrides,
             filter,
-            cancellationToken);
-        var calls = await repository.GetCallsByCalleeAsync(
-            context.Profile.Id,
-            context.MatchedSymbols.Select(symbol => symbol.Id),
             generatedFilter,
-            CallKinds,
             cancellationToken);
-        IReadOnlyList<StoredRelation> possibleTargets = [];
-        if (dispatchMode != DispatchSearchMode.Static)
-        {
-            var kinds = dispatchMode == DispatchSearchMode.Virtual
-                ? new HashSet<SymbolRelationKind> { SymbolRelationKind.Overrides }
-                : new HashSet<SymbolRelationKind>
-                {
-                    SymbolRelationKind.Overrides,
-                    SymbolRelationKind.ExplicitlyImplements,
-                    SymbolRelationKind.ImplicitlyImplements,
-                };
-            possibleTargets = await repository.GetRelationsByTargetAsync(
-                context.Profile.Id,
-                context.MatchedSymbols.Select(symbol => symbol.Id),
-                kinds,
-                cancellationToken);
-        }
-
-        var hydration = await HydrateCallResultAsync(
-            context.Profile.Id,
-            calls,
+        return await FindCallersAsync(
+            selection,
+            generatedFilter,
+            dispatchMode,
             callerScope,
-            possibleTargets,
             cancellationToken);
-        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
-            calls,
-            hydration.SymbolsById,
-            cancellationToken);
-        var orderedTargets = SymbolCanonicalComparer.OrderRelations(
-            possibleTargets,
-            hydration.SymbolsById,
-            cancellationToken);
-        return new CallResult(
-            context,
-            orderedCalls,
-            hydration.EffectiveCallers,
-            orderedTargets,
-            hydration.SymbolsById);
     }
 
     public Task<CallResult> FindCalleesAsync(
@@ -490,36 +763,14 @@ public sealed class SemanticQueryService
         bool includeOverrides = false,
         CancellationToken cancellationToken = default)
     {
-        var context = await FindTargetSymbolsAsync(
+        var selection = await ResolveTargetSelectionAsync(
             queryText,
             profileName,
             includeOverrides,
             filter,
+            generatedFilter,
             cancellationToken);
-        var calls = includeLambdaCalls
-            ? await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
-                context.Profile.Id,
-                context.MatchedSymbols.Select(symbol => symbol.Id),
-                generatedFilter,
-                CallKinds,
-                cancellationToken)
-            : await repository.GetCallsByCallerAsync(
-                context.Profile.Id,
-                context.MatchedSymbols.Select(symbol => symbol.Id),
-                generatedFilter,
-                CallKinds,
-                cancellationToken);
-        var hydration = await HydrateCallResultAsync(
-            context.Profile.Id,
-            calls,
-            CallerScope.Direct,
-            [],
-            cancellationToken);
-        var orderedCalls = SymbolCanonicalComparer.OrderCalls(
-            calls,
-            hydration.SymbolsById,
-            cancellationToken);
-        return new CallResult(context, orderedCalls, [], [], hydration.SymbolsById);
+        return await FindCalleesAsync(selection, generatedFilter, includeLambdaCalls, cancellationToken);
     }
 
     public Task<CallResult> FindCalleesAsync(
@@ -541,31 +792,19 @@ public sealed class SemanticQueryService
         string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        if (filter.Kind == IndexedSymbolKind.Lambda)
+        if (filter.Kind is { } requestedKind && requestedKind != IndexedSymbolKind.Method)
         {
             throw new SymbolQueryParseException("--kind lambda is not applicable to overrides.");
         }
 
-        var context = await FindTargetSymbolsAsync(
+        var selection = await ResolveTargetSelectionAsync(
             queryText,
             profileName,
             includeOverrides: false,
             filter,
+            GeneratedFilter.Include,
             cancellationToken);
-        var relations = await repository.GetRelationsByTargetAsync(
-            context.Profile.Id,
-            context.MatchedSymbols.Select(symbol => symbol.Id),
-            new HashSet<SymbolRelationKind> { SymbolRelationKind.Overrides },
-            cancellationToken);
-        var symbolsById = await HydrateRelationEndpointsAsync(
-            context.Profile.Id,
-            relations,
-            cancellationToken);
-        var orderedRelations = SymbolCanonicalComparer.OrderRelations(
-            relations,
-            symbolsById,
-            cancellationToken);
-        return new RelationResult(context, orderedRelations, symbolsById);
+        return await FindOverridesAsync(selection, cancellationToken);
     }
 
     public async Task<ConditionsResult> GetConditionsAsync(
@@ -662,65 +901,19 @@ public sealed class SemanticQueryService
         return symbolsById;
     }
 
-    private async Task<QueryContext> AttachPreferredSourceAsync(
-        QueryContext context,
-        CancellationToken cancellationToken)
-    {
-        var symbols = await AttachPreferredDeclarationsAsync(
-            context.Profile.Id,
-            context.MatchedSymbols,
-            includeSourceText: true,
-            cancellationToken);
-        return context with
+    private static StoredSymbol ApplyPreferredDeclaration(
+        StoredSymbol symbol,
+        StoredDeclaration declaration) =>
+        symbol with
         {
-            MatchedSymbols = SymbolCanonicalComparer.OrderSymbols(symbols, cancellationToken),
+            PreferredDeclaration = declaration,
+            PreferredDocumentPath = declaration.DocumentPath,
+            PreferredSourceStart = declaration.SourceStart,
+            PreferredIsGenerated = declaration.IsGenerated,
+            DocumentPath = declaration.DocumentPath,
+            SourceStart = declaration.SourceStart,
+            IsGenerated = declaration.IsGenerated,
         };
-    }
-
-    private Task<QueryContext> AttachPreferredSourceIfRequestedAsync(
-        QueryContext context,
-        bool includeSourceText,
-        CancellationToken cancellationToken) =>
-        includeSourceText
-            ? AttachPreferredSourceAsync(context, cancellationToken)
-            : Task.FromResult(context);
-
-    private async Task<IReadOnlyList<StoredSymbol>> AttachPreferredDeclarationsAsync(
-        long profileId,
-        IReadOnlyList<StoredSymbol> symbols,
-        bool includeSourceText,
-        CancellationToken cancellationToken)
-    {
-        if (symbols.Count == 0)
-        {
-            return symbols;
-        }
-
-        var declarations = await repository.GetPreferredDeclarationsAsync(
-            profileId,
-            symbols.Select(symbol => symbol.Id),
-            includeSourceText,
-            cancellationToken);
-        var bySymbolId = declarations.ToDictionary(declaration => declaration.SymbolId);
-        return symbols.Select(symbol =>
-        {
-            if (!bySymbolId.TryGetValue(symbol.Id, out var declaration))
-            {
-                return symbol;
-            }
-
-            return symbol with
-            {
-                PreferredDeclaration = declaration,
-                PreferredDocumentPath = declaration.DocumentPath,
-                PreferredSourceStart = declaration.SourceStart,
-                PreferredIsGenerated = declaration.IsGenerated,
-                DocumentPath = declaration.DocumentPath,
-                SourceStart = declaration.SourceStart,
-                IsGenerated = declaration.IsGenerated,
-            };
-        }).ToArray();
-    }
 
     private static IReadOnlyList<StoredSymbol> FilterSymbols(
         IEnumerable<StoredSymbol> candidates,
@@ -761,35 +954,35 @@ public sealed class SemanticQueryService
             AsyncStatusSpecified: filter.AsyncStatus != AsyncStatusFilter.All);
     }
 
-    private async Task<(StoredProfile Profile, StoredSymbol Root)> ResolveSingleSourceExecutableAsync(
+    private async Task<RootSelection> ResolveSingleSourceSelectionAsync(
         string queryText,
         string? profileName,
         FunctionTargetFilter filter,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var profile = await repository.GetProfileAsync(profileName, cancellationToken);
-        var matches = await _executableTargetResolver.ResolveAsync(
-            profile.Id,
+        var selection = await SelectRootsAsync(
             CreateStrictSelectionRequest(queryText, filter),
+            profileName,
             sourceOnly: true,
-            includeOverrides: false,
+            GeneratedFilter.Include,
             cancellationToken);
-        var orderedMatches = SymbolCanonicalComparer.OrderSymbols(matches, cancellationToken);
-        if (orderedMatches.Count == 0)
+        if (selection.Roots.Count == 0)
         {
             throw new SymbolQueryParseException(
                 $"No source-backed executable matches graph query: {queryText}");
         }
 
-        if (orderedMatches.Count > 1)
+        if (selection.Roots.Count > 1)
         {
             throw new SymbolQueryParseException(
                 $"Graph query is ambiguous for '{queryText}'. Candidates: " +
-                DescribeAmbiguousGraphRootCandidates(orderedMatches, cancellationToken));
+                DescribeAmbiguousGraphRootCandidates(
+                    selection.Roots.Select(root => root.Symbol).ToArray(),
+                    cancellationToken));
         }
 
-        return (profile, orderedMatches[0]);
+        return selection;
     }
 
     private static string DescribeAmbiguousGraphRootCandidates(
@@ -825,6 +1018,26 @@ public sealed class SemanticQueryService
                 $"Stored symbol ID {symbol.Id} has no semantic path data."),
             DefaultPathFormat);
 
+    private static StoredSymbol RequireSingleGraphRoot(
+        RootSelection selection,
+        string graphName)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        if (selection.Roots.Count == 0)
+        {
+            throw new SymbolQueryParseException(
+                $"No source-backed executable matches {graphName} query.");
+        }
+
+        if (selection.Roots.Count > 1)
+        {
+            throw new SymbolQueryParseException(
+                $"{char.ToUpperInvariant(graphName[0])}{graphName[1..]} query requires exactly one selected root.");
+        }
+
+        return selection.Roots[0].Symbol;
+    }
+
     private static void ValidateDepth(int depth)
     {
         if (depth < 0)
@@ -841,32 +1054,46 @@ public sealed class SemanticQueryService
         }
     }
 
-    private async Task<QueryContext> FindTargetSymbolsAsync(
+    private async Task<RootSelection> ResolveTargetSelectionAsync(
         string queryText,
         string? profileName,
         bool includeOverrides,
         FunctionTargetFilter filter,
+        GeneratedFilter rootGeneratedFilter,
         CancellationToken cancellationToken)
     {
-        var sourceContext = await FindSymbolsAsync(
-            queryText,
-            filter,
-            profileName,
-            sourceOnly: true,
-            includeOverrides,
-            cancellationToken);
-        if (sourceContext.MatchedSymbols.Count > 0)
+        if (includeOverrides &&
+            filter.Kind is { } requestedKind &&
+            requestedKind != IndexedSymbolKind.Method)
         {
-            return sourceContext;
+            throw new SymbolQueryParseException(
+                requestedKind == IndexedSymbolKind.Lambda
+                    ? "--kind lambda cannot be combined with --include-overrides."
+                    : "--include-overrides requires an exact method query.");
         }
 
-        var metadataContext = await FindSymbolsAsync(
-            queryText,
-            filter,
+        var request = CreateStrictSelectionRequest(queryText, filter);
+        var selection = await SelectRootsAsync(
+            request,
             profileName,
-            sourceOnly: false,
-            includeOverrides,
+            sourceOnly: true,
+            rootGeneratedFilter,
             cancellationToken);
-        return metadataContext;
+        if (selection.Roots.Count == 0)
+        {
+            selection = await SelectRootsAsync(
+                request,
+                profileName,
+                sourceOnly: false,
+                rootGeneratedFilter,
+                cancellationToken);
+        }
+
+        if (includeOverrides)
+        {
+            selection = await ExpandOverrideRootsAsync(selection, cancellationToken);
+        }
+
+        return selection;
     }
 }

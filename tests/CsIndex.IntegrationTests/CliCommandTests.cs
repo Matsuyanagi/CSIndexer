@@ -2036,7 +2036,12 @@ public sealed class CliCommandTests : IDisposable
             includeOverrides: true,
             includeSourceText: false,
             cancellationToken);
-        Assert.All(nameOnly.MatchedSymbols, symbol => Assert.Null(symbol.PreferredDeclaration));
+        Assert.All(nameOnly.MatchedSymbols, symbol =>
+        {
+            var declaration = Assert.IsType<StoredDeclaration>(symbol.PreferredDeclaration);
+            Assert.Null(declaration.NormalizedSource);
+            Assert.Null(declaration.NormalizedSourceHash);
+        });
 
         var result = await RunAsync(
             "symbol", "find", "Alpha.Pianist::Play()", "--include-overrides", "--show-source", "--output-format", "json",

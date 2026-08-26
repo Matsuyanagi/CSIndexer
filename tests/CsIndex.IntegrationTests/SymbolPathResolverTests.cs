@@ -409,7 +409,7 @@ public sealed class SymbolPathResolverTests(SymbolResolutionFixture fixture)
             profile.Id,
             Request(
                 "global::Program::<top-level-statements>",
-                filter: new FunctionTargetFilter(null, AsyncStatusFilter.Sync),
+                filter: new FunctionTargetFilter(null, AsyncStatusFilter.Async),
                 asyncStatusSpecified: true),
             sourceOnly: false,
             cancellationToken));

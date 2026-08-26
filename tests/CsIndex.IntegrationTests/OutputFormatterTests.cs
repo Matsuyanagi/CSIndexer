@@ -4,6 +4,7 @@ using CsIndex.Cli;
 using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
 using CsIndex.Query;
+using CsIndex.Query.Symbols;
 using CsIndex.Storage;
 
 namespace CsIndex.IntegrationTests;
@@ -277,11 +278,11 @@ public sealed class OutputFormatterTests
         var formatter = new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics);
 
         formatter.WriteDefinitions(
-            new DefinitionResult(context, [symbol]),
+            CreateDefinitionResult(context, [symbol]),
             TestContext.Current.CancellationToken);
         formatter.WriteCalls(
             new CallResult(
-                context,
+                CreateSelection(context),
                 [CreateCall(AsyncUsageKind.None)],
                 [],
                 [],
@@ -289,7 +290,7 @@ public sealed class OutputFormatterTests
             "call(s)",
             TestContext.Current.CancellationToken);
         formatter.WriteRelations(new RelationResult(
-            context,
+            CreateSelection(context),
             [new StoredRelation(1, 2, SymbolRelationKind.Overrides)],
             CreateEndpointSymbols()),
             TestContext.Current.CancellationToken);
@@ -313,7 +314,7 @@ public sealed class OutputFormatterTests
         var context = new QueryContext(CreateProfile(), [symbol]);
 
         using var document = CaptureInjectedJson(formatter => formatter.WriteDefinitions(
-            new DefinitionResult(context, [symbol]),
+            CreateDefinitionResult(context, [symbol]),
             TestContext.Current.CancellationToken));
 
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
@@ -332,7 +333,7 @@ public sealed class OutputFormatterTests
 
         using var document = CaptureInjectedJson(formatter => formatter.WriteCalls(
             new CallResult(
-                context,
+                CreateSelection(context),
                 [CreateCall(AsyncUsageKind.Awaited)],
                 [],
                 [],
@@ -358,7 +359,7 @@ public sealed class OutputFormatterTests
             SymbolRelationKind.Overrides);
 
         using var document = CaptureInjectedJson(formatter => formatter.WriteRelations(
-            new RelationResult(context, [relation], CreateEndpointSymbols()),
+            new RelationResult(CreateSelection(context), [relation], CreateEndpointSymbols()),
             TestContext.Current.CancellationToken));
 
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
@@ -393,7 +394,7 @@ public sealed class OutputFormatterTests
             displayName: "Example.Definition()");
         Assert.True(endpoints.Remove(missingId), missingRole);
         var result = new CallResult(
-            new QueryContext(CreateProfile(), []),
+            CreateSelection(new QueryContext(CreateProfile(), [])),
             [call],
             [],
             [],
@@ -417,7 +418,7 @@ public sealed class OutputFormatterTests
         var endpoints = CreateEndpointSymbols().ToDictionary();
         Assert.True(endpoints.Remove(missingId));
         var result = new RelationResult(
-            new QueryContext(CreateProfile(), []),
+            CreateSelection(new QueryContext(CreateProfile(), [])),
             [new StoredRelation(1, 2, SymbolRelationKind.Overrides)],
             endpoints);
 
@@ -446,7 +447,7 @@ public sealed class OutputFormatterTests
             .Where(pair => pair.Key == call.CallerSymbolId)
             .ToDictionary();
         var result = new CallResult(
-            new QueryContext(CreateProfile(), []),
+            CreateSelection(new QueryContext(CreateProfile(), [])),
             [call],
             [],
             [],
@@ -484,7 +485,7 @@ public sealed class OutputFormatterTests
             .Where(pair => pair.Key == call.CallerSymbolId)
             .ToDictionary();
         var result = new CallResult(
-            new QueryContext(CreateProfile(), []),
+            CreateSelection(new QueryContext(CreateProfile(), [])),
             [call],
             [],
             [],
@@ -906,7 +907,7 @@ public sealed class OutputFormatterTests
         using (var destination = OutputDestination.Create(outputPath, databasePath))
         {
             var nodes = new CancelAfterFirstReadList<StoredSymbol>([root, child], cancellation);
-            var result = new AsyncPathResult(CreateProfile(), root, nodes, Found: true, Truncated: false);
+            var result = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, nodes, Found: true, Truncated: false);
             var formatter = new GraphOutputFormatter(shortNames: false, destination.Writer);
 
             Assert.Throws<OperationCanceledException>(() => formatter.WriteAsyncPath(
@@ -1421,7 +1422,7 @@ public sealed class OutputFormatterTests
     public void GraphOutputFormatterWritesPayloadOnlyToInjectedWriter()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
-        var result = new AsyncPathResult(CreateProfile(), root, [root], Found: true, Truncated: false);
+        var result = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [root], Found: true, Truncated: false);
         using var payload = new StringWriter();
         var formatter = new GraphOutputFormatter(shortNames: false, payload);
 
@@ -1437,7 +1438,7 @@ public sealed class OutputFormatterTests
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
         var middle = CreateSymbol(AsyncRole.None, 1, id: 102, displayName: "Example.Middle()");
         var origin = CreateSymbol(AsyncRole.DeclaredAsync, 0, id: 103, displayName: "Example.EndAsync()");
-        var result = new AsyncPathResult(CreateProfile(), root, [root, middle, origin], Found: true, Truncated: true);
+        var result = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [root, middle, origin], Found: true, Truncated: true);
 
         var tree = CaptureGraphText(formatter => formatter.WriteAsyncPath(result, "tree"));
         var line = CaptureGraphText(formatter => formatter.WriteAsyncPath(result, "line"));
@@ -1458,7 +1459,7 @@ public sealed class OutputFormatterTests
         Assert.Equal([101L, 102L, 103L], json.RootElement.GetProperty("nodes").EnumerateArray()
             .Select(node => node.GetProperty("id").GetInt64()));
 
-        var noPath = new AsyncPathResult(CreateProfile(), root, [], Found: false, Truncated: false);
+        var noPath = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [], Found: false, Truncated: false);
         Assert.Equal(
             "No reachable asynchronous function: Example.Root()" + Environment.NewLine,
             CaptureGraphText(formatter => formatter.WriteAsyncPath(noPath, "tree")));
@@ -1480,7 +1481,7 @@ public sealed class OutputFormatterTests
             id: 202,
             displayName: "Example.Caller(\"quoted\")\n[bracket]");
         var result = new CallerTreeResult(
-            CreateProfile(),
+            CreateSelection(CreateProfile(), root),
             root,
             [new CallerTreeNode(root, 0), new CallerTreeNode(caller, 1)],
             [new CallerTreeEdge(caller.Id, root.Id), new CallerTreeEdge(caller.Id, root.Id)],
@@ -1519,7 +1520,7 @@ public sealed class OutputFormatterTests
         var z2 = CreateSymbol(AsyncRole.None, null, id: 105, displayName: "Example.Z2()");
         var shared = CreateSymbol(AsyncRole.None, null, id: 106, displayName: "Example.Shared()");
         var result = new CallerTreeResult(
-            CreateProfile(),
+            CreateSelection(CreateProfile(), root),
             root,
             [
                 new CallerTreeNode(root, 0),
@@ -1591,7 +1592,7 @@ public sealed class OutputFormatterTests
         cancellation.Cancel();
 
         Assert.Throws<OperationCanceledException>(() => new GraphOutputFormatter(shortNames: false, TextWriter.Null).WriteAsyncPath(
-            new AsyncPathResult(CreateProfile(), root, [root], Found: true, Truncated: false),
+            new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [root], Found: true, Truncated: false),
             "tree",
             cancellation.Token));
     }
@@ -1675,7 +1676,7 @@ public sealed class OutputFormatterTests
                 id: 2,
                 displayName: "Example.Services.Callee::Execute(System.Threading.Tasks.Task)"),
         };
-        var result = new CallResult(context, [call], [], [], endpointSymbols);
+        var result = new CallResult(CreateSelection(context), [call], [], [], endpointSymbols);
 
         var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteCalls(result, "call(s)"));
 
@@ -1738,7 +1739,7 @@ public sealed class OutputFormatterTests
     {
         var context = new QueryContext(CreateProfile(), []);
         var result = new CallResult(
-            context,
+            CreateSelection(context),
             [CreateCall(AsyncUsageKind.Awaited)],
             [],
             [],
@@ -1778,7 +1779,7 @@ public sealed class OutputFormatterTests
     {
         var context = new QueryContext(CreateProfile(), []);
         var result = new CallResult(
-            context,
+            CreateSelection(context),
             [CreateCall(AsyncUsageKind.Awaited)],
             [],
             [],
@@ -2071,6 +2072,43 @@ public sealed class OutputFormatterTests
             }
         }
     }
+
+    private static RootSelection CreateSelection(QueryContext context) =>
+        new(
+            context.Profile,
+            context.MatchedSymbols.Select(symbol => new ResolvedLogicalRoot(
+                symbol,
+                symbol.PreferredDeclaration is { } declaration ? [declaration] : [])).ToArray());
+
+    private static RootSelection CreateSelection(StoredProfile profile, StoredSymbol root) =>
+        new(
+            profile,
+            [new ResolvedLogicalRoot(
+                root,
+                root.PreferredDeclaration is { } declaration ? [declaration] : [])]);
+
+    private static DefinitionResult CreateDefinitionResult(
+        QueryContext context,
+        IReadOnlyList<StoredSymbol> definitions) =>
+        new(
+            CreateSelection(context),
+            definitions
+                .Select(symbol => new DeclarationResultRow(symbol, CreateDeclaration(symbol)))
+                .ToArray());
+
+    private static StoredDeclaration CreateDeclaration(StoredSymbol symbol) =>
+        symbol.PreferredDeclaration ?? new StoredDeclaration(
+            Id: symbol.Id,
+            DeclarationKey: $"declaration-{symbol.Id}",
+            SymbolId: symbol.Id,
+            DocumentId: symbol.Id,
+            DocumentPath: symbol.DocumentPath ?? "source.cs",
+            Role: DeclarationRole.Ordinary,
+            SourceStart: symbol.SourceStart ?? 0,
+            SourceLength: symbol.SourceLength ?? symbol.NormalizedSource?.Length ?? 0,
+            NormalizedSource: symbol.NormalizedSource,
+            NormalizedSourceHash: symbol.NormalizedSourceHash,
+            IsGenerated: symbol.IsGenerated);
 
     private static StoredProfile CreateProfile() => new(
         Id: 1,

@@ -679,7 +679,7 @@ internal static class Program
             profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
-        if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
+        if (RequiresSingleFailure(parsed, result.Selection.Roots.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
@@ -752,7 +752,7 @@ internal static class Program
             profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
-        if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
+        if (RequiresSingleFailure(parsed, result.Selection.Roots.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
@@ -812,7 +812,7 @@ internal static class Program
             profileName: parsed.GetSingle("profile"),
             includeOverrides: parsed.HasFlag("include-overrides"),
             cancellationToken: cancellationToken);
-        if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
+        if (RequiresSingleFailure(parsed, result.Selection.Roots.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
@@ -858,7 +858,7 @@ internal static class Program
             filter,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        if (RequiresSingleFailure(parsed, result.Context.MatchedSymbols.Count))
+        if (RequiresSingleFailure(parsed, result.Selection.Roots.Count))
         {
             return ExitCodes.RequireSingleFailure;
         }
