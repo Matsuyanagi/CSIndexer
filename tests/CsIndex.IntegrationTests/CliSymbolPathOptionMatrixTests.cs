@@ -113,7 +113,7 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
             ["overrides"],
             [
                 "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
-                .. RootConditions, "kind", "async-status", "symbol-path-style", "short-names", "base-dir", "path-style",
+                .. AllConditions, "kind", "async-status", "symbol-path-style", "short-names", "base-dir", "path-style",
                 "require-single",
             ]),
         new(
@@ -182,6 +182,20 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
                     $"{command.Name} {(expected ? "should allow" : "should reject")} --{option}. " +
                     $"Exit={result.ExitCode}; stderr={result.StandardError}");
             }
+        }
+    }
+
+    [Fact]
+    public async Task NormalHelpPublishesTheExactAcceptedOptionMatrix()
+    {
+        foreach (var command in CommandScopes)
+        {
+            var result = await RunAsync([.. command.Prefix, "--help"]);
+
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            Assert.Equal(
+                command.Allowed.Distinct(StringComparer.Ordinal).OrderBy(option => option, StringComparer.Ordinal),
+                ReadAcceptedOptions(result.StandardOutput));
         }
     }
 
@@ -418,6 +432,55 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
         Assert.NotEqual(firstRegex.StandardError, secondRegex.StandardError);
     }
 
+    [Fact]
+    public async Task EveryCaseOptionControlsOnlyItsOwnConditionCategory()
+    {
+        await _fixture.BuildTask;
+        var cases = new[]
+        {
+            new CaseProbe("namespace", "alpha"),
+            new CaseProbe("type", "aclass"),
+            new CaseProbe("method", "play()"),
+            new CaseProbe("file", "main.CS"),
+            new CaseProbe("source", "PUBLIC VOID PLAY"),
+        };
+
+        foreach (var probe in cases)
+        {
+            var strictArguments = BuildCaseProbeArguments(probe, "strict");
+            var ignoreArguments = BuildCaseProbeArguments(probe, "ignore");
+            var strict = await RunAsync([.. strictArguments, "--db", _fixture.DatabasePath]);
+            var ignore = await RunAsync([.. ignoreArguments, "--db", _fixture.DatabasePath]);
+
+            Assert.Equal(ExitCodes.Success, strict.ExitCode);
+            Assert.Equal(ExitCodes.Success, ignore.ExitCode);
+            using var strictDocument = System.Text.Json.JsonDocument.Parse(strict.StandardOutput);
+            using var ignoreDocument = System.Text.Json.JsonDocument.Parse(ignore.StandardOutput);
+            Assert.Empty(strictDocument.RootElement.GetProperty("matched").EnumerateArray());
+            Assert.Contains(
+                ignoreDocument.RootElement.GetProperty("matched").EnumerateArray(),
+                symbol => symbol.GetProperty("displayName").GetString() == "Alpha.AClass::Play()");
+        }
+    }
+
+    [Fact]
+    public async Task OverridesAcceptSourceConditionsAsRootRefinements()
+    {
+        await _fixture.BuildTask;
+
+        var strict = await RunAsync(
+            "overrides", "Alpha.Pianist::Play()", "--include-literal", "PUBLIC VIRTUAL VOID PLAY",
+            "--source-case", "strict", "--db", _fixture.DatabasePath);
+        var ignore = await RunAsync(
+            "overrides", "Alpha.Pianist::Play()", "--include-literal", "PUBLIC VIRTUAL VOID PLAY",
+            "--source-case", "ignore", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, strict.ExitCode);
+        Assert.Contains("No source-backed", strict.StandardError, StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.Success, ignore.ExitCode);
+        Assert.Contains("Alpha.ProPianist::Play()", ignore.StandardOutput, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("Game::Player::Run()::<lambda#1>")]
     [InlineData("Game.Player.Run()")]
@@ -650,6 +713,47 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
     }
 
     [Fact]
+    public async Task CalleesApplyGeneratedFilterToTraversalCallDocumentsAfterRootSelection()
+    {
+        await _fixture.BuildTask;
+        await _fixture.AddResolvedCallAsync(
+            "Alpha.AClass::Play()",
+            "GeneratedCode.GeneratedCaller::Execute(GameNS.Player)",
+            cancellationToken: TestContext.Current.CancellationToken);
+        await _fixture.AddResolvedCallAsync(
+            "GeneratedCode.GeneratedCaller::Execute(GameNS.Player)",
+            "Alpha.AClass::Play()",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var ordinaryUnfiltered = await RunAsync(
+            "callees", "Alpha.AClass::Play()", "--output-format", "json", "--db", _fixture.DatabasePath);
+        var ordinaryExcluded = await RunAsync(
+            "callees", "Alpha.AClass::Play()", "--exclude-generated", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+        var generatedUnfiltered = await RunAsync(
+            "callees", "GeneratedCode.GeneratedCaller::Execute", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+        var generatedOnly = await RunAsync(
+            "callees", "GeneratedCode.GeneratedCaller::Execute", "--only-generated", "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, ordinaryUnfiltered.ExitCode);
+        Assert.Equal(ExitCodes.Success, ordinaryExcluded.ExitCode);
+        Assert.Equal(ExitCodes.Success, generatedUnfiltered.ExitCode);
+        Assert.Equal(ExitCodes.Success, generatedOnly.ExitCode);
+        using var ordinaryUnfilteredDocument = System.Text.Json.JsonDocument.Parse(ordinaryUnfiltered.StandardOutput);
+        using var ordinaryExcludedDocument = System.Text.Json.JsonDocument.Parse(ordinaryExcluded.StandardOutput);
+        using var generatedUnfilteredDocument = System.Text.Json.JsonDocument.Parse(generatedUnfiltered.StandardOutput);
+        using var generatedOnlyDocument = System.Text.Json.JsonDocument.Parse(generatedOnly.StandardOutput);
+        Assert.NotEmpty(ordinaryUnfilteredDocument.RootElement.GetProperty("calls").EnumerateArray());
+        Assert.Empty(ordinaryExcludedDocument.RootElement.GetProperty("calls").EnumerateArray());
+        Assert.True(
+            generatedUnfilteredDocument.RootElement.GetProperty("calls").GetArrayLength() >
+            generatedOnlyDocument.RootElement.GetProperty("calls").GetArrayLength());
+        Assert.NotEmpty(generatedOnlyDocument.RootElement.GetProperty("calls").EnumerateArray());
+    }
+
+    [Fact]
     public async Task MandatoryRootsRejectMissingMatchesBeforeOutputConstruction()
     {
         await _fixture.BuildTask;
@@ -799,6 +903,47 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
             ? []
             : OptionTokens(option);
 
+    private static string[] BuildCaseProbeArguments(CaseProbe probe, string mode)
+    {
+        var conditions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["namespace"] = "Alpha",
+            ["type"] = "AClass",
+            ["method"] = "Play()",
+            ["file"] = "Main.cs",
+            ["source"] = "public void Play",
+        };
+        conditions[probe.Category] = probe.Value;
+        return
+        [
+            "symbol", "find",
+            "--namespace-literal", conditions["namespace"],
+            "--type-literal", conditions["type"],
+            "--method-literal", conditions["method"],
+            "--file-literal", conditions["file"],
+            "--include-literal", conditions["source"],
+            "--namespace-case", probe.Category == "namespace" ? mode : "strict",
+            "--type-case", probe.Category == "type" ? mode : "strict",
+            "--method-case", probe.Category == "method" ? mode : "strict",
+            "--file-case", probe.Category == "file" ? mode : "strict",
+            "--source-case", probe.Category == "source" ? mode : "strict",
+            "--output-format", "json",
+        ];
+    }
+
+    private static IReadOnlyList<string> ReadAcceptedOptions(string help)
+    {
+        var lines = help.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var heading = Array.IndexOf(lines, "Accepted options:");
+        Assert.True(heading >= 0, help);
+        return lines
+            .Skip(heading + 1)
+            .TakeWhile(line => line.StartsWith("  --", StringComparison.Ordinal))
+            .Select(line => line[4..])
+            .OrderBy(option => option, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private static async Task<CommandResult> RunAsync(params string[] args)
     {
         var originalOutput = Console.Out;
@@ -842,6 +987,8 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
     }
 
     private sealed record CommandScope(string Name, string[] Prefix, string[] Allowed);
+
+    private sealed record CaseProbe(string Category, string Value);
 
     private sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError);
 }

@@ -1832,9 +1832,12 @@ public sealed class CliCommandTests : IDisposable
     public async Task NewCommandHelpMatchesAcceptedGrammar(string[] args, string expectedHelp)
     {
         var result = await RunAsync(args);
+        var actualHelp = result.StandardOutput.ReplaceLineEndings("\n");
+        var acceptedOptionsIndex = actualHelp.IndexOf("\nAccepted options:\n", StringComparison.Ordinal);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Equal(FormatExpectedCommandHelp(expectedHelp) + "\n", result.StandardOutput.ReplaceLineEndings("\n"));
+        Assert.True(acceptedOptionsIndex >= 0, "Command help must contain the derived accepted-options section.");
+        Assert.Equal(FormatExpectedCommandHelp(expectedHelp) + "\n", actualHelp[..acceptedOptionsIndex]);
     }
 
     public static TheoryData<string[], string> NewCommandHelpGrammarCases { get; } = new()

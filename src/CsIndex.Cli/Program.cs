@@ -78,6 +78,14 @@ internal static class Program
 
     private static readonly string[] QuerySelectionOptions = [.. AllConditions, "kind", "async-status"];
 
+    private static readonly string[] QuerySingletonOptions =
+    [
+        "db", "profile", "output-format", "output-file",
+        "namespace-case", "type-case", "method-case", "file-case", "source-case",
+        "kind", "async-status", "symbol-path-style", "base-dir", "path-style",
+        "source-layout", "at", "dispatch", "caller-scope", "depth", "max-nodes",
+    ];
+
     private static readonly string[] QueryPresentationPathOptions =
     [
         "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
@@ -361,13 +369,16 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "require-single", "include-overrides", "show-source", "source-layout"]);
+        string[] allowedOptions =
+            [.. QueryOptions, "require-single", "include-overrides", "show-source", "source-layout"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex symbol find [<pattern>] [options]",
                 ["Provide <pattern> or at least one of --namespace, --type, or --method."],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 TableJsonOutputHelpOption,
@@ -430,13 +441,15 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "max-nodes"]);
+        string[] allowedOptions = [.. QueryOptions, "max-nodes"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex async tree <symbol> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -475,13 +488,15 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "depth", "max-nodes"]);
+        string[] allowedOptions = [.. QueryOptions, "depth", "max-nodes"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex callers tree <symbol> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -522,13 +537,15 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "source-layout"]);
+        string[] allowedOptions = [.. QueryOptions, "source-layout"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex source show <symbol> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -566,13 +583,15 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "source-layout"]);
+        string[] allowedOptions = [.. QueryOptions, "source-layout"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex source search [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -613,13 +632,15 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "async-involved"]);
+        string[] allowedOptions = [.. QueryOptions, "async-involved"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex symbol list [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -670,11 +691,16 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, [.. QueryOptions, "at", "require-single", "include-overrides"]);
+        string[] queryOptions = [.. QueryOptions, "at", "require-single", "include-overrides"];
+        var parsed = ParseQueryArguments(args, queryOptions);
         if (parsed.GetMany("at").Count > 0)
         {
             parsed.EnsureOnly(DefinitionAtOptions);
         }
+
+        var acceptedOptions = parsed.GetMany("at").Count > 0
+            ? DefinitionAtOptions
+            : queryOptions;
 
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
@@ -682,6 +708,7 @@ internal static class Program
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex definition <query> | --at <path:line:column> [options]",
                 [],
+                acceptedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -767,15 +794,16 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(
-            args,
-            [.. QueryOptions, "exclude-generated", "only-generated", "require-single", "include-overrides"]);
+        string[] allowedOptions =
+            [.. QueryOptions, "exclude-generated", "only-generated", "require-single", "include-overrides"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex references <query> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -831,16 +859,19 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(
-            args,
-            [.. QueryOptions, "exclude-generated", "only-generated", "require-single", "dispatch", "caller-scope",
-                "include-overrides"]);
+        string[] allowedOptions =
+        [
+            .. QueryOptions, "exclude-generated", "only-generated", "require-single", "dispatch", "caller-scope",
+            "include-overrides",
+        ];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex callers <query> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -920,16 +951,19 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(
-            args,
-            [.. QueryOptions, "exclude-generated", "only-generated", "require-single", "exclude-lambda-calls",
-                "include-overrides"]);
+        string[] allowedOptions =
+        [
+            .. QueryOptions, "exclude-generated", "only-generated", "require-single", "exclude-lambda-calls",
+            "include-overrides",
+        ];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex callees <query> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -990,15 +1024,16 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(
-            args,
-            [.. RootConditions, "kind", "async-status", .. QueryPresentationPathOptions, "require-single"]);
+        string[] allowedOptions =
+            [.. AllConditions, "kind", "async-status", .. QueryPresentationPathOptions, "require-single"];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex overrides <query> [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 FunctionKindHelpOption,
@@ -1047,13 +1082,16 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        var parsed = ParseQueryArguments(args, ["db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose", .. QueryPathOptions]);
+        string[] allowedOptions =
+            ["db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose", .. QueryPathOptions];
+        var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex conditions [options]",
                 [],
+                allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
                 TableJsonOutputHelpOption,
@@ -1090,9 +1128,18 @@ internal static class Program
 
         if (!parsed.HasFlag("help") && !parsed.HasFlag("help-verbose"))
         {
+            ValidateQuerySingletons(parsed);
             ValidateStagingOptions(parsed);
         }
         return parsed;
+    }
+
+    private static void ValidateQuerySingletons(CliArguments parsed)
+    {
+        foreach (var option in QuerySingletonOptions)
+        {
+            _ = parsed.GetSingle(option);
+        }
     }
 
     private static bool IsGlobalHelpRequest(string[] args)
@@ -1620,8 +1667,8 @@ internal static class Program
                 "Callers scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, --dispatch, and --caller-scope.",
                 "Callees scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Callees scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, and --exclude-lambda-calls.",
-                "Overrides scope: required selector; namespace/type/method/file conditions and their case options, --kind, and --async-status.",
-                "Overrides scope does not accept source conditions or --include-overrides.",
+                "Overrides scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
+                "Overrides scope does not accept --include-overrides.",
                 "Async tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Async tree scope also accepts --max-nodes and graph output options.",
                 "Callers tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
@@ -1768,6 +1815,8 @@ internal static class Program
             Run 'csindex index --help' for indexing options.
             """);
 
+        WriteAcceptedOptions(GlobalOptions);
+
         if (verbose)
         {
             WriteVerboseReference();
@@ -1778,6 +1827,7 @@ internal static class Program
         bool verbose,
         string usage,
         IReadOnlyList<string> notes,
+        IReadOnlyList<string> acceptedOptions,
         params HelpOption[] options)
     {
         Console.WriteLine($"Usage: {usage}");
@@ -1803,6 +1853,8 @@ internal static class Program
             Console.WriteLine($"  {option.Syntax}{padding}{option.Description}");
         }
 
+        WriteAcceptedOptions(acceptedOptions);
+
         if (verbose)
         {
             WriteVerboseReference();
@@ -1815,6 +1867,16 @@ internal static class Program
         SourceLayout SourceLayout);
 
     private sealed record HelpOption(string Syntax, string Description);
+
+    private static void WriteAcceptedOptions(IEnumerable<string> options)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Accepted options:");
+        foreach (var option in options.Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
+        {
+            Console.WriteLine($"  --{option}");
+        }
+    }
 
     private static void WriteIndexHelp(bool verbose)
     {
@@ -1841,6 +1903,8 @@ internal static class Program
               --help                      Show concise help
               --help-verbose              Show the full grammar reference (same as --help --verbose)
             """);
+
+        WriteAcceptedOptions(IndexOptions);
 
         if (verbose)
         {

@@ -92,8 +92,8 @@ public sealed class VerboseHelpTests
         (
             ["overrides"],
             [
-                "Overrides scope: required selector; namespace/type/method/file conditions and their case options, --kind, and --async-status.",
-                "Overrides scope does not accept source conditions or --include-overrides.",
+                "Overrides scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
+                "Overrides scope does not accept --include-overrides.",
             ]),
         (
             ["async", "tree"],
@@ -391,6 +391,39 @@ public sealed class VerboseHelpTests
         Assert.Equal(ExitCodes.AnalysisFailure, result.ExitCode);
         Assert.Contains("query boundary reached after capture", result.StandardError, StringComparison.Ordinal);
         Assert.Equal("portable-root", capturedBaseDirectory);
+    }
+
+    [Fact]
+    public async Task OperationalSingletonDuplicatesFailBeforeQueryDependenciesButHelpStillBypassesThem()
+    {
+        string[][] cases =
+        [
+            ["symbol", "find", "Alpha.AClass::Play()", "--profile", "first", "--profile", "second"],
+            ["conditions", "--output-file", "first.txt", "--output-file", "second.txt"],
+        ];
+
+        foreach (var args in cases)
+        {
+            var queryInvoked = false;
+            var dependencies = new ProgramDependencies(
+                (_, _) => throw new InvalidOperationException("output boundary should not be needed"),
+                (_, _) =>
+                {
+                    queryInvoked = true;
+                    throw new InvalidOperationException("query boundary must follow singleton validation");
+                },
+                () => throw new InvalidOperationException("analysis boundary should not be needed"),
+                _ => throw new InvalidOperationException("sqlite boundary should not be needed"));
+
+            var operational = await RunWithDependenciesAsync(args, dependencies);
+            var help = await RunWithDependenciesAsync([.. args, "--help"], dependencies);
+
+            Assert.Equal(ExitCodes.InvalidArguments, operational.ExitCode);
+            Assert.Contains("only once", operational.StandardError, StringComparison.Ordinal);
+            Assert.False(queryInvoked);
+            Assert.Equal(ExitCodes.Success, help.ExitCode);
+            Assert.NotEmpty(help.StandardOutput);
+        }
     }
 
     private static async Task<CommandResult> RunAsync(params string[] args)
