@@ -426,6 +426,49 @@ public sealed class VerboseHelpTests
         }
     }
 
+    [Theory]
+    [MemberData(nameof(PreDependencyValidationCases))]
+    public async Task FinalCommandScopeAndValuesAreValidatedBeforeQueryDependencies(
+        string[] args,
+        string expectedError)
+    {
+        var queryInvoked = false;
+        var dependencies = new ProgramDependencies(
+            (_, _) => throw new InvalidOperationException("output boundary should not be needed"),
+            (_, _) =>
+            {
+                queryInvoked = true;
+                throw new InvalidOperationException("query boundary must follow command validation");
+            },
+            () => throw new InvalidOperationException("analysis boundary should not be needed"),
+            _ => throw new InvalidOperationException("sqlite boundary should not be needed"));
+
+        var result = await RunWithDependenciesAsync(args, dependencies);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains(expectedError, result.StandardError, StringComparison.Ordinal);
+        Assert.False(queryInvoked);
+    }
+
+    public static TheoryData<string[], string> PreDependencyValidationCases { get; } = new()
+    {
+        {
+            ["definition", "--method-literal", "Play"],
+            "This command requires exactly one symbol query."
+        },
+        {
+            ["overrides", "Alpha.Pianist::Play()", "--source-case", "broken"],
+            "Unknown source-case: broken. Use strict or ignore."
+        },
+        {
+            [
+                "definition", "--at", "Source.cs:1:1",
+                "--namespace-case", "strict", "--namespace-case", "ignore",
+            ],
+            "Unknown option(s): --namespace-case"
+        },
+    };
+
     private static async Task<CommandResult> RunAsync(params string[] args)
     {
         var originalOutput = Console.Out;

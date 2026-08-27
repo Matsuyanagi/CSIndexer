@@ -377,7 +377,7 @@ internal static class Program
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex symbol find [<pattern>] [options]",
-                ["Provide <pattern> or at least one of --namespace, --type, or --method."],
+                ["Provide <pattern> or at least one typed condition, --kind, or --async-status."],
                 allowedOptions,
                 DatabaseHelpOption,
                 ProfileHelpOption,
@@ -692,36 +692,49 @@ internal static class Program
         ProgramDependencies dependencies)
     {
         string[] queryOptions = [.. QueryOptions, "at", "require-single", "include-overrides"];
-        var parsed = ParseQueryArguments(args, queryOptions);
-        if (parsed.GetMany("at").Count > 0)
-        {
-            parsed.EnsureOnly(DefinitionAtOptions);
-        }
-
-        var acceptedOptions = parsed.GetMany("at").Count > 0
+        var parsed = CliArguments.Parse(args);
+        var atMode = parsed.GetMany("at").Count > 0;
+        var acceptedOptions = atMode
             ? DefinitionAtOptions
             : queryOptions;
+        ValidateQueryArguments(parsed, acceptedOptions);
 
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
+            var atHelpOption = new HelpOption(
+                "--at <path:line:column>",
+                "Resolve the call target at a source position");
+            HelpOption[] helpOptions = atMode
+                ? [
+                    DatabaseHelpOption,
+                    ProfileHelpOption,
+                    TableJsonOutputHelpOption,
+                    OutputFileHelpOption,
+                    atHelpOption,
+                    ShortNamesHelpOption,
+                    HelpHelpOption,
+                ]
+                : [
+                    DatabaseHelpOption,
+                    ProfileHelpOption,
+                    FunctionKindHelpOption,
+                    AsyncStatusHelpOption,
+                    TableJsonOutputHelpOption,
+                    OutputFileHelpOption,
+                    atHelpOption,
+                    new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
+                    ShortNamesHelpOption,
+                    new HelpOption(
+                        "--include-overrides",
+                        "Include descendant overrides and interface implementations (method queries only)"),
+                    HelpHelpOption,
+                ];
             WriteCommandHelp(
                 parsed.HasFlag("help-verbose") || parsed.HasFlag("verbose"),
                 "csindex definition <query> | --at <path:line:column> [options]",
                 [],
                 acceptedOptions,
-                DatabaseHelpOption,
-                ProfileHelpOption,
-                FunctionKindHelpOption,
-                AsyncStatusHelpOption,
-                TableJsonOutputHelpOption,
-                OutputFileHelpOption,
-                new HelpOption("--at <path:line:column>", "Resolve the call target at a source position"),
-                new HelpOption("--require-single", "Fail unless the search matches exactly one symbol"),
-                ShortNamesHelpOption,
-                new HelpOption(
-                    "--include-overrides",
-                    "Include descendant overrides and interface implementations (method queries only)"),
-                HelpHelpOption);
+                helpOptions);
             return ExitCodes.Success;
         }
 
@@ -729,13 +742,9 @@ internal static class Program
         var filter = ParseFunctionTargetFilter(parsed);
         var at = parsed.GetSingle("at");
         string? query = null;
+        SymbolSelectionRequest? request = null;
         if (at is not null)
         {
-            if (parsed.HasFlag("include-overrides"))
-            {
-                throw new CliUsageException("--include-overrides requires a method query.");
-            }
-
             if (parsed.Positionals.Count > 0)
             {
                 throw new CliUsageException("definition accepts either a query or --at, not both.");
@@ -744,6 +753,9 @@ internal static class Program
         else
         {
             query = GetOptionalSelector(parsed, "definition");
+            request = CreateSelectionRequest(parsed, query);
+            ValidateIncludeOverridesShape(parsed, request);
+            query ??= RequireQuery(parsed);
         }
 
         var service = CreateQueryService(parsed, dependencies);
@@ -758,11 +770,8 @@ internal static class Program
         }
         else
         {
-            var request = CreateSelectionRequest(parsed, query);
-            ValidateIncludeOverridesShape(parsed, request);
-            query ??= RequireQuery(parsed);
             var selection = await service.SelectRootsAsync(
-                request,
+                request!,
                 profileName: parsed.GetSingle("profile"),
                 sourceOnly: true,
                 rootGeneratedFilter: GeneratedFilter.Include,
@@ -1054,8 +1063,8 @@ internal static class Program
             throw new SymbolQueryParseException("--kind lambda is not applicable to overrides.");
         }
 
-        var service = CreateQueryService(parsed, dependencies);
         var request = CreateSelectionRequest(parsed, query);
+        var service = CreateQueryService(parsed, dependencies);
         var selection = await service.SelectRootsAsync(
             request,
             profileName: parsed.GetSingle("profile"),
@@ -1118,6 +1127,11 @@ internal static class Program
     private static CliArguments ParseQueryArguments(string[] args, params string[] allowed)
     {
         var parsed = CliArguments.Parse(args);
+        return ValidateQueryArguments(parsed, allowed);
+    }
+
+    private static CliArguments ValidateQueryArguments(CliArguments parsed, params string[] allowed)
+    {
         parsed.EnsureOnly(allowed);
         if (parsed.HasFlag("verbose") &&
             !parsed.HasFlag("help") &&

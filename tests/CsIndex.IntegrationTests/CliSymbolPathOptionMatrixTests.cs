@@ -200,6 +200,25 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
     }
 
     [Fact]
+    public async Task NormalHelpDescriptionsAgreeWithSelectionMinimumAndFinalCommandScope()
+    {
+        var symbolFind = await RunAsync("symbol", "find", "--help");
+        var definitionAt = await RunAsync("definition", "--at", "Source.cs:1:1", "--help");
+
+        Assert.Equal(ExitCodes.Success, symbolFind.ExitCode);
+        Assert.Contains(
+            "Provide <pattern> or at least one typed condition, --kind, or --async-status.",
+            symbolFind.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.Success, definitionAt.ExitCode);
+        Assert.Contains("--at <path:line:column>", definitionAt.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--kind ", definitionAt.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--async-status ", definitionAt.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--require-single ", definitionAt.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--include-overrides ", definitionAt.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task EveryValueOptionAcceptsTheEqualsSpellingInTerminalHelp()
     {
         foreach (var command in CommandScopes)

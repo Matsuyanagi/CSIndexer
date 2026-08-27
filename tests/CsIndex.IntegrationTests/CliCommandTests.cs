@@ -1847,7 +1847,7 @@ public sealed class CliCommandTests : IDisposable
             """
             Usage: csindex symbol find [<pattern>] [options]
 
-              Provide <pattern> or at least one of --namespace, --type, or --method.
+              Provide <pattern> or at least one typed condition, --kind, or --async-status.
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
