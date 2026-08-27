@@ -39,6 +39,62 @@ public sealed class CliCommandTests : IDisposable
         Assert.Empty(parsed.Positionals);
     }
 
+    [Fact]
+    public void CliArgumentsAcceptEqualsAndSeparatedValueFormsAndHelpVerboseFlag()
+    {
+        var parsed = CliArguments.Parse(
+        [
+            "--namespace", "Alpha",
+            "--namespace=Beta",
+            "--include", "first",
+            "--include=second",
+            "--method-regex", "^Play$",
+            "--method-literal=Play()",
+            "--namespace-case", "strict",
+            "--type-case=ignore",
+            "--symbol-path-style=csharp",
+            "--path-style", "relative",
+            "--base-dir", "src",
+            "--help-verbose",
+        ]);
+
+        Assert.Equal(["Alpha", "Beta"], parsed.GetMany("namespace"));
+        Assert.Equal(["first", "second"], parsed.GetMany("include"));
+        Assert.Equal(["^Play$"], parsed.GetMany("method-regex"));
+        Assert.Equal(["Play()"], parsed.GetMany("method-literal"));
+        Assert.True(parsed.HasFlag("help-verbose"));
+        Assert.Throws<CliUsageException>(() => CliArguments.Parse(["--help-verbose=true"]));
+    }
+
+    [Fact]
+    public async Task MixedTypedConditionSpellingsReachTheRealQueryPipeline()
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            "symbol", "find",
+            "--namespace", "Alpha",
+            "--type-literal", "AClass",
+            "--namespace-regex", "^Alpha$",
+            "--method-literal", "Play()",
+            "--file-regex", "Main\\.cs$",
+            "--include-regex", "public void Play",
+            "--exclude-literal", "__not_present__",
+            "--namespace-case", "strict",
+            "--type-case", "strict",
+            "--method-case", "strict",
+            "--file-case", "strict",
+            "--source-case", "strict",
+            "--output-format", "json",
+            "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        Assert.Contains(
+            document.RootElement.GetProperty("matched").EnumerateArray(),
+            symbol => symbol.GetProperty("displayName").GetString() == "Alpha.AClass::Play()");
+    }
+
     [Theory]
     [InlineData("--regex")]
     [InlineData("--ignore-case")]
@@ -76,8 +132,8 @@ public sealed class CliCommandTests : IDisposable
             ("symbol-find-json", ["symbol", "find", "Alpha.AsyncPlayer::Sync()", "--output-format", "json"]),
             ("symbol-list-table", ["symbol", "list"]),
             ("symbol-list-json", ["symbol", "list", "--output-format", "json"]),
-            ("source-show-table", ["source", "show", "Tokyo.Gamer::Play"]),
-            ("source-show-json", ["source", "show", "Tokyo.Gamer::Play", "--output-format", "json"]),
+            ("source-show-table", ["source", "show", "Tokyo.Gamer::Play()"]),
+            ("source-show-json", ["source", "show", "Tokyo.Gamer::Play()", "--output-format", "json"]),
             ("source-search-table", ["source", "search", "--include", "PrintVar("]),
             ("source-search-json", ["source", "search", "--include", "PrintVar(", "--output-format", "json"]),
             ("definition-table", ["definition", "Alpha.AsyncPlayer::Sync()"]),
@@ -840,7 +896,6 @@ public sealed class CliCommandTests : IDisposable
     public async Task FunctionFilterValueMatrixIsAcceptedByEveryApplicableCommand()
     {
         await _fixture.BuildTask;
-        var definitionAt = _fixture.GetLocation("a.Play()");
         string[][] syncMethodCommands =
         [
             ["symbol", "find", "Alpha.AsyncPlayer::Sync()"],
@@ -848,7 +903,6 @@ public sealed class CliCommandTests : IDisposable
             ["source", "show", "Alpha.AsyncPlayer::Sync()"],
             ["source", "search", "--include", "Sync()"],
             ["definition", "Alpha.AsyncPlayer::Sync()"],
-            ["definition", "--at", definitionAt],
             ["references", "Alpha.LambdaPlayer::Play()"],
             ["callers", "Alpha.LambdaPlayer::Play()"],
             ["callees", "Alpha.DescendantCallees::Execute()"],
@@ -863,7 +917,6 @@ public sealed class CliCommandTests : IDisposable
             ["source", "show", "Alpha.LambdaPlayer::Execute().<lambda#1>"],
             ["source", "search", "--include", "LambdaTarget()"],
             ["definition", "Alpha.LambdaPlayer::Execute().<lambda#1>"],
-            ["definition", "--at", definitionAt],
             ["references", "Alpha.LambdaPlayer::Execute().<lambda#1>"],
             ["callers", "Alpha.LambdaPlayer::Execute().<lambda#1>"],
             ["callees", "Alpha.LambdaPlayer::Execute().<lambda#1>"],
@@ -877,7 +930,6 @@ public sealed class CliCommandTests : IDisposable
             ["source", "show", "Alpha.AsyncPlayer::ExecuteAsync()"],
             ["source", "search", "--include", "Task.Yield()"],
             ["definition", "Alpha.AsyncPlayer::ExecuteAsync()"],
-            ["definition", "--at", definitionAt],
             ["references", "Alpha.AsyncPlayer::ExecuteAsync()"],
             ["callers", "Alpha.AsyncPlayer::ExecuteAsync()"],
             ["callees", "Alpha.AsyncPlayer::ExecuteAsync()"],
@@ -903,6 +955,38 @@ public sealed class CliCommandTests : IDisposable
         {
             await AssertCommandSucceedsAsync(command, "--async-status", "async");
         }
+    }
+
+    [Fact]
+    public async Task DefinitionAtRejectsEverySelectorAndRootFilter()
+    {
+        await _fixture.BuildTask;
+        var location = _fixture.GetLocation("a.Play()");
+        string[][] filters =
+        [
+            ["--namespace", "Alpha"],
+            ["--type", "AClass"],
+            ["--method", "Play"],
+            ["--file", "Main.cs"],
+            ["--include", "Play"],
+            ["--kind", "method"],
+            ["--async-status", "sync"],
+        ];
+
+        foreach (var filter in filters)
+        {
+            var result = await RunAsync(
+                ["definition", "--at", location, .. filter, "--db", _fixture.DatabasePath]);
+
+            Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+            Assert.Contains(filter[0], result.StandardError, StringComparison.Ordinal);
+        }
+
+        var extraSelector = await RunAsync(
+            "definition", "--at", location, "Alpha.AClass::Play()", "--db", _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, extraSelector.ExitCode);
+        Assert.Contains("either a query or --at", extraSelector.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -972,14 +1056,7 @@ public sealed class CliCommandTests : IDisposable
     [Theory]
     [InlineData("symbol-find")]
     [InlineData("symbol-list")]
-    [InlineData("source-show")]
     [InlineData("source-search")]
-    [InlineData("definition-query")]
-    [InlineData("definition-at")]
-    [InlineData("references")]
-    [InlineData("callers")]
-    [InlineData("callees")]
-    [InlineData("overrides")]
     public async Task FunctionFiltersConstrainEveryWiredJsonCommand(string commandPath)
     {
         await _fixture.BuildTask;
@@ -998,9 +1075,6 @@ public sealed class CliCommandTests : IDisposable
                     new[] { "matched" }),
             "definition-query" =>
                 (new[] { "definition", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
-                    new[] { "matched", "definitions" }),
-            "definition-at" =>
-                (new[] { "definition", "--at", _fixture.GetLocation("a.Play()"), "--async-status", "async" },
                     new[] { "matched", "definitions" }),
             "references" =>
                 (new[] { "references", "Alpha.LambdaPlayer::Play()", "--async-status", "async" },
@@ -1037,6 +1111,35 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Theory]
+    [InlineData("source-show")]
+    [InlineData("definition-query")]
+    [InlineData("references")]
+    [InlineData("callers")]
+    [InlineData("callees")]
+    [InlineData("overrides")]
+    public async Task FunctionFiltersThatSelectNoRootRemainQueryErrors(string commandPath)
+    {
+        await _fixture.BuildTask;
+        var args = commandPath switch
+        {
+            "source-show" => new[] { "source", "show", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
+            "definition-query" => new[] { "definition", "Alpha.AsyncPlayer::Sync()", "--async-status", "async" },
+            "references" => new[] { "references", "Alpha.LambdaPlayer::Play()", "--async-status", "async" },
+            "callers" => new[] { "callers", "Alpha.LambdaPlayer::Play()", "--async-status", "async" },
+            "callees" => new[] { "callees", "Alpha.DescendantCallees::Execute()", "--async-status", "async" },
+            "overrides" => new[] { "overrides", "Alpha.AsyncOverrideBase::Run()", "--async-status", "async" },
+            _ => throw new ArgumentOutOfRangeException(nameof(commandPath)),
+        };
+
+        var result = await RunAsync([.. args, "--output-format", "json", "--db", _fixture.DatabasePath]);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.StartsWith("Query error: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("No source-backed", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+    }
+
+    [Theory]
     [InlineData("async", "tree", "Alpha.AsyncGraph::Start()")]
     [InlineData("callers", "tree", "Alpha.CallerGraph::DirectTarget()")]
     public async Task FunctionFiltersConstrainEveryWiredGraphRoot(
@@ -1056,9 +1159,9 @@ public sealed class CliCommandTests : IDisposable
             _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
-        Assert.Equal(
-            $"Query error: No source-backed executable matches graph query: {query}{Environment.NewLine}",
-            result.StandardError);
+        Assert.StartsWith("Query error: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("No source-backed", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(query, result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1207,12 +1310,26 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task SourceSearchRequiresAtLeastOneIncludeOrExcludeCondition()
+    public async Task SourceSearchRequiresAnyExplicitSelectionCondition()
     {
-        var result = await RunAsync("source", "search");
+        await _fixture.BuildTask;
+
+        var result = await RunAsync("source", "search", "--db", _fixture.DatabasePath);
+        var rootCondition = await RunAsync(
+            "source", "search", "--namespace", "Alpha", "--db", _fixture.DatabasePath);
+        var kindCondition = await RunAsync(
+            "source", "search", "--kind", "all", "--db", _fixture.DatabasePath);
+        var asyncCondition = await RunAsync(
+            "source", "search", "--async-status", "all", "--db", _fixture.DatabasePath);
+        var presentationOnly = await RunAsync(
+            "source", "search", "--symbol-path-style", "csharp", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
-        Assert.Contains("source search requires at least one include or exclude condition", result.StandardError);
+        Assert.Contains("selection condition", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ExitCodes.Success, rootCondition.ExitCode);
+        Assert.Equal(ExitCodes.Success, kindCondition.ExitCode);
+        Assert.Equal(ExitCodes.Success, asyncCondition.ExitCode);
+        Assert.Equal(ExitCodes.InvalidArguments, presentationOnly.ExitCode);
     }
 
     [Fact]
@@ -1303,8 +1420,10 @@ public sealed class CliCommandTests : IDisposable
             "async", "tree", "Alpha.AClass::Play", "--db", _fixture.DatabasePath);
         var missingRoot = await RunAsync(
             "callers", "tree", "Alpha.Missing::Run()", "--db", _fixture.DatabasePath);
-        var unsupportedOption = await RunAsync(
-            "async", "tree", "Alpha.AsyncGraph::Start()", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
+        var refinedAsyncRoot = await RunAsync(
+            "async", "tree", "Alpha.AsyncGraph::Start()", "--namespace-literal", "Alpha", "--db", _fixture.DatabasePath);
+        var refinedCallerRoot = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--include-literal", "DirectTarget", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, invalidDepth.ExitCode);
         Assert.Contains("Depth cannot be negative", invalidDepth.StandardError);
@@ -1315,16 +1434,16 @@ public sealed class CliCommandTests : IDisposable
         Assert.Equal(ExitCodes.InvalidArguments, invalidCallerOutput.ExitCode);
         Assert.Contains("Unknown callers tree output: line", invalidCallerOutput.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, ambiguousRoot.ExitCode);
-        Assert.Equal(
-            "Query error: Graph query is ambiguous for 'Alpha.AClass::Play'. Candidates: " +
-            "Alpha.AClass::Play(), Alpha.AClass::Play(string)" + Environment.NewLine,
-            ambiguousRoot.StandardError);
+        Assert.StartsWith("Query error: ", ambiguousRoot.StandardError, StringComparison.Ordinal);
+        Assert.Contains("ambiguous", ambiguousRoot.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Alpha.AClass::Play()", ambiguousRoot.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Alpha.AClass::Play(string)", ambiguousRoot.StandardError, StringComparison.Ordinal);
         Assert.Equal(ExitCodes.InvalidArguments, missingRoot.ExitCode);
-        Assert.Equal(
-            "Query error: No source-backed executable matches graph query: Alpha.Missing::Run()" + Environment.NewLine,
-            missingRoot.StandardError);
-        Assert.Equal(ExitCodes.InvalidArguments, unsupportedOption.ExitCode);
-        Assert.Contains("Unknown option(s): --include", unsupportedOption.StandardError);
+        Assert.StartsWith("Query error: ", missingRoot.StandardError, StringComparison.Ordinal);
+        Assert.Contains("No source-backed", missingRoot.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Alpha.Missing::Run()", missingRoot.StandardError, StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.Success, refinedAsyncRoot.ExitCode);
+        Assert.Equal(ExitCodes.Success, refinedCallerRoot.ExitCode);
     }
 
     [Fact]
@@ -1372,7 +1491,8 @@ public sealed class CliCommandTests : IDisposable
             "symbol", "find", "TOKYO.GAMER::PLAY", "--db", _fixture.DatabasePath, "--ignore-case");
         var removedSourceIgnoreCase = await RunAsync(
             "source", "search", "--include", "PrintVar(", "--db", _fixture.DatabasePath, "--ignore-case");
-        var noNameCondition = await RunAsync("symbol", "find", "--include", "PrintVar(", "--db", _fixture.DatabasePath);
+        var noSelectionOption = await RunAsync(
+            "symbol", "find", "--symbol-path-style", "csharp", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, removedRegex.ExitCode);
         Assert.Contains("--regex", removedRegex.StandardError);
@@ -1380,8 +1500,8 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("--ignore-case", removedIgnoreCase.StandardError);
         Assert.Equal(ExitCodes.InvalidArguments, removedSourceIgnoreCase.ExitCode);
         Assert.Contains("--ignore-case", removedSourceIgnoreCase.StandardError);
-        Assert.Equal(ExitCodes.InvalidArguments, noNameCondition.ExitCode);
-        Assert.Contains("symbol find requires a pattern", noNameCondition.StandardError);
+        Assert.Equal(ExitCodes.InvalidArguments, noSelectionOption.ExitCode);
+        Assert.Contains("selection condition", noSelectionOption.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1390,9 +1510,9 @@ public sealed class CliCommandTests : IDisposable
         await _fixture.BuildTask;
 
         var shown = await RunAsync(
-            "source", "show", "Tokyo.Gamer::Play", "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
+            "source", "show", "Tokyo.Gamer::Play()", "--source-layout", "multi-line", "--db", _fixture.DatabasePath);
         var shownJson = await RunAsync(
-            "source", "show", "Tokyo.Gamer::Play", "--output-format", "json", "--db", _fixture.DatabasePath);
+            "source", "show", "Tokyo.Gamer::Play()", "--output-format", "json", "--db", _fixture.DatabasePath);
         var searched = await RunAsync(
             "source", "search", "--include", "PrintVar(", "--exclude", "BlockedMarker(", "--output-format", "json", "--db",
             _fixture.DatabasePath);
@@ -1633,7 +1753,7 @@ public sealed class CliCommandTests : IDisposable
               csindex async tree <symbol> [options]
               csindex callers tree <symbol> [options]
               csindex source show <symbol> [options]
-              csindex source search (--include <text> | --exclude <text>)... [options]
+              csindex source search [options]
               csindex definition <query> [options]
               csindex definition --at <path:line:column> [options]
               csindex references <query> [options]
@@ -1744,6 +1864,8 @@ public sealed class CliCommandTests : IDisposable
               --source-layout single-line|multi-line  Source table layout (default: single-line)
               --include-overrides  Include descendant overrides and interface implementations (exact method pattern only)
               --help  Show this help text
+              --help-verbose  Show the full symbol-path and query grammar reference
+              --verbose  With --help, show the full reference; index uses runtime progress
             """
         },
         {
@@ -1760,6 +1882,8 @@ public sealed class CliCommandTests : IDisposable
               --max-nodes <count>  Maximum path nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
+              --help-verbose  Show the full symbol-path and query grammar reference
+              --verbose  With --help, show the full reference; index uses runtime progress
             """
         },
         {
@@ -1777,6 +1901,8 @@ public sealed class CliCommandTests : IDisposable
               --max-nodes <count>  Maximum graph nodes (default: 500)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
+              --help-verbose  Show the full symbol-path and query grammar reference
+              --verbose  With --help, show the full reference; index uses runtime progress
             """
         },
         {
@@ -1793,12 +1919,14 @@ public sealed class CliCommandTests : IDisposable
               --source-layout single-line|multi-line  Source table layout (default: single-line)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
+              --help-verbose  Show the full symbol-path and query grammar reference
+              --verbose  With --help, show the full reference; index uses runtime progress
             """
         },
         {
             ["source", "search", "--help"],
             """
-            Usage: csindex source search (--include <text> | --exclude <text>)... [options]
+            Usage: csindex source search [options]
 
               --db <path>  SQLite index path (default: .csindex/index.sqlite)
               --profile <name>  Analysis profile (default: most recently indexed profile)
@@ -1811,6 +1939,8 @@ public sealed class CliCommandTests : IDisposable
               --source-layout single-line|multi-line  Source table layout (default: single-line)
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
+              --help-verbose  Show the full symbol-path and query grammar reference
+              --verbose  With --help, show the full reference; index uses runtime progress
             """
         },
     };
@@ -2059,7 +2189,8 @@ public sealed class CliCommandTests : IDisposable
             "symbol", "find", pattern, "--include-overrides", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
-        Assert.Contains("--include-overrides cannot be combined", result.StandardError);
+        Assert.Contains("--include-overrides", result.StandardError);
+        Assert.Contains("exact", result.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2098,7 +2229,7 @@ public sealed class CliCommandTests : IDisposable
         "Invalid symbol path: expected exactly one or two top-level '::' separators",
         "symbol", "find", "Alpha.IPlayable")]
     [InlineData(
-        "--include-overrides requires a method query",
+        "Unknown option(s): --include-overrides",
         "definition", "--at", "Source.cs:1:1")]
     public async Task IncludeOverridesRejectsNonMethodQueries(
         string expectedMessage,

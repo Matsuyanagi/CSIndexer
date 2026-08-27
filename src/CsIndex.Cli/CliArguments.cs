@@ -2,16 +2,19 @@ namespace CsIndex.Cli;
 
 internal sealed class CliUsageException(string message) : Exception(message);
 
+internal readonly record struct CliOptionOccurrence(string Name, string Value);
+
 internal sealed class CliArguments
 {
     private static readonly HashSet<string> Flags = new(StringComparer.Ordinal)
     {
         "help", "rebuild", "verbose", "diagnostics", "exclude-generated", "only-generated",
         "require-single", "all-profiles", "async-involved", "short-names", "exclude-lambda-calls",
-        "include-overrides", "show-source",
+        "include-overrides", "show-source", "help-verbose",
     };
 
     private readonly Dictionary<string, List<string>> _options = new(StringComparer.Ordinal);
+    private readonly List<CliOptionOccurrence> _occurrences = [];
 
     public List<string> Positionals { get; } = [];
 
@@ -110,6 +113,20 @@ internal sealed class CliArguments
     public IReadOnlyList<string> GetMany(string name) =>
         _options.TryGetValue(name, out var values) ? values : [];
 
+    public IReadOnlyList<CliOptionOccurrence> GetOccurrences(params string[] names)
+    {
+        ArgumentNullException.ThrowIfNull(names);
+        if (names.Length == 0)
+        {
+            return [];
+        }
+
+        var requested = names.ToHashSet(StringComparer.Ordinal);
+        return _occurrences
+            .Where(occurrence => requested.Contains(occurrence.Name))
+            .ToArray();
+    }
+
     public void EnsureOnly(params string[] names)
     {
         var allowed = names.ToHashSet(StringComparer.Ordinal);
@@ -129,5 +146,6 @@ internal sealed class CliArguments
         }
 
         values.Add(value);
+        _occurrences.Add(new CliOptionOccurrence(name, value));
     }
 }
