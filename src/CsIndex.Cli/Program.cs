@@ -406,7 +406,7 @@ internal static class Program
         var request = CreateSelectionRequest(parsed, selector);
         EnsureSelectionMinimum(request, "symbol find");
         var showSource = parsed.HasFlag("show-source");
-        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: showSource);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: showSource);
         ValidateIncludeOverridesShape(parsed, request);
 
         var service = CreateQueryService(parsed, dependencies);
@@ -428,6 +428,10 @@ internal static class Program
 
         var rows = await service.LoadLogicalRowsAsync(selection, showSource, cancellationToken);
         var result = ProjectLogicalRows(selection, rows, showSource);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -463,6 +467,7 @@ internal static class Program
         }
 
         var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "async tree", "tree", "line", "json");
+        var presentationSettings = ParsePresentationSettings(parsed);
         var query = RequireQuery(parsed);
         var request = CreateSelectionRequest(parsed, query);
         var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
@@ -473,11 +478,22 @@ internal static class Program
             sourceOnly: true,
             rootGeneratedFilter: GeneratedFilter.Include,
             cancellationToken: cancellationToken);
-        EnsureExactlyOneRoot(selection, "async path", query);
+        var pathResolver = CreateIndexPathResolver(parsed, selection.Profile);
+        EnsureExactlyOneRoot(
+            selection,
+            presentationSettings.SymbolPathOptions,
+            pathResolver,
+            presentationSettings.PathStyle,
+            "Graph",
+            query);
         var result = await service.FindAsyncPathAsync(selection, maxNodes, cancellationToken);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
         destination.WritePayload(
-            writer => new GraphOutputFormatter(parsed.HasFlag("short-names"), writer)
+            writer => new GraphOutputFormatter(
+                presentationSettings.SymbolPathOptions,
+                pathResolver,
+                presentationSettings.PathStyle,
+                writer)
                 .WriteAsyncPath(result, output, cancellationToken),
             cancellationToken);
         return ExitCodes.Success;
@@ -511,6 +527,7 @@ internal static class Program
         }
 
         var output = ParseOutput(parsed.GetSingle("output-format") ?? "tree", "callers tree", "tree", "mermaid", "json");
+        var presentationSettings = ParsePresentationSettings(parsed);
         var query = RequireQuery(parsed);
         var request = CreateSelectionRequest(parsed, query);
         var depth = ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3);
@@ -522,11 +539,22 @@ internal static class Program
             sourceOnly: true,
             rootGeneratedFilter: GeneratedFilter.Include,
             cancellationToken: cancellationToken);
-        EnsureExactlyOneRoot(selection, "caller tree", query);
+        var pathResolver = CreateIndexPathResolver(parsed, selection.Profile);
+        EnsureExactlyOneRoot(
+            selection,
+            presentationSettings.SymbolPathOptions,
+            pathResolver,
+            presentationSettings.PathStyle,
+            "Graph",
+            query);
         var result = await service.FindCallerTreeAsync(selection, depth, maxNodes, cancellationToken);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
         destination.WritePayload(
-            writer => new GraphOutputFormatter(parsed.HasFlag("short-names"), writer)
+            writer => new GraphOutputFormatter(
+                presentationSettings.SymbolPathOptions,
+                pathResolver,
+                presentationSettings.PathStyle,
+                writer)
                 .WriteCallerTree(result, output, cancellationToken),
             cancellationToken);
         return ExitCodes.Success;
@@ -558,7 +586,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
         var query = RequireQuery(parsed);
         var request = CreateSelectionRequest(parsed, query);
         var service = CreateQueryService(parsed, dependencies);
@@ -568,7 +596,17 @@ internal static class Program
             sourceOnly: true,
             rootGeneratedFilter: GeneratedFilter.Include,
             cancellationToken: cancellationToken);
-        EnsureExactlyOneRoot(selection, "source show");
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            selection.Profile);
+        EnsureExactlyOneRoot(
+            selection,
+            formatterSettings.SymbolPathOptions,
+            formatterSettings.PathResolver,
+            formatterSettings.PathStyle,
+            "Source show",
+            query);
         var rows = await service.LoadLogicalRowsAsync(selection, includeSourceText: true, cancellationToken);
         var result = ProjectLogicalRows(selection, rows, showSource: true);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
@@ -611,7 +649,7 @@ internal static class Program
             throw new CliUsageException("source search does not accept positional arguments.");
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed, sourceLayoutAllowed: true);
         var request = CreateSelectionRequest(parsed, selector: null);
         EnsureSelectionMinimum(request, "source search");
         var service = CreateQueryService(parsed, dependencies);
@@ -619,10 +657,13 @@ internal static class Program
             request,
             profileName: parsed.GetSingle("profile"),
             cancellationToken: cancellationToken);
-        var result = ProjectSourceRows(sourceResult);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            sourceResult.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
         destination.WritePayload(
-            writer => CreateFormatter(formatterSettings, writer).WriteSymbols(result, cancellationToken),
+            writer => CreateFormatter(formatterSettings, writer).WriteSourceSearch(sourceResult, cancellationToken),
             cancellationToken);
         return ExitCodes.Success;
     }
@@ -658,7 +699,7 @@ internal static class Program
             throw new CliUsageException("symbol list does not accept positional arguments.");
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var request = CreateSelectionRequest(parsed, selector: null);
         var service = CreateQueryService(parsed, dependencies);
         var selection = await service.SelectRootsAsync(
@@ -678,6 +719,10 @@ internal static class Program
 
         var rows = await service.LoadLogicalRowsAsync(selection, includeSourceText: false, cancellationToken);
         var result = ProjectLogicalRows(selection, rows);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -738,7 +783,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
         var at = parsed.GetSingle("at");
         string? query = null;
@@ -790,6 +835,10 @@ internal static class Program
             result = await service.FindDefinitionsAsync(selection, cancellationToken);
         }
 
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -830,7 +879,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var optionalQuery = GetOptionalSelector(parsed, "references");
         var request = CreateSelectionRequest(parsed, optionalQuery);
         ValidateIncludeOverridesShape(parsed, request);
@@ -855,6 +904,10 @@ internal static class Program
         }
 
         var result = await service.FindReferencesAsync(selection, generatedFilter, cancellationToken);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -900,7 +953,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var optionalQuery = GetOptionalSelector(parsed, "callers");
         var request = CreateSelectionRequest(parsed, optionalQuery);
         ValidateIncludeOverridesShape(parsed, request);
@@ -944,6 +997,10 @@ internal static class Program
             dispatch,
             callerScope,
             cancellationToken);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -991,7 +1048,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var optionalQuery = GetOptionalSelector(parsed, "callees");
         var request = CreateSelectionRequest(parsed, optionalQuery);
         ValidateIncludeOverridesShape(parsed, request);
@@ -1020,6 +1077,10 @@ internal static class Program
             generatedFilter,
             includeLambdaCalls: !parsed.HasFlag("exclude-lambda-calls"),
             cancellationToken: cancellationToken);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -1055,7 +1116,7 @@ internal static class Program
             return ExitCodes.Success;
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var filter = ParseFunctionTargetFilter(parsed);
         var query = RequireQuery(parsed);
         if (filter.Kind == IndexedSymbolKind.Lambda)
@@ -1078,6 +1139,10 @@ internal static class Program
 
         EnsureNonEmptyRoots(selection, "overrides");
         var result = await service.FindOverridesAsync(selection, cancellationToken);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Selection.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
 
         destination.WritePayload(
@@ -1114,9 +1179,13 @@ internal static class Program
             throw new CliUsageException("conditions does not accept a positional query.");
         }
 
-        var formatterSettings = ParseOutputFormatterSettings(parsed);
+        var parsedFormatterSettings = ParseOutputFormatterSettings(parsed);
         var service = CreateQueryService(parsed, dependencies);
         var result = await service.GetConditionsAsync(parsed.GetSingle("profile"), cancellationToken);
+        var formatterSettings = MaterializeOutputFormatterSettings(
+            parsed,
+            parsedFormatterSettings,
+            result.Profile);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
         destination.WritePayload(
             writer => CreateFormatter(formatterSettings, writer).WriteConditions(result, cancellationToken),
@@ -1296,31 +1365,45 @@ internal static class Program
 
     private static void EnsureExactlyOneRoot(
         RootSelection selection,
-        string command,
-        string? query = null)
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle,
+        string queryKind,
+        string query)
     {
         if (selection.Roots.Count == 0)
         {
             throw new SymbolQueryParseException(
-                query is null
-                    ? $"No source-backed executable matches {command} query."
-                    : $"No source-backed executable matches graph query: {query}");
+                $"No source-backed executable matches {queryKind.ToLowerInvariant()} query: {query}");
         }
 
         if (selection.Roots.Count != 1)
         {
             throw new SymbolQueryParseException(
-                query is null
-                    ? $"{command} query is ambiguous: requires exactly one source-backed executable root but matched {selection.Roots.Count}."
-                    : $"Graph query is ambiguous for '{query}'. Candidates: " +
-                        string.Join(", ", selection.Roots.Select(FormatGraphCandidate)));
+                $"{queryKind} query is ambiguous for '{query}'. Candidates: " +
+                string.Join(", ", selection.Roots.Select(root => FormatGraphCandidate(
+                    root,
+                    symbolPathOptions,
+                    pathResolver,
+                    pathStyle))));
         }
     }
 
-    private static string FormatGraphCandidate(ResolvedLogicalRoot root) =>
-        root.Symbol.Path is null
+    private static string FormatGraphCandidate(
+        ResolvedLogicalRoot root,
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle)
+    {
+        var displayName = root.Symbol.Path is null
             ? root.Symbol.Name
-            : new SymbolPathFormatter().Format(root.Symbol.Path, new SymbolPathFormatOptions());
+            : new SymbolPathFormatter().Format(root.Symbol.Path, symbolPathOptions);
+        var storedPath = root.Symbol.PreferredDocumentPath ?? root.Symbol.DocumentPath;
+        var sourceStart = root.Symbol.PreferredSourceStart ?? root.Symbol.SourceStart;
+        return storedPath is not null && sourceStart is not null
+            ? $"{displayName} @ {pathResolver.ToDisplayPath(storedPath, pathStyle)}:{sourceStart.Value}"
+            : $"{displayName} @ assembly:{root.Symbol.AssemblyName ?? "unknown"}";
+    }
 
     private static QueryContext ProjectLogicalRows(
         RootSelection selection,
@@ -1330,28 +1413,6 @@ internal static class Program
             selection.Profile,
             rows.Select(row => row.Symbol).ToArray(),
             showSource);
-
-    private static QueryContext ProjectSourceRows(SourceSearchResult result) =>
-        new(
-            result.Profile,
-            result.Matches
-                .Select(row => ApplyPreferredDeclaration(row.Symbol, row.Declaration))
-                .ToArray(),
-            ShowSource: true);
-
-    private static StoredSymbol ApplyPreferredDeclaration(
-        StoredSymbol symbol,
-        StoredDeclaration declaration) =>
-        symbol with
-        {
-            PreferredDeclaration = declaration,
-            PreferredDocumentPath = declaration.DocumentPath,
-            PreferredSourceStart = declaration.SourceStart,
-            PreferredIsGenerated = declaration.IsGenerated,
-            DocumentPath = declaration.DocumentPath,
-            SourceStart = declaration.SourceStart,
-            IsGenerated = declaration.IsGenerated,
-        };
 
     private static FunctionTargetFilter ParseFunctionTargetFilter(CliArguments parsed)
     {
@@ -1435,7 +1496,7 @@ internal static class Program
         Func<string?, string, OutputDestination> outputDestinationFactory) =>
         outputDestinationFactory(parsed.GetSingle("output-file"), GetDatabasePath(parsed));
 
-    private static OutputFormatterSettings ParseOutputFormatterSettings(
+    private static ParsedOutputFormatterSettings ParseOutputFormatterSettings(
         CliArguments parsed,
         bool sourceLayoutAllowed = false)
     {
@@ -1458,15 +1519,64 @@ internal static class Program
             throw new CliUsageException("--source-layout cannot be combined with --output-format json.");
         }
 
-        return new OutputFormatterSettings(outputFormat, parsed.HasFlag("short-names"), sourceLayout);
+        var presentation = ParsePresentationSettings(parsed);
+        return new ParsedOutputFormatterSettings(
+            outputFormat,
+            presentation.SymbolPathOptions,
+            sourceLayout,
+            presentation.PathStyle);
     }
 
-    private static OutputFormatter CreateFormatter(OutputFormatterSettings settings, TextWriter writer) => new(
-        settings.Format,
-        settings.ShortNames,
-        settings.SourceLayout,
-        writer,
-        Console.Error);
+    private static OutputFormatterSettings MaterializeOutputFormatterSettings(
+        CliArguments parsed,
+        ParsedOutputFormatterSettings parsedSettings,
+        StoredProfile profile) =>
+        new(
+            parsedSettings.Format,
+            parsedSettings.SymbolPathOptions,
+            parsedSettings.SourceLayout,
+            CreateIndexPathResolver(parsed, profile),
+            parsedSettings.PathStyle);
+
+    private static OutputFormatter CreateFormatter(OutputFormatterSettings settings, TextWriter writer) =>
+        new(
+            settings.Format,
+            settings.SymbolPathOptions,
+            settings.PathResolver,
+            settings.PathStyle,
+            settings.SourceLayout,
+            writer,
+            Console.Error);
+
+    private static ParsedPresentationSettings ParsePresentationSettings(CliArguments parsed) =>
+        new(ParseSymbolPathFormatOptions(parsed), ParsePathDisplayStyle(parsed));
+
+    private static IndexPathResolver CreateIndexPathResolver(CliArguments parsed, StoredProfile profile) =>
+        IndexPathResolver.CreateForQuery(
+            GetDatabasePath(parsed),
+            profile.IndexRootAnchor,
+            parsed.GetSingle("base-dir"));
+
+    private static SymbolPathFormatOptions ParseSymbolPathFormatOptions(CliArguments parsed)
+    {
+        var style = parsed.GetSingle("symbol-path-style") switch
+        {
+            null or "csharp" => SymbolPathStyle.CSharp,
+            "explicit" => SymbolPathStyle.Explicit,
+            var value => throw new CliUsageException(
+                $"Unknown symbol path style: {value}. Use csharp or explicit."),
+        };
+        return new SymbolPathFormatOptions(style, parsed.HasFlag("short-names"));
+    }
+
+    private static PathDisplayStyle ParsePathDisplayStyle(CliArguments parsed) =>
+        parsed.GetSingle("path-style") switch
+        {
+            null or "absolute" => PathDisplayStyle.Absolute,
+            "relative" => PathDisplayStyle.Relative,
+            var value => throw new CliUsageException(
+                $"Unknown path style: {value}. Use absolute or relative."),
+        };
 
     private static SourceLayout ParseSourceLayout(string? value) => value switch
     {
@@ -1875,10 +1985,22 @@ internal static class Program
         }
     }
 
+    private readonly record struct ParsedPresentationSettings(
+        SymbolPathFormatOptions SymbolPathOptions,
+        PathDisplayStyle PathStyle);
+
+    private readonly record struct ParsedOutputFormatterSettings(
+        string Format,
+        SymbolPathFormatOptions SymbolPathOptions,
+        SourceLayout SourceLayout,
+        PathDisplayStyle PathStyle);
+
     private readonly record struct OutputFormatterSettings(
         string Format,
-        bool ShortNames,
-        SourceLayout SourceLayout);
+        SymbolPathFormatOptions SymbolPathOptions,
+        SourceLayout SourceLayout,
+        IndexPathResolver PathResolver,
+        PathDisplayStyle PathStyle);
 
     private sealed record HelpOption(string Syntax, string Description);
 

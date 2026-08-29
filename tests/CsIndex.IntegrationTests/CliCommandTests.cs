@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CsIndex.Cli;
 using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
@@ -267,6 +268,45 @@ public sealed class CliCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task RegexTimeoutAtQueryFactoryBoundaryNeverConstructsOutputDestination()
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory("regex-timeout");
+        var outputPath = Path.Combine(directory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+        var queryFactoryCalls = 0;
+        var destinationFactoryCalls = 0;
+        var dependencies = new ProgramDependencies(
+            (requestedOutputPath, databasePath) =>
+            {
+                destinationFactoryCalls++;
+                return OutputDestination.Create(requestedOutputPath, databasePath);
+            },
+            (_, _) =>
+            {
+                queryFactoryCalls++;
+                throw new RegexMatchTimeoutException("Forced regex timeout at the query boundary.");
+            },
+            () => throw new InvalidOperationException("Analysis coordinator must remain unused."),
+            _ => throw new InvalidOperationException("SQLite factory must remain unused."));
+
+        var result = await RunWithDependenciesAsync(
+            [
+                "symbol", "find", "Alpha.AsyncPlayer::Sync()",
+                "--output-file", outputPath, "--db", _fixture.DatabasePath,
+            ],
+            dependencies);
+
+        Assert.Equal(ExitCodes.AnalysisFailure, result.ExitCode);
+        Assert.Equal(1, queryFactoryCalls);
+        Assert.Equal(0, destinationFactoryCalls);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Contains("Fatal error: Forced regex timeout at the query boundary.", result.StandardError);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Fact]
     public async Task OutputFileRequireSingleFailurePreservesSentinelWithoutOpeningTemporaryFile()
     {
         await _fixture.BuildTask;
@@ -379,6 +419,67 @@ public sealed class CliCommandTests : IDisposable
         Assert.Contains("Usage: csindex conditions", result.StandardOutput);
         Assert.Equal(string.Empty, result.StandardError);
         Assert.False(Directory.Exists(Path.GetDirectoryName(outputPath)));
+    }
+
+    [Theory]
+    [InlineData("async", "tree", "Graph query is ambiguous for")]
+    [InlineData("source", "show", "Source show query is ambiguous for")]
+    public async Task AmbiguousCandidatesUseSelectedStyleAndLocationWithoutOpeningOutput(
+        string command,
+        string subcommand,
+        string expectedDiagnosticPrefix)
+    {
+        await _fixture.BuildTask;
+        var directory = CreateOutputFailureDirectory($"ambiguous-{command}-{subcommand}");
+        var outputPath = Path.Combine(directory, "result.txt");
+        File.WriteAllText(outputPath, "output sentinel");
+        var destinationConstructions = 0;
+
+        var result = await RunWithOutputDestinationFactoryAsync(
+            [
+                command, subcommand, "Alpha.AClass::Play",
+                "--symbol-path-style", "explicit", "--short-names",
+                "--path-style", "relative", "--output-file", outputPath,
+                "--db", _fixture.DatabasePath,
+            ],
+            TestContext.Current.CancellationToken,
+            (requestedOutputPath, databasePath) =>
+            {
+                destinationConstructions++;
+                return OutputDestination.Create(requestedOutputPath, databasePath);
+            });
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Equal(0, destinationConstructions);
+        Assert.Contains(expectedDiagnosticPrefix, result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("**::AClass::Play() @ Main.cs:", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("**::AClass::Play(string) @ Main.cs:", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("output sentinel", File.ReadAllText(outputPath));
+        Assert.Empty(FindOutputTemporaryFiles(directory));
+    }
+
+    [Theory]
+    [InlineData("async", "tree", "graph")]
+    [InlineData("source", "show", "source show")]
+    public async Task SingleRootCliNoMatchDiagnosticsNameTheirQueryKind(
+        string command,
+        string subcommand,
+        string expectedQueryKind)
+    {
+        await _fixture.BuildTask;
+
+        var result = await RunAsync(
+            command,
+            subcommand,
+            "Alpha.AClass::Missing()",
+            "--db",
+            _fixture.DatabasePath);
+
+        Assert.Equal(ExitCodes.InvalidArguments, result.ExitCode);
+        Assert.Contains(
+            $"No source-backed executable matches {expectedQueryKind} query: Alpha.AClass::Missing()",
+            result.StandardError,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1046,7 +1147,10 @@ public sealed class CliCommandTests : IDisposable
         using var document = JsonDocument.Parse(result.StandardOutput);
         var definitions = document.RootElement.GetProperty("definitions").EnumerateArray().ToArray();
         Assert.Equal(
-            ["PartialDefinition.cs", "PartialImplementation.cs"],
+            [
+                Path.Combine(resolutionFixture.RootPath, "PartialDefinition.cs"),
+                Path.Combine(resolutionFixture.RootPath, "PartialImplementation.cs"),
+            ],
             definitions.Select(definition => definition.GetProperty("location").GetProperty("path").GetString()));
         Assert.NotEqual(
             definitions[0].GetProperty("location").GetProperty("offset").GetInt32(),
@@ -1609,8 +1713,8 @@ public sealed class CliCommandTests : IDisposable
         Assert.NotEmpty(GetPhysicalLines(sourceSearch.StandardOutput));
         Assert.All(GetPhysicalLines(sourceSearch.StandardOutput), line =>
         {
-            Assert.Matches(@"^[^\t]+\t[^\t]*\t[^\t]*$", line);
-            Assert.Equal(2, line.Count(character => character == '\t'));
+            Assert.Matches(@"^[^\t]+\t(?:ordinary|partial-definition|partial-implementation)\t[^\t]*\t[^\t]*$", line);
+            Assert.Equal(3, line.Count(character => character == '\t'));
         });
         Assert.Contains("Query matched", sourceSearch.StandardError);
 
@@ -2517,6 +2621,31 @@ public sealed class CliCommandTests : IDisposable
             Console.SetOut(output);
             Console.SetError(error);
             var exitCode = await Program.RunAsync(args, cancellationToken, outputDestinationFactory);
+            return new CommandResult(exitCode, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+        }
+    }
+
+    private static async Task<CommandResult> RunWithDependenciesAsync(
+        string[] args,
+        ProgramDependencies dependencies)
+    {
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            Console.SetError(error);
+            var exitCode = await Program.RunAsync(
+                args,
+                TestContext.Current.CancellationToken,
+                dependencies);
             return new CommandResult(exitCode, output.ToString(), error.ToString());
         }
         finally

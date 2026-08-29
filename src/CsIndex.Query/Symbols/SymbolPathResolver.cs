@@ -19,11 +19,24 @@ public sealed class SymbolPathResolver
         _repository = repository;
     }
 
-    public async Task<IReadOnlyList<ResolvedLogicalRoot>> ResolveLogicalRootsAsync(
+    public Task<IReadOnlyList<ResolvedLogicalRoot>> ResolveLogicalRootsAsync(
         long profileId,
         SymbolSelectionRequest request,
         bool sourceOnly,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ResolveLogicalRootsAsync(
+            profileId,
+            request,
+            sourceOnly,
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
+
+    private async Task<IReadOnlyList<ResolvedLogicalRoot>> ResolveLogicalRootsAsync(
+        long profileId,
+        SymbolSelectionRequest request,
+        bool sourceOnly,
+        bool includeSourceText,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
@@ -91,7 +104,7 @@ public sealed class SymbolPathResolver
         var declarations = await _repository.GetDeclarationsAsync(
             profileId,
             logicalMatches.Select(symbol => symbol.Id),
-            compiledConditions.RequiresSourceText,
+            includeSourceText || compiledConditions.RequiresSourceText,
             cancellationToken);
         var declarationsBySymbol = declarations
             .GroupBy(declaration => declaration.SymbolId)
@@ -157,7 +170,8 @@ public sealed class SymbolPathResolver
             profileId,
             request,
             sourceOnly: true,
-            cancellationToken);
+            includeSourceText: true,
+            cancellationToken: cancellationToken);
         var rows = roots.SelectMany(root => root.MatchingDeclarations.Select(
             declaration => (Symbol: root.Symbol, Declaration: declaration)));
         return SymbolCanonicalComparer.OrderSourceMatches(rows, cancellationToken);

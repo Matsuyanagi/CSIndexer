@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using CsIndex.Cli;
+using CsIndex.Core.Input;
 using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
 using CsIndex.Query;
@@ -16,8 +17,38 @@ public sealed class ConsoleOutputCollection
 }
 
 [Collection(ConsoleOutputCollection.Name)]
-public sealed class OutputFormatterTests
+public sealed class OutputFormatterTests : IDisposable
 {
+    private static readonly SymbolPathFormatOptions FullSymbolPathOptions =
+        new(SymbolPathStyle.CSharp, ShortNames: false);
+
+    private static readonly SymbolPathFormatOptions ShortSymbolPathOptions =
+        new(SymbolPathStyle.CSharp, ShortNames: true);
+
+    private readonly TemporaryDirectory _sourceDirectory;
+    private readonly IndexPathResolver _pathResolver;
+
+    public OutputFormatterTests()
+    {
+        _sourceDirectory = new TemporaryDirectory();
+        _pathResolver = IndexPathResolver.CreateForIndex(
+            Path.Combine(_sourceDirectory.Path, ".csindex", "index.sqlite"),
+            _sourceDirectory.Path);
+        foreach (var path in new[]
+        {
+            "source file.cs",
+            "source.cs",
+            "PartialDefinition.cs",
+            "PartialImplementation.cs",
+            "missing.cs",
+        })
+        {
+            File.WriteAllText(Path.Combine(_sourceDirectory.Path, path), "test source");
+        }
+    }
+
+    public void Dispose() => _sourceDirectory.Dispose();
+
     [Theory]
     [InlineData(
         "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)",
@@ -61,7 +92,7 @@ public sealed class OutputFormatterTests
             asyncInvolvementDepth: null,
             id: 1,
             displayName: "Example.SourceBacked()",
-            documentPath: "source\tfile.cs",
+            documentPath: "source file.cs",
             sourceStart: 0);
         var metadataOnly = CreateSymbol(
             AsyncRole.None,
@@ -71,7 +102,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+        CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics)
             .WriteSymbols(
                 new QueryContext(CreateProfile(), [sourceBacked, metadataOnly]),
                 TestContext.Current.CancellationToken);
@@ -83,7 +114,7 @@ public sealed class OutputFormatterTests
             Assert.Matches(@"^[^\t]+\t[^\t]*$", line);
             Assert.Equal(1, line.Count(character => character == '\t'));
         });
-        Assert.Equal("Example.SourceBacked()\tsource file.cs:0:0", lines[0]);
+        Assert.Equal("Example.SourceBacked()\tsource file.cs:1:1", lines[0]);
         Assert.Equal("Example.MetadataOnly()\t", lines[1]);
         Assert.Equal($"Query matched 2 symbol(s):{Environment.NewLine}", diagnostics.ToString());
     }
@@ -108,7 +139,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+        CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics)
             .WriteSymbols(
                 new QueryContext(CreateProfile(), [sourceBacked, metadataOnly], ShowSource: true),
                 TestContext.Current.CancellationToken);
@@ -121,7 +152,7 @@ public sealed class OutputFormatterTests
             Assert.Equal(2, line.Count(character => character == '\t'));
         });
         Assert.Equal(
-            "Example.Source Backed()\tsource.cs:0:0\tvar raw=\"\"\" first line second third fourth fifth sixth \"\"\";",
+            "Example.Source Backed()\tsource.cs:1:1\tvar raw=\"\"\" first line second third fourth fifth sixth \"\"\";",
             lines[0]);
         Assert.Equal("Example.MetadataOnly()\t\t", lines[1]);
         Assert.Equal($"Query matched 2 symbol(s):{Environment.NewLine}", diagnostics.ToString());
@@ -145,7 +176,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+        CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics)
             .WriteSymbolList(
                 new QueryContext(CreateProfile(), [sourceBacked, metadataOnly]),
                 TestContext.Current.CancellationToken);
@@ -169,7 +200,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics)
+        CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics)
             .WriteSymbols(
                 new QueryContext(CreateProfile(), []),
                 TestContext.Current.CancellationToken);
@@ -209,7 +240,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("table", false, SourceLayout.MultiLine, payload, diagnostics)
+        CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.MultiLine, payload, diagnostics)
             .WriteSymbols(
                 new QueryContext(CreateProfile(), [sourceBacked, metadataOnly], ShowSource: true),
                 TestContext.Current.CancellationToken);
@@ -217,7 +248,7 @@ public sealed class OutputFormatterTests
         Assert.Equal(
             [
                 "Query matched 2 symbol(s):",
-                "  Example.Source Backed()  source.cs:0:0",
+                "  Example.Source Backed()  source.cs:1:1",
                 "    source: var raw=\"\"\" first second third fourth fifth sixth seventh \"\"\";",
                 "  Example.Metadata Only()",
                 "    source: ",
@@ -257,7 +288,7 @@ public sealed class OutputFormatterTests
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
 
-        new OutputFormatter("json", false, SourceLayout.SingleLine, payload, diagnostics)
+        CreateOutputFormatter("json", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics)
             .WriteSymbols(
                 new QueryContext(CreateProfile(), [symbol], ShowSource: true),
                 TestContext.Current.CancellationToken);
@@ -275,7 +306,7 @@ public sealed class OutputFormatterTests
         var context = new QueryContext(CreateProfile(), [symbol]);
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
-        var formatter = new OutputFormatter("table", false, SourceLayout.SingleLine, payload, diagnostics);
+        var formatter = CreateOutputFormatter("table", FullSymbolPathOptions, SourceLayout.SingleLine, payload, diagnostics);
 
         formatter.WriteDefinitions(
             CreateDefinitionResult(context, [symbol]),
@@ -324,6 +355,49 @@ public sealed class OutputFormatterTests
         Assert.Equal(
             symbol.Id,
             Assert.Single(document.RootElement.GetProperty("definitions").EnumerateArray()).GetProperty("id").GetInt64());
+    }
+
+    [Fact]
+    public void DefinitionRowsRequireDedicatedRoleFieldsInJsonAndTable()
+    {
+        var symbol = CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            id: 11,
+            displayName: "Partials.PartialHost::PartialWork()");
+        var context = new QueryContext(CreateProfile(), [symbol]);
+        var definition = CreateDeclaration(symbol) with
+        {
+            Id = 21,
+            DeclarationKey = "partial-definition",
+            DocumentPath = "PartialDefinition.cs",
+            Role = DeclarationRole.PartialDefinition,
+            SourceStart = 10,
+        };
+        var implementation = CreateDeclaration(symbol) with
+        {
+            Id = 22,
+            DeclarationKey = "partial-implementation",
+            DocumentPath = "PartialImplementation.cs",
+            Role = DeclarationRole.PartialImplementation,
+            SourceStart = 20,
+        };
+        var result = new DefinitionResult(
+            CreateSelection(context),
+            [new DeclarationResultRow(symbol, definition), new DeclarationResultRow(symbol, implementation)]);
+
+        var table = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteDefinitions(result));
+        using var json = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteDefinitions(result));
+
+        Assert.Contains("\tpartial-definition\t", table, StringComparison.Ordinal);
+        Assert.Contains("\tpartial-implementation\t", table, StringComparison.Ordinal);
+        Assert.Equal(
+            ["partial-definition", "partial-implementation"],
+            json.RootElement.GetProperty("definitions").EnumerateArray()
+                .Select(row => row.GetProperty("declarationRole").GetString()));
+        Assert.All(
+            json.RootElement.GetProperty("matched").EnumerateArray(),
+            matched => Assert.False(matched.TryGetProperty("declarationRole", out _)));
     }
 
     [Fact]
@@ -401,7 +475,7 @@ public sealed class OutputFormatterTests
             endpoints);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)")));
+            CaptureText(() => CreateOutputFormatter(format, FullSymbolPathOptions).WriteCalls(result, "call(s)")));
 
         Assert.Equal(
             $"call endpoint symbol ID {missingId} is missing from the hydration batch.",
@@ -423,7 +497,7 @@ public sealed class OutputFormatterTests
             endpoints);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            CaptureText(() => new OutputFormatter(format).WriteRelations(result)));
+            CaptureText(() => CreateOutputFormatter(format, FullSymbolPathOptions).WriteRelations(result)));
 
         Assert.Equal(
             $"relation endpoint symbol ID {missingId} is missing from the hydration batch.",
@@ -453,7 +527,7 @@ public sealed class OutputFormatterTests
             [],
             endpoints);
 
-        var output = CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)"));
+        var output = CaptureText(() => CreateOutputFormatter(format, FullSymbolPathOptions).WriteCalls(result, "call(s)"));
 
         if (format == "json")
         {
@@ -468,6 +542,41 @@ public sealed class OutputFormatterTests
         {
             Assert.Contains(unresolvedName, output, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void WriteCallsJsonEmitsUnresolvedNameOnlyForACompletelyDanglingEndpoint()
+    {
+        const string danglingName = "DynamicTarget<System.Guid>";
+        var resolved = CreateCall(AsyncUsageKind.None) with
+        {
+            Id = 11,
+            UnresolvedName = "stale-resolver-token",
+        };
+        var dangling = CreateCall(AsyncUsageKind.None) with
+        {
+            Id = 12,
+            CalleeSymbolId = null,
+            CalleeDefinitionId = null,
+            UnresolvedName = danglingName,
+            ResolutionStatus = ResolutionStatus.Unresolved,
+        };
+        var result = new CallResult(
+            CreateSelection(new QueryContext(CreateProfile(), [])),
+            [resolved, dangling],
+            [],
+            [],
+            CreateEndpointSymbols());
+
+        using var document = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteCalls(result, "call(s)"));
+        var calls = document.RootElement.GetProperty("calls").EnumerateArray()
+            .ToDictionary(call => call.GetProperty("id").GetInt64());
+
+        Assert.Equal(FormatPath(CreateEndpointSymbols()[2]), calls[resolved.Id].GetProperty("callee").GetString());
+        Assert.Equal(JsonValueKind.Null, calls[resolved.Id].GetProperty("unresolvedName").ValueKind);
+        Assert.Equal(danglingName, calls[dangling.Id].GetProperty("callee").GetString());
+        Assert.Equal(danglingName, calls[dangling.Id].GetProperty("unresolvedName").GetString());
+        Assert.DoesNotContain("symbol-2", calls[resolved.Id].GetProperty("callee").GetString(), StringComparison.Ordinal);
     }
 
     [Theory]
@@ -492,7 +601,7 @@ public sealed class OutputFormatterTests
             endpoints);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            CaptureText(() => new OutputFormatter(format).WriteCalls(result, "call(s)")));
+            CaptureText(() => CreateOutputFormatter(format, FullSymbolPathOptions).WriteCalls(result, "call(s)")));
 
         Assert.Equal(
             $"Call ID {call.Id} has no resolved callee endpoint or unresolved name.",
@@ -529,7 +638,7 @@ public sealed class OutputFormatterTests
             namespaceName: "Nop.Core.Caching");
         var context = new QueryContext(CreateProfile(), [symbol]);
 
-        using var document = CaptureJson(() => new OutputFormatter("json", shortNames: true).WriteSymbols(context));
+        using var document = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions).WriteSymbols(context));
 
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal(
@@ -559,7 +668,7 @@ public sealed class OutputFormatterTests
             accessibility: (int)IndexedAccessibility.Public);
         var context = new QueryContext(CreateProfile(), [symbol]);
 
-        var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteSymbols(context));
+        var output = CaptureText(() => CreateOutputFormatter("table", ShortSymbolPathOptions).WriteSymbols(context));
 
         Assert.Contains(
             "public static async System.Threading.Tasks.Task<System.Int32> " +
@@ -581,7 +690,7 @@ public sealed class OutputFormatterTests
             normalizedSource: "public static async Task<int>Play(string name){return 1;}",
             accessibility: (int)IndexedAccessibility.Public);
 
-        using var hiddenSource = CaptureJson(() => new OutputFormatter("json", shortNames: true)
+        using var hiddenSource = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions)
             .WriteSymbols(new QueryContext(CreateProfile(), [symbol])));
         var hiddenSymbol = Assert.Single(hiddenSource.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal("Gamer::Play(System.String)", hiddenSymbol.GetProperty("displayName").GetString());
@@ -595,7 +704,7 @@ public sealed class OutputFormatterTests
         Assert.True(hiddenSymbol.GetProperty("isAsync").GetBoolean());
         Assert.False(hiddenSymbol.TryGetProperty("normalizedSource", out _));
 
-        using var shownSource = CaptureJson(() => new OutputFormatter("json", shortNames: true)
+        using var shownSource = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions)
             .WriteSymbols(new QueryContext(CreateProfile(), [symbol], ShowSource: true)));
         var shownSymbol = Assert.Single(shownSource.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal("public static async Task<int>Play(string name){return 1;}",
@@ -630,23 +739,23 @@ public sealed class OutputFormatterTests
             accessibility: (int)IndexedAccessibility.NotApplicable);
         var hiddenContext = new QueryContext(CreateProfile(), [constructor, lambda]);
 
-        var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(hiddenContext));
+        var table = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteSymbols(hiddenContext));
         Assert.Equal(
             "public Tokyo.Gamer::[constructor](string)\t" + Environment.NewLine +
             "System.Int32 Tokyo.Gamer::Run().<lambda#1>\t" + Environment.NewLine,
             table);
         Assert.DoesNotContain("source:", table);
 
-        var shownTable = CaptureText(() => new OutputFormatter(
+        var shownTable = CaptureText(() => CreateOutputFormatter(
             "table",
-            false,
+            FullSymbolPathOptions,
             SourceLayout.MultiLine,
             Console.Out,
             Console.Error).WriteSymbols(new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
         Assert.Contains("source: public Gamer(string name){}", shownTable);
         Assert.Contains("source: ()=>42", shownTable);
 
-        using var hiddenJson = CaptureJson(() => new OutputFormatter("json").WriteSymbols(hiddenContext));
+        using var hiddenJson = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteSymbols(hiddenContext));
         var hiddenConstructor = Assert.Single(hiddenJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
             symbol.GetProperty("id").GetInt64() == constructor.Id);
         var hiddenLambda = Assert.Single(hiddenJson.RootElement.GetProperty("matched").EnumerateArray(), symbol =>
@@ -662,7 +771,7 @@ public sealed class OutputFormatterTests
         Assert.Equal(JsonValueKind.Null, hiddenLambda.GetProperty("accessibility").ValueKind);
         Assert.False(hiddenLambda.TryGetProperty("normalizedSource", out _));
 
-        using var shownJson = CaptureJson(() => new OutputFormatter("json").WriteSymbols(
+        using var shownJson = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteSymbols(
             new QueryContext(CreateProfile(), [constructor, lambda], ShowSource: true)));
         Assert.Equal(
             "public Gamer(string name){}",
@@ -719,7 +828,7 @@ public sealed class OutputFormatterTests
             accessibility: (int)IndexedAccessibility.Public);
         var context = new QueryContext(CreateProfile(), [local, getter, addition, conversion]);
 
-        var table = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
+        var table = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteSymbols(context));
         Assert.Equal(
             "System.Int32 Test.A::Host().Local()\t" + Environment.NewLine +
             "public System.Int32 Test.A::[get:Value]()\t" + Environment.NewLine +
@@ -727,7 +836,7 @@ public sealed class OutputFormatterTests
             "public static System.Int32 Test.A::[conversion:implicit:int](Test.A)\t" + Environment.NewLine,
             table);
 
-        using var json = CaptureJson(() => new OutputFormatter("json").WriteSymbols(context));
+        using var json = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteSymbols(context));
         var symbols = json.RootElement.GetProperty("matched").EnumerateArray()
             .ToDictionary(symbol => symbol.GetProperty("id").GetInt64());
         Assert.Equal(JsonValueKind.Null, symbols[local.Id].GetProperty("accessibility").ValueKind);
@@ -908,7 +1017,7 @@ public sealed class OutputFormatterTests
         {
             var nodes = new CancelAfterFirstReadList<StoredSymbol>([root, child], cancellation);
             var result = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, nodes, Found: true, Truncated: false);
-            var formatter = new GraphOutputFormatter(shortNames: false, destination.Writer);
+            var formatter = CreateGraphOutputFormatter(FullSymbolPathOptions, destination.Writer);
 
             Assert.Throws<OperationCanceledException>(() => formatter.WriteAsyncPath(
                 result,
@@ -1424,7 +1533,7 @@ public sealed class OutputFormatterTests
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");
         var result = new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [root], Found: true, Truncated: false);
         using var payload = new StringWriter();
-        var formatter = new GraphOutputFormatter(shortNames: false, payload);
+        var formatter = CreateGraphOutputFormatter(FullSymbolPathOptions, payload);
 
         var consoleOutput = CaptureText(() => formatter.WriteAsyncPath(result, "tree"));
 
@@ -1575,11 +1684,11 @@ public sealed class OutputFormatterTests
             ],
             edge => Assert.Contains(edge, mermaid));
         Assert.Equal(
-            [101L, 102L, 103L, 104L, 106L, 105L],
+            [101L, 102L, 106L, 105L, 103L, 104L],
             json.RootElement.GetProperty("nodes").EnumerateArray()
                 .Select(node => node.GetProperty("symbol").GetProperty("id").GetInt64()));
         Assert.Equal(
-            ["101->102", "102->101", "103->101", "104->103", "105->102", "106->102", "106->103"],
+            ["101->102", "102->101", "106->102", "106->103", "105->102", "103->101", "104->103"],
             json.RootElement.GetProperty("edges").EnumerateArray()
                 .Select(edge => $"{edge.GetProperty("callerSymbolId").GetInt64()}->{edge.GetProperty("calleeSymbolId").GetInt64()}"));
     }
@@ -1591,7 +1700,7 @@ public sealed class OutputFormatterTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        Assert.Throws<OperationCanceledException>(() => new GraphOutputFormatter(shortNames: false, TextWriter.Null).WriteAsyncPath(
+        Assert.Throws<OperationCanceledException>(() => CreateGraphOutputFormatter(FullSymbolPathOptions, TextWriter.Null).WriteAsyncPath(
             new AsyncPathResult(CreateSelection(CreateProfile(), root), root, [root], Found: true, Truncated: false),
             "tree",
             cancellation.Token));
@@ -1637,6 +1746,7 @@ public sealed class OutputFormatterTests
 
         Assert.Throws<OperationCanceledException>(() => GraphOutputFormatter.OrderEdges(
             [new CallerTreeEdge(3, 1), new CallerTreeEdge(2, 1), new CallerTreeEdge(1, 1)],
+            new Dictionary<long, int> { [1] = 0, [2] = 1, [3] = 2 },
             cancellation.Token,
             () =>
             {
@@ -1654,7 +1764,7 @@ public sealed class OutputFormatterTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        Assert.Throws<OperationCanceledException>(() => CaptureText(() => new OutputFormatter("json")
+        Assert.Throws<OperationCanceledException>(() => CaptureText(() => CreateOutputFormatter("json", FullSymbolPathOptions)
             .WriteSymbols(new QueryContext(CreateProfile(), [symbol]), cancellation.Token)));
     }
 
@@ -1678,7 +1788,7 @@ public sealed class OutputFormatterTests
         };
         var result = new CallResult(CreateSelection(context), [call], [], [], endpointSymbols);
 
-        var output = CaptureText(() => new OutputFormatter("table", shortNames: true).WriteCalls(result, "call(s)"));
+        var output = CaptureText(() => CreateOutputFormatter("table", ShortSymbolPathOptions).WriteCalls(result, "call(s)"));
 
         Assert.Contains(
             "Caller::Run(System.String) -> Callee::Execute(System.Threading.Tasks.Task)",
@@ -1692,7 +1802,7 @@ public sealed class OutputFormatterTests
         var symbol = CreateSymbol(AsyncRole.None, asyncInvolvementDepth: null, displayName: displayName);
         var context = new QueryContext(CreateProfile(), [symbol]);
 
-        var output = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
+        var output = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteSymbols(context));
 
         Assert.Equal(
             $"{displayName}\t{Environment.NewLine}",
@@ -1707,7 +1817,7 @@ public sealed class OutputFormatterTests
             asyncInvolvementDepth: 0);
         var context = new QueryContext(CreateProfile(), [symbol]);
 
-        using var document = CaptureJson(() => new OutputFormatter("json").WriteSymbols(context));
+        using var document = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteSymbols(context));
 
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal("DeclaredAsync, ReturnsAwaitable", outputSymbol.GetProperty("asyncRole").GetString());
@@ -1724,7 +1834,7 @@ public sealed class OutputFormatterTests
             displayName: "Example.Features.Worker::Run(System.Threading.Tasks.Task)");
         var context = new QueryContext(CreateProfile(), [symbol]);
 
-        using var document = CaptureJson(() => new OutputFormatter("json", shortNames: true).WriteSymbolList(context));
+        using var document = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions).WriteSymbolList(context));
 
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("symbols").EnumerateArray());
@@ -1745,7 +1855,7 @@ public sealed class OutputFormatterTests
             [],
             CreateEndpointSymbols());
 
-        using var document = CaptureJson(() => new OutputFormatter("json").WriteCalls(result, "call(s)"));
+        using var document = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions).WriteCalls(result, "call(s)"));
 
         var call = Assert.Single(document.RootElement.GetProperty("calls").EnumerateArray());
         Assert.Equal("Awaited", call.GetProperty("asyncUsageKind").GetString());
@@ -1765,7 +1875,7 @@ public sealed class OutputFormatterTests
             displayName: "Example.SyncMethod()");
         var context = new QueryContext(CreateProfile(), [asyncSymbol, synchronousSymbol]);
 
-        var output = CaptureText(() => new OutputFormatter("table").WriteSymbols(context));
+        var output = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteSymbols(context));
 
         Assert.Contains(
             "Example.AsyncMethod() [async: DeclaredAsync, ReturnsAwaitable; depth: 0]",
@@ -1785,30 +1895,60 @@ public sealed class OutputFormatterTests
             [],
             CreateEndpointSymbols());
 
-        var output = CaptureText(() => new OutputFormatter("table").WriteCalls(result, "call(s)"));
+        var output = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions).WriteCalls(result, "call(s)"));
 
         Assert.Contains("[Awaited]", output);
     }
 
+    private OutputFormatter CreateOutputFormatter(
+        string format,
+        SymbolPathFormatOptions symbolPathOptions) =>
+        new(format, symbolPathOptions, _pathResolver, PathDisplayStyle.Relative);
+
+    private OutputFormatter CreateOutputFormatter(
+        string format,
+        SymbolPathFormatOptions symbolPathOptions,
+        SourceLayout sourceLayout,
+        TextWriter writer,
+        TextWriter diagnosticsWriter) =>
+        new(
+            format,
+            symbolPathOptions,
+            _pathResolver,
+            PathDisplayStyle.Relative,
+            sourceLayout,
+            writer,
+            diagnosticsWriter);
+
+    private GraphOutputFormatter CreateGraphOutputFormatter(
+        SymbolPathFormatOptions symbolPathOptions,
+        TextWriter writer) =>
+        new(symbolPathOptions, _pathResolver, PathDisplayStyle.Relative, writer);
+
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
 
-    private static JsonDocument CaptureGraphJson(Action<GraphOutputFormatter> write) =>
+    private JsonDocument CaptureGraphJson(Action<GraphOutputFormatter> write) =>
         JsonDocument.Parse(CaptureGraphText(write));
 
-    private static string CaptureGraphText(Action<GraphOutputFormatter> write)
+    private string CaptureGraphText(Action<GraphOutputFormatter> write)
     {
         using var payload = new StringWriter();
-        var consoleOutput = CaptureText(() => write(new GraphOutputFormatter(shortNames: false, payload)));
+        var consoleOutput = CaptureText(() => write(CreateGraphOutputFormatter(FullSymbolPathOptions, payload)));
 
         Assert.Equal(string.Empty, consoleOutput);
         return payload.ToString();
     }
 
-    private static JsonDocument CaptureInjectedJson(Action<OutputFormatter> write)
+    private JsonDocument CaptureInjectedJson(Action<OutputFormatter> write)
     {
         using var payload = new StringWriter();
         using var diagnostics = new StringWriter();
-        var formatter = new OutputFormatter("json", false, SourceLayout.SingleLine, payload, diagnostics);
+        var formatter = CreateOutputFormatter(
+            "json",
+            FullSymbolPathOptions,
+            SourceLayout.SingleLine,
+            payload,
+            diagnostics);
 
         var consoleOutput = CaptureText(() => write(formatter));
 

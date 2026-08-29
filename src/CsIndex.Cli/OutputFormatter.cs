@@ -1,5 +1,7 @@
 using System.Text.Json;
+using CsIndex.Core.Input;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Storage;
 
@@ -7,26 +9,45 @@ namespace CsIndex.Cli;
 
 internal sealed class OutputFormatter
 {
+    private static readonly SymbolPathFormatOptions FullyQualifiedNameOptions =
+        new(SymbolPathStyle.CSharp, ShortNames: false);
+
     private readonly TextWriter _diagnosticsWriter;
     private readonly string _format;
-    private readonly bool _shortNames;
+    private readonly IndexPathResolver _pathResolver;
+    private readonly PathDisplayStyle _pathStyle;
     private readonly SourceLayout _sourceLayout;
+    private readonly SymbolPathFormatOptions _symbolPathOptions;
     private readonly TextWriter _writer;
 
-    public OutputFormatter(string format, bool shortNames = false)
-        : this(format, shortNames, SourceLayout.SingleLine, Console.Out, Console.Error)
+    public OutputFormatter(
+        string format,
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle)
+        : this(
+            format,
+            symbolPathOptions,
+            pathResolver,
+            pathStyle,
+            SourceLayout.SingleLine,
+            Console.Out,
+            Console.Error)
     {
     }
 
     public OutputFormatter(
         string format,
-        bool shortNames,
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle,
         SourceLayout sourceLayout,
         TextWriter writer,
         TextWriter diagnosticsWriter)
     {
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(diagnosticsWriter);
+        ArgumentNullException.ThrowIfNull(pathResolver);
 
         _format = format switch
         {
@@ -34,7 +55,9 @@ internal sealed class OutputFormatter
             _ => throw new CliUsageException(
                 $"Output format '{format}' is reserved but not implemented. Use table or json."),
         };
-        _shortNames = shortNames;
+        _symbolPathOptions = symbolPathOptions;
+        _pathResolver = pathResolver;
+        _pathStyle = pathStyle;
         _sourceLayout = sourceLayout;
         _writer = writer;
         _diagnosticsWriter = diagnosticsWriter;
@@ -50,7 +73,12 @@ internal sealed class OutputFormatter
                 profile = context.Profile.Name,
                 matched = SelectWithCancellation(
                     context.MatchedSymbols,
-                    symbol => ToSymbolObject(symbol, _shortNames, context.ShowSource),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        context.ShowSource),
                     cancellationToken),
             });
             return;
@@ -62,7 +90,6 @@ internal sealed class OutputFormatter
             return;
         }
 
-        _diagnosticsWriter.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
         foreach (var symbol in context.MatchedSymbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -78,6 +105,50 @@ internal sealed class OutputFormatter
                 _writer.WriteLine($"{signature}\t{location}");
             }
         }
+
+        _diagnosticsWriter.WriteLine($"Query matched {context.MatchedSymbols.Count} symbol(s):");
+    }
+
+    public void WriteSourceSearch(
+        SourceSearchResult result,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_format == "json")
+        {
+            WriteJsonPayload(new
+            {
+                profile = result.Profile.Name,
+                matched = SelectWithCancellation(
+                    result.Matches,
+                    row => ToDeclarationObject(
+                        row,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        includeSource: true),
+                    cancellationToken),
+            });
+            return;
+        }
+
+        if (_sourceLayout == SourceLayout.MultiLine)
+        {
+            WriteSourceSearchMultiLine(result, cancellationToken);
+            return;
+        }
+
+        foreach (var row in result.Matches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var symbol = ApplyDeclaration(row.Symbol, row.Declaration);
+            _writer.WriteLine(
+                $"{FormatTableSignature(symbol)}\t{FormatDeclarationRole(row.Declaration.Role)}\t" +
+                $"{FormatDefinitionLocationField(symbol)}\t{TableTextSanitizer.Sanitize(symbol.NormalizedSource)}");
+        }
+
+        _diagnosticsWriter.WriteLine($"Query matched {result.Matches.Count} symbol(s):");
     }
 
     public void WriteDefinitions(DefinitionResult result, CancellationToken cancellationToken = default)
@@ -90,13 +161,20 @@ internal sealed class OutputFormatter
                 profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
                     result.Selection.Roots.Select(root => root.Symbol),
-                    symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        includeSource: false),
                     cancellationToken),
                 definitions = SelectWithCancellation(
                     result.Definitions,
-                    row => ToSymbolObject(
-                        ApplyDeclaration(row.Symbol, row.Declaration),
-                        _shortNames,
+                    row => ToDeclarationObject(
+                        row,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
                         includeSource: false),
                     cancellationToken),
             });
@@ -108,7 +186,9 @@ internal sealed class OutputFormatter
         {
             cancellationToken.ThrowIfCancellationRequested();
             var definition = ApplyDeclaration(row.Symbol, row.Declaration);
-            _writer.WriteLine($"  {SymbolSignatureFormatter.Format(definition, _shortNames)}{FormatDefinitionLocation(definition)}");
+            _writer.WriteLine(
+                $"  {SymbolSignatureFormatter.Format(definition, _symbolPathOptions)}\t" +
+                $"{FormatDeclarationRole(row.Declaration.Role)}\t{FormatDefinitionLocationField(definition)}");
             if (definition.DocumentPath is null)
             {
                 _writer.WriteLine($"    assembly: {definition.AssemblyName ?? "unknown"}; no source definition");
@@ -126,7 +206,12 @@ internal sealed class OutputFormatter
                 profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
                     result.Selection.Roots.Select(root => root.Symbol),
-                    symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        includeSource: false),
                     cancellationToken),
                 calls = SelectWithCancellation(
                     result.Calls,
@@ -140,15 +225,26 @@ internal sealed class OutputFormatter
                         resolutionStatus = call.ResolutionStatus.ToString(),
                         resolutionReason = call.ResolutionReason.ToString(),
                         asyncUsageKind = call.AsyncUsageKind.ToString(),
-                        location = ToLocationObject(call.DocumentPath, call.SourceStart),
+                        location = ToLocationObject(
+                            call.DocumentPath,
+                            call.SourceStart,
+                            _pathResolver,
+                            _pathStyle),
                         call.IsGenerated,
-                        call.UnresolvedName,
+                        unresolvedName = call.CalleeSymbolId is null && call.CalleeDefinitionId is null
+                            ? call.UnresolvedName
+                            : null,
                         call.ReceiverTypeKey,
                     },
                     cancellationToken),
                 callers = SelectWithCancellation(
                     result.EffectiveCallers,
-                    symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        includeSource: false),
                     cancellationToken),
                 possibleRuntimeTargets = SelectWithCancellation(
                     result.PossibleRuntimeTargets,
@@ -167,7 +263,7 @@ internal sealed class OutputFormatter
         foreach (var call in result.Calls)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var point = SafeResolve(call.DocumentPath, call.SourceStart);
+            var point = ResolveLocation(call.DocumentPath, call.SourceStart, _pathResolver, _pathStyle);
             var target = FormatCallTarget(result, call);
             _writer.WriteLine(
                 $"  {point.Path}:{point.Line}:{point.Column}  {FormatCallEndpoint(result, call.CallerSymbolId)} -> {target} " +
@@ -205,7 +301,12 @@ internal sealed class OutputFormatter
                 profile = result.Selection.Profile.Name,
                 matched = SelectWithCancellation(
                     result.Selection.Roots.Select(root => root.Symbol),
-                    symbol => ToSymbolObject(symbol, _shortNames, includeSource: false),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        includeSource: false),
                     cancellationToken),
                 relations = SelectWithCancellation(
                     result.Relations,
@@ -265,21 +366,24 @@ internal sealed class OutputFormatter
         }
     }
 
-    internal static IReadOnlyDictionary<string, object?> ToSymbolObject(
+    internal static Dictionary<string, object?> ToSymbolObject(
         StoredSymbol symbol,
-        bool shortNames,
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle,
         bool includeSource)
     {
         ArgumentNullException.ThrowIfNull(symbol);
+        ArgumentNullException.ThrowIfNull(pathResolver);
 
         var value = new Dictionary<string, object?>
         {
             ["id"] = symbol.Id,
             ["stableKey"] = symbol.StableKey,
             ["kind"] = symbol.Kind.ToString().ToLowerInvariant(),
-            ["displayName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, shortNames),
-            ["signature"] = SymbolSignatureFormatter.Format(symbol, shortNames),
-            ["fullyQualifiedName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, shortNames: false),
+            ["displayName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, symbolPathOptions),
+            ["signature"] = SymbolSignatureFormatter.Format(symbol, symbolPathOptions),
+            ["fullyQualifiedName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, FullyQualifiedNameOptions),
             ["namespaceName"] = symbol.NamespaceName,
             ["typeSimpleName"] = symbol.TypeSimpleName,
             ["parameters"] = symbol.Parameters
@@ -289,7 +393,11 @@ internal sealed class OutputFormatter
                 .ToArray(),
             ["location"] = symbol.DocumentPath is null || symbol.SourceStart is null
                 ? null
-                : ToLocationObject(symbol.DocumentPath, symbol.SourceStart.Value),
+                : ToLocationObject(
+                    symbol.DocumentPath,
+                    symbol.SourceStart.Value,
+                    pathResolver,
+                    pathStyle),
             ["isGenerated"] = symbol.IsGenerated,
             ["assemblyName"] = symbol.AssemblyName,
             ["accessibility"] = SymbolSignatureFormatter.FormatAccessibility(symbol.Accessibility),
@@ -310,20 +418,43 @@ internal sealed class OutputFormatter
         return value;
     }
 
-    private static object ToLocationObject(string path, int offset)
+    private static IReadOnlyDictionary<string, object?> ToDeclarationObject(
+        DeclarationResultRow row,
+        SymbolPathFormatOptions symbolPathOptions,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle,
+        bool includeSource)
     {
-        var point = SafeResolve(path, offset);
+        var value = new Dictionary<string, object?>(ToSymbolObject(
+            ApplyDeclaration(row.Symbol, row.Declaration),
+            symbolPathOptions,
+            pathResolver,
+            pathStyle,
+            includeSource))
+        {
+            ["declarationRole"] = FormatDeclarationRole(row.Declaration.Role),
+        };
+        return value;
+    }
+
+    private static object ToLocationObject(
+        string path,
+        int offset,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle)
+    {
+        var point = ResolveLocation(path, offset, pathResolver, pathStyle);
         return new { path = point.Path, line = point.Line, column = point.Column, offset = point.Offset };
     }
 
-    private static string FormatDefinitionLocation(StoredSymbol symbol)
+    private string FormatDefinitionLocation(StoredSymbol symbol)
     {
         if (symbol.DocumentPath is null || symbol.SourceStart is null)
         {
             return string.Empty;
         }
 
-        var point = SafeResolve(symbol.DocumentPath, symbol.SourceStart.Value);
+        var point = ResolveLocation(symbol.DocumentPath, symbol.SourceStart.Value, _pathResolver, _pathStyle);
         return $"  {point.Path}:{point.Line}:{point.Column}";
     }
 
@@ -339,14 +470,22 @@ internal sealed class OutputFormatter
             IsGenerated = declaration.IsGenerated,
         };
 
-    private static string FormatDefinitionLocationField(StoredSymbol symbol)
+    private static string FormatDeclarationRole(DeclarationRole role) => role switch
+    {
+        DeclarationRole.Ordinary => "ordinary",
+        DeclarationRole.PartialDefinition => "partial-definition",
+        DeclarationRole.PartialImplementation => "partial-implementation",
+        _ => throw new InvalidOperationException($"Unknown declaration role: {role}."),
+    };
+
+    private string FormatDefinitionLocationField(StoredSymbol symbol)
     {
         if (symbol.DocumentPath is null || symbol.SourceStart is null)
         {
             return string.Empty;
         }
 
-        var point = SafeResolve(symbol.DocumentPath, symbol.SourceStart.Value);
+        var point = ResolveLocation(symbol.DocumentPath, symbol.SourceStart.Value, _pathResolver, _pathStyle);
         return TableTextSanitizer.Sanitize($"{point.Path}:{point.Line}:{point.Column}");
     }
 
@@ -360,19 +499,28 @@ internal sealed class OutputFormatter
         return $" [async: {symbol.AsyncRole}; depth: {symbol.AsyncInvolvementDepth?.ToString() ?? "null"}]";
     }
 
-    private static SourcePoint SafeResolve(string path, int offset)
+    private static SourcePoint ResolveLocation(
+        string storedPath,
+        int offset,
+        IndexPathResolver pathResolver,
+        PathDisplayStyle pathStyle)
     {
+        var displayPath = pathResolver.ToDisplayPath(storedPath, pathStyle);
+        var absolutePath = pathResolver.ToAbsolutePath(storedPath);
         try
         {
-            return SourcePositionResolver.ResolveOffset(path, offset);
+            var resolved = SourcePositionResolver.ResolveOffset(absolutePath, offset);
+            return new SourcePoint(displayPath, resolved.Line, resolved.Column, offset);
         }
         catch (IOException)
         {
-            return new SourcePoint(path, 0, 0, offset);
+            throw new InputResolutionException(
+                $"Source file '{displayPath}' could not be read.");
         }
-        catch (ArgumentException)
+        catch (UnauthorizedAccessException)
         {
-            return new SourcePoint(path, 0, 0, offset);
+            throw new InputResolutionException(
+                $"Source file '{displayPath}' could not be read.");
         }
     }
 
@@ -386,7 +534,12 @@ internal sealed class OutputFormatter
                 profile = context.Profile.Name,
                 symbols = SelectWithCancellation(
                     context.MatchedSymbols,
-                    symbol => ToSymbolObject(symbol, _shortNames, context.ShowSource),
+                    symbol => ToSymbolObject(
+                        symbol,
+                        _symbolPathOptions,
+                        _pathResolver,
+                        _pathStyle,
+                        context.ShowSource),
                     cancellationToken),
             });
             return;
@@ -401,7 +554,7 @@ internal sealed class OutputFormatter
     }
 
     private string FormatTableSignature(StoredSymbol symbol) => TableTextSanitizer.Sanitize(
-        $"{SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatAsyncAnalysis(symbol)}");
+        $"{SymbolSignatureFormatter.Format(symbol, _symbolPathOptions)}{FormatAsyncAnalysis(symbol)}");
 
     private void WriteSymbolsMultiLine(QueryContext context, CancellationToken cancellationToken)
     {
@@ -410,11 +563,28 @@ internal sealed class OutputFormatter
         {
             cancellationToken.ThrowIfCancellationRequested();
             _writer.WriteLine(TableTextSanitizer.Sanitize(
-                $"  {SymbolSignatureFormatter.Format(symbol, _shortNames)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}"));
+                $"  {SymbolSignatureFormatter.Format(symbol, _symbolPathOptions)}{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}"));
             if (context.ShowSource)
             {
                 _writer.WriteLine($"    source: {TableTextSanitizer.Sanitize(symbol.NormalizedSource)}");
             }
+        }
+    }
+
+    private void WriteSourceSearchMultiLine(
+        SourceSearchResult result,
+        CancellationToken cancellationToken)
+    {
+        _writer.WriteLine($"Query matched {result.Matches.Count} symbol(s):");
+        foreach (var row in result.Matches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var symbol = ApplyDeclaration(row.Symbol, row.Declaration);
+            _writer.WriteLine(TableTextSanitizer.Sanitize(
+                $"  {SymbolSignatureFormatter.Format(symbol, _symbolPathOptions)}" +
+                $" [declaration-role: {FormatDeclarationRole(row.Declaration.Role)}]" +
+                $"{FormatDefinitionLocation(symbol)}{FormatAsyncAnalysis(symbol)}"));
+            _writer.WriteLine($"    source: {TableTextSanitizer.Sanitize(symbol.NormalizedSource)}");
         }
     }
 
@@ -434,7 +604,7 @@ internal sealed class OutputFormatter
     }
 
     private string FormatSymbolName(StoredSymbol symbol) =>
-        SymbolSignatureFormatter.FormatDisplayName(symbol, _shortNames);
+        SymbolSignatureFormatter.FormatDisplayName(symbol, _symbolPathOptions);
 
     private string FormatCallEndpoint(CallResult result, long symbolId) =>
         FormatHydratedEndpoint(result.SymbolsById, symbolId, "call");

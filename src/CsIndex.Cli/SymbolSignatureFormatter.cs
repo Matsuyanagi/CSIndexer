@@ -8,7 +8,7 @@ internal static class SymbolSignatureFormatter
 {
     private static readonly SymbolPathFormatter PathFormatter = new();
 
-    public static string Format(StoredSymbol symbol, bool shortNames)
+    public static string Format(StoredSymbol symbol, SymbolPathFormatOptions symbolPathOptions)
     {
         ArgumentNullException.ThrowIfNull(symbol);
 
@@ -34,11 +34,13 @@ internal static class SymbolSignatureFormatter
             parts.Add(symbol.ReturnTypeDisplay ?? symbol.ReturnTypeKey!);
         }
 
-        parts.Add(FormatDisplayName(symbol, shortNames));
+        parts.Add(FormatDisplayName(symbol, symbolPathOptions));
         return string.Join(' ', parts);
     }
 
-    public static string FormatDisplayName(StoredSymbol symbol, bool shortNames)
+    public static string FormatDisplayName(
+        StoredSymbol symbol,
+        SymbolPathFormatOptions symbolPathOptions)
     {
         ArgumentNullException.ThrowIfNull(symbol);
         if (symbol.Path is null)
@@ -47,12 +49,10 @@ internal static class SymbolSignatureFormatter
                 $"Symbol ID {symbol.Id} has no semantic path data for presentation.");
         }
 
-        return PathFormatter.Format(
-            symbol.Path,
-            new SymbolPathFormatOptions(SymbolPathStyle.CSharp, shortNames));
+        return PathFormatter.Format(symbol.Path, symbolPathOptions);
     }
 
-    public static string FormatType(string typeName, bool shortNames) => typeName;
+    public static string FormatType(string typeName, SymbolPathFormatOptions symbolPathOptions) => typeName;
 
     public static bool IsDeclaredAsync(StoredSymbol symbol) =>
         (symbol.AsyncRole & AsyncRole.DeclaredAsync) != 0;

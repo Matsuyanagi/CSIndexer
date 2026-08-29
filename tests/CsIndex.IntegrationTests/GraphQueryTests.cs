@@ -1,6 +1,8 @@
 using System.Text.Json;
 using CsIndex.Cli;
+using CsIndex.Core.Input;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
 using CsIndex.Query;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
@@ -886,17 +888,27 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             new CallerTreeEdge(left.Id, right.Id),
         };
         var symbolIds = result.Nodes.ToDictionary(node => FormatPath(node.Symbol), node => node.Symbol.Id, StringComparer.Ordinal);
-        var formatter = new GraphOutputFormatter(shortNames: false);
+        var pathResolver = IndexPathResolver.CreateForQuery(
+            fixture.DatabasePath,
+            result.Selection.Profile.IndexRootAnchor,
+            baseDirectory: null);
+        var symbolPathOptions = new SymbolPathFormatOptions(SymbolPathStyle.CSharp, ShortNames: false);
+
+        string Format(string output) => CaptureText(() => new GraphOutputFormatter(
+            symbolPathOptions,
+            pathResolver,
+            PathDisplayStyle.Absolute,
+            Console.Out).WriteCallerTree(result, output, cancellationToken));
 
         Assert.Equal(expected, result.Edges);
 
-        var tree = CaptureText(() => formatter.WriteCallerTree(result, "tree", cancellationToken));
+        var tree = Format("tree");
         Assert.Equal(expected.OrderBy(EdgeKey), ParseTreeEdges(tree, symbolIds).OrderBy(EdgeKey));
 
-        var mermaid = CaptureText(() => formatter.WriteCallerTree(result, "mermaid", cancellationToken));
+        var mermaid = Format("mermaid");
         Assert.Equal(expected.OrderBy(EdgeKey), ParseMermaidEdges(mermaid).OrderBy(EdgeKey));
 
-        using var json = JsonDocument.Parse(CaptureText(() => formatter.WriteCallerTree(result, "json", cancellationToken)));
+        using var json = JsonDocument.Parse(Format("json"));
         Assert.Equal(expected.OrderBy(EdgeKey), ParseJsonEdges(json).OrderBy(EdgeKey));
     }
 
