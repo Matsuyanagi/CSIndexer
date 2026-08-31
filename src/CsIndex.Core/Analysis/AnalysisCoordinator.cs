@@ -13,6 +13,7 @@ public sealed class AnalysisCoordinator(
     AnalysisProfileBuilder profileBuilder,
     SemanticExtractor semanticExtractor)
 {
+    private readonly Func<IndexOptions, ResolvedInput> _resolveInput = inputModeResolver.Resolve;
     private readonly Func<ResolvedInput, IndexOptions, CancellationToken, Task<LoadedWorkspace>> _loadWorkspaceAsync =
         workspaceLoader.LoadAsync;
 
@@ -35,7 +36,24 @@ public sealed class AnalysisCoordinator(
         _loadWorkspaceAsync = loadWorkspaceAsync;
     }
 
-    public ResolvedInput ResolveInput(IndexOptions options) => inputModeResolver.Resolve(options);
+    private AnalysisCoordinator(
+        InputModeResolver inputModeResolver,
+        WorkspaceLoader workspaceLoader,
+        InputFingerprintBuilder inputFingerprintBuilder,
+        AnalysisProfileBuilder profileBuilder,
+        SemanticExtractor semanticExtractor,
+        Func<IndexOptions, ResolvedInput> resolveInput)
+        : this(
+            inputModeResolver,
+            workspaceLoader,
+            inputFingerprintBuilder,
+            profileBuilder,
+            semanticExtractor)
+    {
+        _resolveInput = resolveInput;
+    }
+
+    public ResolvedInput ResolveInput(IndexOptions options) => _resolveInput(options);
 
     public Task<byte[]> BuildInputFingerprintAsync(
         ResolvedInput input,
@@ -148,6 +166,20 @@ public sealed class AnalysisCoordinator(
             new AnalysisProfileBuilder(),
             new SemanticExtractor(new ProjectFingerprintBuilder()),
             loadWorkspaceAsync);
+    }
+
+    internal static AnalysisCoordinator CreateForTesting(
+        Func<IndexOptions, ResolvedInput> resolveInput)
+    {
+        ArgumentNullException.ThrowIfNull(resolveInput);
+        var sourceEnumerator = new SourceFileEnumerator();
+        return new AnalysisCoordinator(
+            new InputModeResolver(),
+            new WorkspaceLoader(sourceEnumerator),
+            new InputFingerprintBuilder(),
+            new AnalysisProfileBuilder(),
+            new SemanticExtractor(new ProjectFingerprintBuilder()),
+            resolveInput);
     }
 
     private static IndexPathResolver CreateStandardPaths(string storageRoot) =>

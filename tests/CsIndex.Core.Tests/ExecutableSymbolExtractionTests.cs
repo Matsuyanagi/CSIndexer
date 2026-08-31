@@ -2,11 +2,129 @@ using CsIndex.Core.Analysis;
 using CsIndex.Core.Caching;
 using CsIndex.Core.Input;
 using CsIndex.Core.Model;
+using CsIndex.Core.Symbols;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace CsIndex.Core.Tests;
 
 public sealed class ExecutableSymbolExtractionTests
 {
+    [Fact]
+    public void GetDefinitionStableKey_DisambiguatesFunctionPointerOverloadsWithoutChangingOrdinaryDocumentationIds()
+    {
+        const string source = """
+            namespace Acceptance.FunctionPointers;
+
+            public unsafe sealed class CollisionHost
+            {
+                public void Shape(delegate*<int, void> callback) { }
+                public void Shape(delegate*<long, void> callback) { }
+                public void Shape(delegate*<ref int, void> callback) { }
+                public void Keep(int value) { }
+            }
+
+            public unsafe partial class PartialHost
+            {
+                public partial void Pair(delegate*<ref int, void> callback);
+            }
+
+            public unsafe partial class PartialHost
+            {
+                public partial void Pair(delegate*<ref int, void> callback) { }
+            }
+            """;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var syntaxTree = CSharpSyntaxTree.ParseText(
+            source,
+            new CSharpParseOptions(LanguageVersion.Preview),
+            path: "C:/machine-specific/FunctionPointerStableKeys.cs",
+            cancellationToken: cancellationToken);
+        var compilation = CSharpCompilation.Create(
+            "FunctionPointerStableKeys",
+            [syntaxTree],
+            GetPlatformReferences(),
+            new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                allowUnsafe: true));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(cancellationToken),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        var collisionHost = Assert.IsAssignableFrom<INamedTypeSymbol>(
+            compilation.GetTypeByMetadataName("Acceptance.FunctionPointers.CollisionHost"));
+        var overloads = collisionHost.GetMembers("Shape").OfType<IMethodSymbol>().ToArray();
+        Assert.Equal(3, overloads.Length);
+        Assert.All(overloads, method => Assert.Equal(
+            "M:Acceptance.FunctionPointers.CollisionHost.Shape()",
+            method.GetDocumentationCommentId()));
+
+        var profile = new AnalysisProfileData
+        {
+            Name = "function-pointer-stable-key-test",
+            InputMode = InputMode.Solution,
+            TargetFramework = "net10.0",
+            OperatingSystem = "Windows",
+            Architecture = "x64",
+            PreprocessorSymbols = [],
+            ProfileHash = [],
+        };
+        var canonicalizer = new SymbolCanonicalizer(profile);
+        const string projectKey = "project-name:FunctionPointers";
+        const string overloadOwnerKey =
+            "profile:function-pointer-stable-key-test|assembly:FunctionPointerStableKeys|" +
+            "project:project-name:FunctionPointers|tfm:net10.0|" +
+            "M:Acceptance.FunctionPointers.CollisionHost.Shape()";
+        string[] expectedCanonicalParameterIdentities =
+        [
+            "delegate*<0:System::Int32,0:System::Void>",
+            "delegate*<0:System::Int64,0:System::Void>",
+            "delegate*<1:System::Int32,0:System::Void>",
+        ];
+        var stableKeys = overloads
+            .Select(method => canonicalizer.GetDefinitionStableKey(method, projectKey))
+            .ToArray();
+
+        Assert.Equal(3, stableKeys.Distinct(StringComparer.Ordinal).Count());
+        for (var index = 0; index < stableKeys.Length; index++)
+        {
+            Assert.StartsWith(overloadOwnerKey, stableKeys[index], StringComparison.Ordinal);
+            Assert.Contains(expectedCanonicalParameterIdentities[index], stableKeys[index], StringComparison.Ordinal);
+            Assert.Equal(stableKeys[index], canonicalizer.GetDefinitionStableKey(overloads[index], projectKey));
+            Assert.DoesNotContain("machine-specific", stableKeys[index], StringComparison.OrdinalIgnoreCase);
+        }
+
+        var ordinary = Assert.Single(collisionHost.GetMembers("Keep").OfType<IMethodSymbol>());
+        Assert.Equal(
+            "profile:function-pointer-stable-key-test|assembly:FunctionPointerStableKeys|" +
+            "project:project-name:FunctionPointers|tfm:net10.0|" +
+            "M:Acceptance.FunctionPointers.CollisionHost.Keep(System.Int32)",
+            canonicalizer.GetDefinitionStableKey(ordinary, projectKey));
+
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var partialSymbols = syntaxTree.GetRoot(cancellationToken)
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(method => method.Identifier.ValueText == "Pair")
+            .Select(method => Assert.IsAssignableFrom<IMethodSymbol>(
+                semanticModel.GetDeclaredSymbol(method, cancellationToken)))
+            .ToArray();
+        var partialDefinition = Assert.Single(partialSymbols, method => method.PartialImplementationPart is not null);
+        var partialImplementation = Assert.Single(partialSymbols, method => method.PartialDefinitionPart is not null);
+        var definitionKey = canonicalizer.GetDefinitionStableKey(partialDefinition, projectKey);
+        var implementationKey = canonicalizer.GetDefinitionStableKey(partialImplementation, projectKey);
+        Assert.Equal(definitionKey, implementationKey);
+        Assert.StartsWith(
+            "profile:function-pointer-stable-key-test|assembly:FunctionPointerStableKeys|" +
+            "project:project-name:FunctionPointers|tfm:net10.0|" +
+            "M:Acceptance.FunctionPointers.PartialHost.Pair()",
+            definitionKey,
+            StringComparison.Ordinal);
+        Assert.Contains("delegate*<1:System::Int32,0:System::Void>", definitionKey, StringComparison.Ordinal);
+        Assert.DoesNotContain("machine-specific", definitionKey, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task AnalyzeAsync_ExtractsReturnTypesAndNormalizedSourceForExecutableSymbols()
     {
@@ -426,4 +544,10 @@ public sealed class ExecutableSymbolExtractionTests
             TestContext.Current.CancellationToken);
         return result.Snapshot;
     }
+
+    private static IReadOnlyList<MetadataReference> GetPlatformReferences() =>
+        ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))!
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        .Select(path => MetadataReference.CreateFromFile(path))
+        .ToArray();
 }

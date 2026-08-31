@@ -1268,7 +1268,7 @@ internal static class Program
 
         var kindSpecified = arguments.GetSingle("kind") is not null;
         var asyncStatusSpecified = arguments.GetSingle("async-status") is not null;
-        return new SymbolSelectionRequest(
+        var request = new SymbolSelectionRequest(
             selector,
             conditions,
             new SymbolCaseOptions(
@@ -1280,6 +1280,8 @@ internal static class Program
             ParseFunctionTargetFilter(arguments),
             kindSpecified,
             asyncStatusSpecified);
+        _ = TypedConditionCompiler.Compile(request);
+        return request;
     }
 
     private static ConditionCategory GetConditionCategory(string option) => option switch

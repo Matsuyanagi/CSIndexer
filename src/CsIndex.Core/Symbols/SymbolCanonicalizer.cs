@@ -84,6 +84,16 @@ public sealed class SymbolCanonicalizer
     {
         var normalized = symbol is IMethodSymbol method ? NormalizeLogicalMethod(method) : symbol.OriginalDefinition;
         var documentationId = normalized.GetDocumentationCommentId();
+        if (documentationId is not null && normalized is IMethodSymbol normalizedMethod)
+        {
+            var signature = SymbolSignatureCanonicalizer.CanonicalizeMethod(normalizedMethod);
+            if (signature.Parameters.Any(parameter =>
+                    parameter.Type.IdentityKey.Contains("delegate*", StringComparison.Ordinal)))
+            {
+                documentationId = $"{documentationId}|signature:{CreateMethodSegment(normalizedMethod, signature).Identity}";
+            }
+        }
+
         var identity = documentationId ?? BuildFallbackIdentity(normalized);
         var assembly = normalized.ContainingAssembly?.Identity.Name ?? "source";
         var projectScope = projectKey is null ? string.Empty : $"|project:{projectKey}";
