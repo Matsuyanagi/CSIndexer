@@ -1799,7 +1799,7 @@ internal static class Program
                 "Callees scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Callees scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, and --exclude-lambda-calls.",
                 "Overrides scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Overrides scope does not accept --include-overrides.",
+                "Overrides scope also accepts --require-single; it does not accept --include-overrides.",
                 "Async tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Async tree scope also accepts --max-nodes and graph output options.",
                 "Callers tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",

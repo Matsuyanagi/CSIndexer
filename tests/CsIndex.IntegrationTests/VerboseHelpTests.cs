@@ -93,7 +93,7 @@ public sealed class VerboseHelpTests
             ["overrides"],
             [
                 "Overrides scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Overrides scope does not accept --include-overrides.",
+                "Overrides scope also accepts --require-single; it does not accept --include-overrides.",
             ]),
         (
             ["async", "tree"],
