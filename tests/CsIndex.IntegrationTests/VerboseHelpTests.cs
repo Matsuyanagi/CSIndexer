@@ -252,6 +252,38 @@ public sealed class VerboseHelpTests
     }
 
     [Fact]
+    public async Task CanonicalVerboseExamplesUseDotForExecutableChildrenAndKeepLegacyFormsInvalid()
+    {
+        var result = await RunAsync("--help-verbose");
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        var canonicalStart = result.StandardOutput.IndexOf(
+            "Canonical symbol path examples",
+            StringComparison.Ordinal);
+        var invalidStart = result.StandardOutput.IndexOf(
+            "Path validation examples (invalid forms and reasons)",
+            StringComparison.Ordinal);
+        Assert.True(canonicalStart >= 0);
+        Assert.True(invalidStart > canonicalStart);
+
+        var canonicalExamples = result.StandardOutput[canonicalStart..invalidStart];
+        Assert.Contains("Game::Player::Run().<lambda#1>", canonicalExamples, StringComparison.Ordinal);
+        Assert.Contains("Game::Player::Run().Local()", canonicalExamples, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game::Player::Run()::<lambda#1>", canonicalExamples, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game::Player::Run()::Local()", canonicalExamples, StringComparison.Ordinal);
+
+        var invalidExamples = result.StandardOutput[invalidStart..];
+        Assert.Contains(
+            "Game::Player::Run()::<lambda#1>    invalid: old child :: separator",
+            invalidExamples,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Game::Player::Run()::Local()    invalid: three top-level fields",
+            invalidExamples,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task NormalHelpRemainsConciseAndQueryVerboseRequiresHelp()
     {
         var normal = await RunAsync("--help");

@@ -1755,9 +1755,8 @@ internal static class Program
                 "Game::Player::<initializer:Score>",
                 "Game::Player::Run().<lambda#1>",
                 "Game::Player::Run().<anonymous-method#2>",
-                "Game::Player::Run()::<lambda#1>",
                 "Game.Player.Run()",
-                "Game::Player::Run()::Local()",
+                "Game::Player::Run().Local()",
                 "Game::Player::Run(Guid)",
                 "Game::Player::Method<System.String>")),
         new HelpSection(
