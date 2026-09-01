@@ -2756,9 +2756,15 @@ Game::Player::[get:Item](int)
 Game::Player::[set:Item](int,string)
 Game::Player::[add:Changed](System.EventHandler)
 Game::Player::[remove:Changed](System.EventHandler)
+Game::Player::[get:Game.Contracts.IPlayer.Name]()
+Game::Player::[set:Game.Contracts.IPlayer.Name](string)
+Game::Player::[add:Game.Contracts.IEvents.Changed](System.EventHandler)
 Game::Player::[explicit:System.IDisposable.Dispose]()
 Game::Player::[explicit:Game.Contracts.IMapper.Map]<T>(T)
 ```
+
+Explicit-interface accessors retain the accessor tag and use the fully
+qualified interface member as the tag payload.
 
 The accepted tag grammar is exactly:
 

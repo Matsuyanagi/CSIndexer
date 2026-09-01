@@ -267,6 +267,15 @@ For anonymous queries, `n` is a positive integer or `*`. The complete operator
 token list and copyable example for every form are in `csindex --help-verbose`
 and `SPEC.md` section 34.
 
+Explicit-interface accessors keep the accessor tag and use the fully qualified
+interface member as its payload:
+
+```text
+Game::Player::[get:Game.Contracts.IPlayer.Name]()
+Game::Player::[set:Game.Contracts.IPlayer.Name](string)
+Game::Player::[add:Game.Contracts.IEvents.Changed](System.EventHandler)
+```
+
 ### Typed conditions
 
 All rows below are repeatable except the case selector:
