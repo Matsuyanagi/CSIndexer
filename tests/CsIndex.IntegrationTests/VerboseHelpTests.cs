@@ -192,6 +192,10 @@ public sealed class VerboseHelpTests
         "short names remove owner namespace only",
         "old child :: separator",
         "constructed generic notation",
+        "Supported operator tokens",
+        "+ - ! ~ ++ -- true false * / % & | ^",
+        "<< >> >>> == != < > <= >=",
+        "+= -= *= /= %= &= |= ^= <<= >>= >>>=",
     ];
 
     [Fact]
@@ -271,6 +275,9 @@ public sealed class VerboseHelpTests
         Assert.Contains("Game::Player::Run().Local()", canonicalExamples, StringComparison.Ordinal);
         Assert.DoesNotContain("Game::Player::Run()::<lambda#1>", canonicalExamples, StringComparison.Ordinal);
         Assert.DoesNotContain("Game::Player::Run()::Local()", canonicalExamples, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game.Player.Run()", canonicalExamples, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game::Player::Run(Guid)", canonicalExamples, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game::Player::Method<System.String>", canonicalExamples, StringComparison.Ordinal);
 
         var invalidExamples = result.StandardOutput[invalidStart..];
         Assert.Contains(
@@ -279,6 +286,18 @@ public sealed class VerboseHelpTests
             StringComparison.Ordinal);
         Assert.Contains(
             "Game::Player::Run()::Local()    invalid: three top-level fields",
+            invalidExamples,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Game.Player.Run()    invalid: no top-level :: separator",
+            invalidExamples,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Game::Player::Run(Guid)    invalid: non-alias type must be fully qualified",
+            invalidExamples,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Game::Player::Method<System.String>    invalid: constructed generic notation",
             invalidExamples,
             StringComparison.Ordinal);
     }

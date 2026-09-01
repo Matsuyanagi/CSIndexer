@@ -44,12 +44,12 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 ## Currently Implementing
 
 - Task 14: the focused help/document synchronization slice is complete; the
-  primary-owned full-solution gates, schema/path probes, reviews, and branch
-  closure remain pending.
+  schema/path probes and pre-review full-solution gates are complete. Independent
+  reviews, the post-review final gate rerun, and branch closure remain pending.
 
 ## Next Actions
 
-1. Primary agentがTask 14のfull-solution final gates、schema/path probes、independent reviews、branch completionを実施
+1. Primary agentがTask 14のindependent reviews、post-review final gates、branch completionを実施
 2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
 3. Phase 3のUnityアセンブリ復元へ着手
 
