@@ -16,7 +16,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - 解決済み呼び出しの逆辺を使う循環安全な複数始点BFSで、非同期起点へ到達する呼び出し元の最短`AsyncInvolvementDepth`を算出
 - 非同期情報をSQLiteへ保存・DB-only復元し、既存CLIのJSON/table出力へ追加
 - `symbol list`を追加し、既定でmethodとlambdaを一覧、`--kind method|lambda`と`--async-involved`で絞り込み可能にした
-- `--short-names`でtable表示およびJSONの`displayName`だけを短縮し、`fullyQualifiedName`を含むcanonical JSON fieldは不変にした
+- `--short-names`でtable表示およびJSONの`displayName`/`signature`にある所有者namespaceだけを省略し、parameter/return/conversion/interface payload typeと`fullyQualifiedName`を含むcanonical JSON fieldは不変にした
 - ラムダとanonymous methodはimmediate ownerごとの共有source-order ordinalで`<lambda#1>` / `<anonymous-method#2>`として採番し、`callees`はネストしたlambda descendantの呼び出しを再帰的に既定で含め、`--exclude-lambda-calls`で直接呼び出しへ限定可能にした
 - Added opt-in `--include-overrides` support to `symbol find`, method-query `definition`, `references`, `callers`, and `callees`; the default remains exact method lookup.
 - Added branch-scoped interface method bindings, nullable `symbols.type_kind`, inherited real-declaration alias resolution, and descendant-only query-time expansion. Its original schema-v3 decision is superseded by the schema-v4 rebuild requirement.

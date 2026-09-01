@@ -2524,7 +2524,7 @@ source-definedのメソッド、コンストラクター、ローカル関数、
 accessibility static async return-type display-name(parameters)
 ```
 
-コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`は表示名、戻り値型、引数型だけを短縮し、canonical fieldや検索意味を変更しない。JSONでは`displayName`、`kind`、`accessibility`、`isStatic`、`isAsync`、`returnType`などを独立して出力する。
+コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`は`displayName`と`signature`の所有者名前空間だけを省略し、戻り値型、引数型、conversion target、explicit-interface payload、canonical field、検索意味は変更しない。JSONでは`displayName`、`kind`、`accessibility`、`isStatic`、`isAsync`、`returnType`などを独立して出力する。
 
 ## 33.4 シンボル検索と正規化ソース
 
@@ -2989,7 +2989,9 @@ location alone does not require file existence.
 ## 34.9 Presentation, ordering, help, and output
 
 `--symbol-path-style csharp|explicit` selects symbol formatting and
-`--short-names` is display-only. Table, JSON, tree, line, and Mermaid output use
+`--short-names` omits only the owner namespace from displayed paths. It never
+shortens parameter, return, conversion-target, or explicit-interface payload
+types. Table, JSON, tree, line, and Mermaid output use
 the same formatters. Canonical ordering uses semantic identity plus stored
 relative location, never formatted text or reconstructed rooted paths. Style,
 short names, path style, base override, case mode, and output format therefore
