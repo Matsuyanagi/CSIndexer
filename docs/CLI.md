@@ -258,7 +258,7 @@ Special callable forms are:
 [conversion:explicit:<type>]        [checked-conversion:explicit:<type>]
 [get:<member>]                      [set:<member>]
 [init:<member>]                     [add:<member>]
-[remove:<member>]                   [explicit:<interface-member>]
+[remove:<member>]                   [explicit:<fully-qualified-interface-member>]
 <lambda#n>                          <anonymous-method#n>
 <initializer:Name>                  <top-level-statements>
 ```
