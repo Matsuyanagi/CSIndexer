@@ -7,7 +7,7 @@
 - 複数TFMの完全な並列インデックスと同一シンボルのProfile/TFM別表示は未実装です。`--framework`で1つを選択できます。
 - 呼び出し抽出は通常呼び出し、オブジェクト生成、method group、delegate生成、`nameof`を扱います。Function-symbol and normalized-source extraction now covers accessors, operators, and conversions, but call/relation extraction for property access, event access, and function pointers remains Phase 4.
 - 未解決・曖昧呼び出しと候補は保存しますが、高度なデリゲートフロー、`dynamic`の実行時候補、reflectionは追跡しません。
-- 検索構文は通常型と通常メソッドを対象とし、ネスト型、ジェネリック型、配列型、nullable型、`ref/out/in`表記は予約済みエラーになります。
+- Structured検索はネスト型、generic定義、array rank、nullable、pointer、tuple、function pointer、`ref/out/in/ref readonly`を扱います。ただしconstructed generic invocation query（例: `Method<System.String>`）は定義placeholder構文と曖昧なため未対応で、明示的なquery errorになります。
 - `--generated-source all` / `none` は予約済みで、現在は既定の`physical`だけを受け付けます。
 - 同じProfile名の再インデックスは、そのProfileの以前のデータを原子的に置き換えます。複数Profileは別名で保存できますが、`--all-profiles`横断検索はPhase 4です。
 - Source Linkと外部シンボルのソース取得は未実装です。外部定義はシンボル名、アセンブリ名、「ソースなし」を返します。
@@ -39,8 +39,28 @@
 
 ## Symbol, source, and graph expansion
 
-- Version 3 and every older/unknown database version must be rebuilt. There is no automatic migration or compatibility reader for those databases.
-- array-rank normalization correction後もschema version 4（v4）のままです。`AnalysisCacheVersion = 2`により次回の同一index requestは自動再解析されますが、legacy normalized sourceを持つ既構築v4 DBを直接queryする場合は、更新済みsource/hashを得る前に`index --rebuild`が必要です。
+- Only schema version 5 is supported. There is no automatic migration,
+  compatibility reader, auto-delete, or implicit `--rebuild` for any older or
+  unknown database. Delete/rename the old file or choose a new `--db`, then run
+  `csindex index` explicitly.
+- The persisted-path model has one storage root. The database directory,
+  storage root, and linked source must share the same Windows drive or UNC
+  server/share; cross-volume/share multi-root indexing is intentionally not
+  supported and is rejected before database mutation.
+- Csharp-form symbol paths are suffix searches across the possible
+  namespace/type boundary. A copied csharp result is valid input but may match
+  extra namespace prefixes; use explicit form for an exact boundary.
+- Anonymous ordinals are deterministic only within one indexed snapshot.
+  Editing source before an anonymous node can renumber later lambda and
+  anonymous-method paths.
+- Compiler-only callables do not receive invented query names. This excludes
+  implicit default constructors, state-machine/closure methods, implicit
+  field-like-event accessors, and record-synthesized equality/clone/print
+  members. Source-declared primary constructors are supported as
+  `[constructor](...)`; only compiler-synthesized members are excluded.
+- The old flat path grammar, executable-child `::` spelling, and bare matcher
+  switches have no compatibility aliases. They are rejected instead of being
+  guessed or silently translated.
 - Normalized-source matching is an arbitrary substring predicate over
   source-backed executable candidates. It can scan candidates because neither
   a B-tree index nor FTS is used for arbitrary substrings.
@@ -49,10 +69,11 @@
   not expose or match those removed characters. Normalization removes layout
   outside literal tokens but preserves each literal token `Text`, so a
   multiline raw literal can retain embedded newlines.
-- `source show`/`source search` are limited to indexed source-backed executable
-  symbols: methods, constructors, local functions, lambdas, accessors,
-  operators, and conversions. Metadata-only symbols, external decompilation,
-  and Source Link retrieval are not provided.
+- `source show`/`source search` are limited to indexed source-backed logical
+  executable declarations: methods, supported bracketed callables, local
+  functions, anonymous functions, initializers, and top-level statements.
+  Metadata-only symbols, external decompilation, and Source Link retrieval are
+  not provided.
 - `--kind` and `--async-status` filter only the resolved executable target/root.
   They intentionally do not remove secondary callers/callees or graph-path
   nodes, so they cannot be used as a display-wide graph pruning feature.
@@ -60,19 +81,20 @@
   call/reference edges. Delegate `Invoke`, event subscription/callback
   execution, reflection, and runtime-flow references to a lambda are not
   indexed; `references` and `callers` can report only stored static facts.
-- `async tree` accepts one resolved source-backed executable root (method or
-  lambda) and follows the one persisted async next-hop chain. It does not
-  enumerate alternate equal paths or dynamically infer another route.
+- `async tree` accepts one resolved source-backed logical executable root,
+  including eligible initializer and top-level roots, and follows the one
+  persisted async next-hop chain. It does not enumerate alternate equal paths
+  or dynamically infer another route.
 - Awaitable classification recognizes the built-in Task/ValueTask families,
   UniTask families, and async-stream roles recorded by the indexer. An `Async`
   name suffix alone is never sufficient. A user-facing registry for additional
   awaitable types is reserved for future extension and is not currently a CLI
   option.
-- `callers tree` accepts one resolved source-backed executable root (method or
-  lambda) and follows only resolved static invocation and object-creation
-  facts. It does not infer delegate `Invoke` targets, events, callbacks,
-  reflection, receiver-value/data flow, or runtime virtual/interface dispatch.
-  Lambda ownership is not a caller edge.
+- `callers tree` accepts one resolved source-backed logical executable root and
+  follows only resolved static invocation and object-creation facts. Initializer
+  and top-level nodes remain eligible. It does not infer delegate `Invoke`
+  targets, events, callbacks, reflection, receiver-value/data flow, or runtime
+  virtual/interface dispatch. Lambda ownership is not a caller edge.
 - Caller trees exclude metadata-only callers and `System`/`System.*` callers.
   A source-backed external-looking namespace other than `System` remains in
   scope because source definition is the primary filter.

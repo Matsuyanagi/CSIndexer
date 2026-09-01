@@ -1,5 +1,10 @@
 # Test Plan
 
+The current canonical acceptance matrix is the final section of this file and
+maps `SPEC.md` section 34 / approved-design section 22 to current tests. Earlier
+phase matrices are retained as historical regression coverage and are not the
+source of current grammar, schema, or option names.
+
 ## Phase 1
 
 - 仕様24章のPhase 1受け入れテスト13項目を自動化する。
@@ -26,7 +31,7 @@ Status: 完了。5,001ファイル列挙、任意階層`obj`除外、`bin`包含
 - 所有者分離: async lambda/local functionを独立した起点depth 0として扱い、ネストしたoperationのロールやdepthが外側メソッドへ漏れないことを確認する。field/property initializer lambda内のローカル変数初期化子をsynthetic initializerと誤認せず、`ContainsAwait`と呼び出し辺をlambda所有にするケースを含める。
 - 呼び出し利用方法: `AsyncUsageKind`の`Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved`と、該当なしの`None`を確認する。lambda/local-function所有者境界の外側にある代入・引数文脈を継承しないケース、`await LeafAsync().ConfigureAwait(false)`で内側呼び出しが`Awaited`を優先する競合祖先ケース、同期呼び出しの代入が`None`になるawaitability gateを明示的に検証する。
 - 伝播: chain、自己/相互循環、非同期起点へつながらない循環、複数起点/複数経路の最短距離、呼び出し元方向だけの伝播を確認する。非同期起点からのみ呼ばれる同期calleeは非関与のままとする。
-- 永続化: schema/request version 4、`async_role`、`async_involvement_depth`、`async_next_symbol_id`、`async_usage_kind`の保存とDB-only復元を確認する。version mismatchでfail-fastし、version 3を含む既存DBのテーブル、行、journal modeを変更しないことを確認する。`schema_info`のない非空の未認識DBも、marker行を保持し、CSIndexer tableを追加せず、journal modeを変更しないことを確認する。`sqliteXmarker`のようにSQLite内部prefixと似ているだけの有効なユーザーobjectも検出対象に含める。
+- 永続化: schema/request version 5、analysis-cache version 3、`async_role`、`async_involvement_depth`、`async_next_symbol_id`、`async_usage_kind`の保存とDB-only復元を確認する。version mismatchでfail-fastし、version 4以前を含む既存DBのテーブル、行、journal modeを変更しないことを確認する。`schema_info`のない非空の未認識DBも、marker行を保持し、CsIndex tableを追加せず、journal modeを変更しないことを確認する。
 - CLI: symbol/call JSON propertyと、非同期情報があるsymbolだけのtable suffix、callの`[AsyncUsageKind]`を`Console.Out`捕捉で確認する。
 
 Status: 完了。Core、Storage、Integrationの自動テストで上記を検証済み。
@@ -36,9 +41,9 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
 - Core extraction: verify nullable `symbols.type_kind` values and
   `interface_method_bindings` for explicit, implicit, inherited, abstract,
   default-interface, partial-type, and repeated-interface-path cases.
-- Storage: verify schema/request-hash version 4, the binding table's primary
+- Storage: verify schema/request-hash version 5, the binding table's primary
   key and foreign keys, both binding indexes, transactional persistence, and
-  DB-only reconstruction. Verify that a version 3 database is rejected
+  DB-only reconstruction. Verify that a version 4 database is rejected
   without modifying its schema objects, rows, or journal mode.
 - Query semantics: verify exact behavior when the option is absent; interface
   expansion rooted at `IPlayable::Play()`; descendant-only concrete expansion
@@ -54,176 +59,79 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
   exact invalid-argument message for type-only queries; and verify rejection
   by unsupported commands.
 
-## Symbol, source, and graph expansion acceptance matrix
+## Previous symbol/source/graph matrix
 
-The following map is the normative acceptance matrix referenced by
-`docs/SPEC.md` section 33.10. The `17.x` identifiers are retained as stable
-requirement IDs. Test names are xUnit method names. Every row cites a focused
-assertion that directly exercises its condition; a generic Release run is not
-used as a substitute for a missing assertion.
+The obsolete flat-matcher and schema-4 mapping has been retired from the
+active plan. Its historical test names and verification totals remain
+available in Git history. Current behavior is mapped below.
 
-### 17.1 Lambda search
+---
 
-| ID | Acceptance condition | Automated evidence |
+## Current schema-5 canonical acceptance matrix
+
+Every row below is active. A passing aggregate run does not substitute for the
+focused suites named in the row.
+
+| Design row | Required observable behavior | Direct automated evidence |
 | --- | --- | --- |
-| 17.1.1 | Enumerate `::<lambda#1>`. | `SymbolSourceQueryTests.LambdaPatterns_MatchSuffixOwnerSuffixAndFullName`; `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering` |
-| 17.1.2 | Match an owner-plus-lambda suffix such as `Function()::<lambda#2>`. | `SymbolPatternMatcherTests.LambdaOwnerSuffixPattern_MatchesTheOwningFunction`; `SymbolSourceQueryTests.LambdaPatterns_MatchSuffixOwnerSuffixAndFullName` |
-| 17.1.3 | Match a fully qualified lambda name. | `SymbolPatternMatcherTests.FullLambdaPattern_MatchesTheCanonicalDisplayName`; `SymbolSourceQueryTests.LambdaPatterns_MatchSuffixOwnerSuffixAndFullName` |
-| 17.1.4 | Find nested lambdas. | `SymbolSourceQueryTests.LambdaPatterns_MatchSuffixOwnerSuffixAndFullName` queries and identifies `Function()::<lambda#3>` by owner suffix and full name. |
-| 17.1.5 | Do not omit multiple lambdas with the same number under different owners. | `SymbolSourceQueryTests.LambdaPatterns_MatchSuffixOwnerSuffixAndFullName` asserts the complete `LambdaSearch` set for `::<lambda#1>` across the function and three initializer owners. |
+| 22.1 parser and formatter | csharp/explicit equivalence, balanced top-level fields, `.` executable children, every special form, malformed rejection, csharp/explicit short/full round-trip | `SymbolPathParserTests`; `SymbolPathFormatterTests`; `SymbolPathOutputAcceptanceTests`; `CSharpSymbolPathAcceptanceTests` |
+| 22.2 resolution and containment | csharp suffix versus explicit exact, namespace omission/global, `*`/`**`, immediate local/anonymous containment, copied result styles, deterministic duplicates | `SymbolPathResolverTests`; `RootSelectionOrchestrationTests`; `CSharpSymbolPathAcceptanceTests` |
+| 22.3 signature identity | type arity, callable three-state arity/overload omission, alias/framework equality, fully qualified non-alias types, placeholder ordinal, ref modes, nullability, arrays/pointers/tuples/function pointers, conversion target | `SymbolSignatureCanonicalizerTests`; `SymbolPathParserTests`; `SymbolPathResolverTests`; `CSharpSymbolPathAcceptanceTests` |
+| 22.4 callable and partial identity | every included/excluded source callable, special/synthetic markers, immediate-owner anonymous ordinals, one partial logical row/two role rows/preferred implementation, logical call/relation endpoints | `CallablePathExtractionTests`; `ExecutableSymbolExtractionTests`; `LogicalDeclarationExtractionTests`; `SchemaFiveLogicalSymbolTests`; `RootSelectionOrchestrationTests` |
+| 22.5 typed conditions | mixed glob/literal/regex, independent case categories, hierarchy/file/method/source semantics, bounded regex failure, OR/AND composition, one-declaration scope and partial projection | `TypedConditionCompilerTests`; `StructuralGlobMatcherTests`; `SourceTextFilterTests`; `TypedSearchAcceptanceTests` |
+| 22.6 command matrix and traversal | every allowed/forbidden option, exact selection minimums, definition-at isolation, filters before logical cardinality, root-only traversal semantics, exact override expansion, initializer/top-level eligibility | `CliSymbolPathOptionMatrixTests`; `RootSelectionOrchestrationTests`; `CliCommandTests`; `TypedSearchAcceptanceTests` |
+| 22.7 portable paths and schema | default/custom anchor, zero rooted persisted paths, linked `../`, same-volume/share preflight, relocation/base override, path styles/at-location, non-mutating schema-4 rejection, actionable rebuild guidance | `IndexPathResolverTests`; `PortablePathPersistenceTests`; `PortablePathOutputTests`; `SchemaFiveLogicalSymbolTests`; `PortableIndexAcceptanceTests` |
+| 22.8 ordering, help, output safety | semantic order invariant across presentation/base/case/format, parent-first trees and role order, all normal/verbose help scopes, identical verbose spellings, terminal dependency-free help, atomic file/cancellation/failure behavior | `SymbolCanonicalComparerTests`; `VerboseHelpTests`; `SymbolPathOutputAcceptanceTests`; `OutputFormatterTests`; `PortableIndexAcceptanceTests`; `CliCommandTests` |
 
-### 17.2 Lambda naming
+### Active negative contract
 
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.2.1 | Number lambdas independently in different functions. | `AsyncSemanticExtractorTests.AnalyzeAsync_NumbersLambdasByNearestNonLambdaOwner` |
-| 17.2.2 | Keep lambda names distinct for different member initializers. | `ExecutableSymbolExtractionTests.AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment` |
-| 17.2.3 | Number nested lambdas in source order. | `AsyncSemanticExtractorTests.AnalyzeAsync_NumbersLambdasByNearestNonLambdaOwner`; `ExecutableSymbolExtractionTests.AnalyzeAsync_NamesLambdasByNearestNonLambdaOwnerWhileKeepingImmediateContainment` |
-| 17.2.4 | Renumber only later lambdas of the same owner after insertion. | `ExecutableSymbolExtractionTests.AnalyzeAsync_InsertingLambdaRenumbersOnlyLaterLambdasOfSameOwner` |
-| 17.2.5 | Distinguish initializers in different files of a partial type. | `ExecutableSymbolExtractionTests.AnalyzeAsync_IndexesInitializersInLaterPartialDocument` |
+- Legacy executable-child syntax, zero/three fields, malformed delimiters,
+  constructed generic invocation notation, invalid anonymous ordinals, and
+  unqualified non-alias parameter types must be rejected by parser/acceptance
+  tests.
+- The removed bare matcher switches, invalid regex/case/style, duplicate case
+  options, and command-inapplicable options must fail before payload commit.
+- Partial definition/implementation must never become two logical candidates,
+  call/relation endpoints, or a self relation.
+- Root filters must never prune traversal descendants, and no traversal may
+  start before cardinality succeeds.
+- Persisted project/document/declaration/key data must contain no rooted source
+  path. Cross-drive/share preflight and incompatible schema must preserve the
+  prior database.
+- Output formatting, cancellation, flush, replace, database, and path failures
+  must preserve an existing destination and remove owned temporary files.
 
-### 17.3 Function attributes
+### Task 14 focused verification record
 
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.3.1 | Persist accessibility, static state, and return type. | `ExecutableSymbolExtractionTests.AnalyzeAsync_ExtractsReturnTypesAndNormalizedSourceForExecutableSymbols` covers local/static-constructor/static-lambda/accessor/operator/conversion applicability; `SqliteIndexTests.Save_RoundTripsExecutableMetadataAndAsyncNextAcrossAllSymbolReaders` covers DB readers. |
-| 17.3.2 | Render attributes in text output. | `OutputFormatterTests.WriteSymbolsTableUsesDeclarationOrderingAndShortensReturnAndParameterTypes` |
-| 17.3.3 | Expose attributes as independent JSON fields. | `OutputFormatterTests.WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested` |
-| 17.3.4 | Apply short-name presentation to return and parameter types. | `OutputFormatterTests.WriteSymbolsTableUsesDeclarationOrderingAndShortensReturnAndParameterTypes` |
-| 17.3.5 | Render non-applicable fields for every executable declaration kind correctly. | `OutputFormatterTests.WriteSymbolsFormatsConstructorAndLambdaApplicableFieldsAndGatesSource`; `OutputFormatterTests.WriteSymbolsFormatsLocalAccessorOperatorAndConversionApplicableFields`; extraction evidence: `ExecutableSymbolExtractionTests.AnalyzeAsync_ExtractsReturnTypesAndNormalizedSourceForExecutableSymbols` |
+Fresh results on 2026-09-01:
 
-### 17.4 Async shortest path
-
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.4.1 | A self-async root returns one node. | `GraphQueryTests.AsyncPath_RepresentsSelfAsyncAndUnreachableMethods`; `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode` |
-| 17.4.2 | Return a shortest path to an async function. | `GraphQueryTests.AsyncPath_FollowsThePersistedShortestPathToAnAsyncOrigin` |
-| 17.4.3 | Return one persisted route for equal distances. | `GraphQueryTests.AsyncPath_UsesThePersistedNextHopInsteadOfReselectingAnEqualRoute` |
-| 17.4.4 | Do not overwrite a next hop on an equal-distance discovery. | `AsyncInvolvementPropagatorTests.Apply_UsesStableOrderingWhenSymbolsAndCallsAreInsertedInTheOppositeOrder` opposes symbol/call insertion order and repeats propagation. |
-| 17.4.5 | Select the same route after reindexing. | `GraphQueryTests.AsyncPath_ReindexPersistsTheSameSelectedEqualRoute` |
-| 17.4.6 | Default to tree output. | `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode`; `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
-| 17.4.7 | Emit one-line output with `--output-format line`. | `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
-| 17.4.8 | Emit structured JSON with `--output-format json`. | `OutputFormatterTests.GraphOutputFormatterWritesAsyncTreeLineAndJsonWithNoPathAndTruncationStates` |
-| 17.4.9 | Report an unreachable async origin. | `GraphQueryTests.AsyncPath_RepresentsSelfAsyncAndUnreachableMethods`; `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode` |
-| 17.4.10 | Terminate on a call-graph cycle. | `GraphQueryTests.AsyncPath_TraversesACallCycleThatReachesAnAsyncOrigin`; `AsyncInvolvementPropagatorTests.Apply_OriginsHaveNullNextAndCyclesTerminate` |
-| 17.4.11 | Classify Task/ValueTask/UniTask families. | `AsyncSemanticExtractorTests.AnalyzeAsync_ExtractsAsyncRolesAndKeepsNestedOwnersSeparate`; `AsyncSemanticExtractorTests.AnalyzeAsync_ClassifiesGenericTaskAsAwaitable`; `AsyncSemanticExtractorTests.AnalyzeAsync_ClassifiesValueTaskVariantsAsAwaitable` |
-| 17.4.12 | Decrease persisted path depth one node at a time. | `GraphQueryTests.AsyncPath_FollowsThePersistedShortestPathToAnAsyncOrigin`; `GraphQueryTests.AsyncPath_ValidatesTheNextHopBeforeReportingTruncation` |
-| 17.4.13 | Detect inconsistent next IDs, semantic endpoints, or cycles. | Index-time eligibility: `AsyncInvolvementPropagatorTests.Apply_DoesNotPersistAPathThroughMetadataAwaitableCallee`; `AsyncSemanticExtractorTests.AnalyzeAsync_DoesNotPersistAPathThroughMetadataAwaitableCallee`. Query-time corruption: `GraphQueryTests.AsyncPath_RejectsIncoherentOriginAndNoPathState`; `GraphQueryTests.AsyncPath_RejectsNonExecutableFetchedHopBeforeTruncation`; `GraphQueryTests.AsyncPath_RejectsMetadataFetchedHopBeforeTruncation`; `GraphQueryTests.AsyncPath_RejectsSourceLessFetchedHopBeforeTruncation`; `GraphQueryTests.AsyncPath_RejectsCyclicOrOriginNextHops`; `GraphQueryTests.AsyncPath_RejectsANextHopFromAnotherProfile` |
-| 17.4.14 | Mark max-node truncation. | `GraphQueryTests.AsyncPath_CountsTheRootAgainstTheNodeLimit`; `CliCommandTests.AsyncTreeRendersSelfUnreachableAndTruncatedResultsInEachOutputMode` |
-
-### 17.5 Caller tree
-
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.5.1 | Find direct and indirect callers to a specified depth. | `GraphQueryTests.CallerTree_UsesBreadthFirstDepthBoundsAndTreatsZeroAsUnlimited` |
-| 17.5.2 | Treat `--depth 0` as unlimited depth. | `GraphQueryTests.CallerTree_UsesBreadthFirstDepthBoundsAndTreatsZeroAsUnlimited` |
-| 17.5.3 | Never exceed the maximum node count. | `GraphQueryTests.CallerTree_CountsTheRootAgainstMaxNodesAndMarksTruncation`; `GraphQueryTests.CallerTree_SortsAllCallersAtTheSameDepthBeforeApplyingTheNodeLimit` |
-| 17.5.4 | Terminate while retaining cyclic call relationships. | `GraphQueryTests.CallerTree_RetainsCycleEdgesWithUniqueNodesAndEdges`; finite-boundary evidence: `GraphQueryTests.CallerTree_RetainsDepthBoundaryEdgesAcrossTreeMermaidAndJson` |
-| 17.5.5 | Exclude external libraries and `System.*`. | `GraphQueryTests.CallerTree_ExcludesSystemAndSourceLessReverseCallers` creates both excluded reverse callers of the root and retains only the allowed source caller. |
-| 17.5.6 | Attribute lambda calls to the lambda itself. | `GraphQueryTests.CallerTree_KeepsLambdaCallersWithoutSynthesizingOwnershipEdges`; `AsyncSemanticExtractorTests.AnalyzeAsync_AssignsNestedLambdaCallsToTheirNearestLambdaOwner` |
-| 17.5.7 | Do not turn lambda ownership into a function-call edge. | `GraphQueryTests.CallerTree_KeepsLambdaCallersWithoutSynthesizingOwnershipEdges` |
-| 17.5.8 | Emit valid Mermaid flowchart output. | `OutputFormatterTests.GraphOutputFormatterWritesCallerTreeMermaidAndJsonWithEscapedUniqueEdges`; `CliCommandTests.CallerTreeRendersTextMermaidJsonDepthCyclesLambdasAndShortNames` |
-
-### 17.6 Name search
-
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.6.1 | Perform exact search. | `SymbolSourceQueryTests.ExactSearch_PreservesTheExistingResolverResults` |
-| 17.6.2 | Perform `*` wildcard search. | `SymbolPatternMatcherTests.WildcardPattern_MatchesParameterlessMethodDisplay`; `SymbolSourceQueryTests.PatternSearch_MatchesWildcardComponentAndRegexRequests` |
-| 17.6.3 | Filter namespace/type/method components individually. | `SymbolPatternMatcherTests.ComponentPatterns_AreCombinedWithAndSemantics`; `SymbolSourceQueryTests.PatternSearch_MatchesWildcardComponentAndRegexRequests` |
-| 17.6.4 | Perform regular-expression search. | `SymbolPatternMatcherTests.RegexPattern_MatchesTheAnchoredRequirementExample`; `SymbolSourceQueryTests.PatternSearch_MatchesWildcardComponentAndRegexRequests` |
-| 17.6.5 | Safely report invalid/timeout regular expressions. | `SymbolPatternMatcherTests.InvalidRegex_ReportsTheAffectedPattern`; `SymbolPatternMatcherTests.RegexTimeout_IsReportedInsteadOfRunningUnbounded`; `CliCommandTests.SymbolFindAndSourceCommandsRejectInvalidSearchInput` |
-| 17.6.6 | Enumerate omitted-parameter overloads and filter a supplied signature. | `SymbolPatternMatcherTests.PatternWithoutParameterList_MatchesEveryOverload`; `SymbolPatternMatcherTests.PatternWithParameterList_MatchesOnlyTheCompleteSignature` |
-| 17.6.7 | Keep same-display-name symbols independent by project/symbol ID. | `ProjectScopedSourceSymbolIdentityTests.ExtractAsync_ScopesSameAssemblySourceSymbolsByProjectKey`; `ProjectScopedSourceSymbolPersistenceTests.SaveAndQuery_KeepSameAssemblySourceDefinitionsProjectScoped`; final-ID ordering: `SqliteIndexTests.FindSymbolCandidatesAsync_UsesIdAsTheFinalOrderingTieBreaker` |
-
-### 17.7 Source storage and search
-
-| ID | Acceptance condition | Automated evidence |
-| --- | --- | --- |
-| 17.7.1 | Remove comments. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.2 | Preserve comment markers inside string literals. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.3 | Normalize source to one line outside literal-token text; multiline raw literal token text preserves embedded newlines. | `SourceNormalizerTests.Normalize_ExcludesDirectivesAndDisabledTextAndPreservesRawStrings`; `SourceNormalizerTests.Normalize_PreservesCharacterInterpolatedAndInterpolatedRawLiteralTokenText`; `SourceNormalizerTests.Normalize_PreservesInterpolationDelimitersAndExpressionTokenBoundaries` |
-| 17.7.4 | Keep `var a` from becoming `vara`. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.5 | Preserve token boundaries after comment removal. | `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals` |
-| 17.7.6 | Show normalized function and lambda source. | `SymbolSourceQueryTests.ShowSource_ReturnsSourceBackedExecutableOverloadsAndRequestsPresentation`; `CliCommandTests.SourceShowRendersNormalizedLambdaSourceInTableAndJson` |
-| 17.7.7 | Require source-search include or exclude conditions. | `SymbolSourceQueryTests.SearchSource_RejectsAnUnboundedQuery`; `CliCommandTests.SourceSearchRequiresAtLeastOneIncludeOrExcludeCondition` |
-| 17.7.8 | Permit name-only `symbol find`. | `SymbolSourceQueryTests.ExactSearch_PreservesTheExistingResolverResults`; `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering` |
-| 17.7.9 | Combine name search with source conditions. | `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes`; `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering` |
-| 17.7.10 | Show normalized source with `symbol find --show-source`. | `CliCommandTests.SymbolFindSupportsLambdaPatternComponentRegexAndSourceFiltering`; supplementary formatter evidence: `OutputFormatterTests.WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested` |
-| 17.7.11 | OR multiple excludes. | `SourceTextFilterTests.Excludes_RejectWhenAnyTermMatches`; `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes` |
-| 17.7.12 | Short-circuit includes after an exclude match. | `SourceTextFilterTests.ExcludeMatch_ShortCircuitsBeforeAnyIncludePredicate` |
-| 17.7.13 | Evaluate includes only after excludes survive. | `SourceTextFilterTests.ExcludeMatch_ShortCircuitsBeforeAnyIncludePredicate`; `SymbolSourceQueryTests.NameAndSourceFilters_ExcludeBeforeRequiringAllIncludes` |
-| 17.7.14 | Require every supplied include term (AND semantics). | `SourceTextFilterTests.Includes_RequireEveryTerm` |
-| 17.7.15 | Include a source when no include terms are supplied and excludes do not match. | `SourceTextFilterTests.ExcludeOnly_FilterAcceptsSourceWithoutExcludedTerms` |
-| 17.7.16 | Use include-only search when no excludes are supplied. | `SourceTextFilterTests.IncludeOnly_FilterAcceptsMatchingSource` |
-| 17.7.17 | Support case-sensitive and case-insensitive source matching. | `SourceTextFilterTests.IgnoreCaseComparison_ControlsSourceTermMatching` |
-
-### Revised CLI query and output contract (8.1--8.5)
-
-The following matrix maps the revised acceptance sections in
-`docs/2026-08-11.revised.md` to focused, current test methods. These rows
-supplement the stable 17.x matrix above; they do not replace the recorded
-final-verification totals below.
-
-| Section | Direct automated evidence |
-| --- | --- |
-| 8.1 `--kind` | `CliCommandTests.KindAndAsyncAllMatchOmissionAcrossListAndFindPayloadMatrix`; `CliCommandTests.FunctionFilterValueMatrixIsAcceptedByEveryApplicableCommand`; `CliCommandTests.FunctionFiltersConstrainEveryWiredJsonCommand`; `CliCommandTests.FunctionFiltersConstrainEveryWiredGraphRoot`; `CliCommandTests.OverridesKindAllMatchesOmissionForMethodResults`; `CliCommandTests.IncludeOverridesAcceptsAllAndMethodKindsButRejectsLambdaKind`; `CliCommandTests.IncludeOverridesAcceptsExplicitAllAndMethodAcrossSupportedQueryCommands`; `CliCommandTests.IndexAndConditionsRejectFunctionFilters`; `FunctionTargetFilterTests.MethodKindFilter_IncludesEveryExecutableStoredAsMethod`; `FunctionTargetFilterTests.DefinitionQueries_FilterTheResolvedDefinitionOnly`; `FunctionTargetFilterTests.ReferenceAndCallerFilters_ApplyToTheCalleeTargetNotItsLambdaCaller`; `FunctionTargetFilterTests.CalleeFilter_AppliesToTheLambdaRootNotReturnedMethodCallees`; `FunctionTargetFilterTests.OverrideExpansion_FiltersRealTargetsAfterExpansionAndKeepsRelationNodes`; `GraphQueryTests.AsyncPath_ResolvesOwnerQualifiedLambdaRootsWithoutFilteringSavedMethodPathNodes`; `GraphQueryTests.GraphRootResolution_ReportsSuffixOnlyLambdaAmbiguityInStableCandidateOrder`; `GraphQueryTests.CallerTree_ResolvesALambdaRootWithoutFilteringStoredMethodCallers`. |
-| 8.2 `--async-status` | `CliCommandTests.KindAndAsyncAllMatchOmissionAcrossListAndFindPayloadMatrix`; `CliCommandTests.AsyncStatusTaxonomyFiltersEveryDirectRoleAndKeepsNestedOwnersSeparate`; `CliCommandTests.ExplicitAllFiltersMatchOmissionAndDirectStatusAppliesBeforeRequireSingle`; `CliCommandTests.FunctionFilterValueMatrixIsAcceptedByEveryApplicableCommand`; `CliCommandTests.FunctionFiltersConstrainEveryWiredJsonCommand`; `CliCommandTests.FunctionFiltersConstrainEveryWiredGraphRoot`; `CliCommandTests.IndexAndConditionsRejectFunctionFilters`; `FunctionTargetFilterTests.SearchSymbols_ExplicitAllMatchesOmissionAndDirectStatusExcludesTypes`; `FunctionTargetFilterTests.ListSymbols_ExplicitAllMatchesOmissionAndComposesSyncWithAsyncInvolvement`; `FunctionTargetFilterTests.OverrideExpansion_FiltersRealTargetsAfterExpansionAndKeepsRelationNodes`; `GraphQueryTests.AsyncPath_ResolvesOwnerQualifiedLambdaRootsWithoutFilteringSavedMethodPathNodes`; `GraphQueryTests.CallerTree_ResolvesALambdaRootWithoutFilteringStoredMethodCallers`. |
-| 8.3 source layout | `CliCommandTests.SingleLineSymbolAndSourceCommandsEmitOnlyFixedSchemaRecordsAndDiagnosticSummaries`; `CliCommandTests.MultiLineSourceLayoutRetainsHeadingAndOnePhysicalSourceLine`; `CliCommandTests.UnknownSourceLayoutListsEveryAllowedValue`; `CliCommandTests.SourceLayoutRejectsJsonAndSymbolFindWithoutShowSource`; `CliCommandTests.NonSourceCommandsRejectSourceLayoutAsUnknownOption`; `CliCommandTests.StoredSourceHashSearchAndJsonRemainLosslessAfterTableSanitization`; `OutputFormatterTests.WriteSymbolsSingleLineUsesFixedTwoFieldRecordsAndDiagnosticsWriter`; `OutputFormatterTests.WriteSymbolsWithSourceSingleLineUsesFixedThreeFieldRecordsAndSanitizesDisplayText`; `OutputFormatterTests.WriteSymbolListSingleLineWritesSignatureOnlyAndRoutesSummaryToDiagnostics`; `OutputFormatterTests.WriteSymbolsMultiLineRetainsHeadingAndOneSanitizedSignatureAndSourceLinePerResult`; `OutputFormatterTests.TableTextSanitizerReplacesCrLfOnceAndEveryRecordBreakingCharacterWithAsciiSpace`; `OutputFormatterTests.TableTextSanitizerPreservesLiteralBackslashEscapesWhileReplacingRealControls`; `OutputFormatterTests.WriteSymbolsJsonUsesPayloadWriterAndPreservesUnsanitizedNormalizedSource`. |
-| 8.4 array normalization | `SourceNormalizerTests.Normalize_OmitsZeroWidthArrayRankTokensFromSeparatorDecisions`; `SourceNormalizerTests.Normalize_PreservesNonArrayBracketForms`; `SourceNormalizerTests.Normalize_RemovesTriviaWithoutJoiningTokensOrChangingLiterals`; `SourceNormalizerTests.Normalize_PreservesCharacterInterpolatedAndInterpolatedRawLiteralTokenText`; `ExecutableSymbolExtractionTests.AnalyzeAsync_PersistsNormalizedArrayRankTextAndHash`; `RequestHasherTests.Build_UsesAnalysisCacheVersionTwoWithoutChangingSchemaVersion`; `CliCommandTests.AnalysisCacheVersionForcesReindexOfLegacyNormalizedSource`. |
-| 8.5 file output | `CliCommandTests.OutputFilePayloadMatchesStdoutAcrossEverySupportedCommandAndFormat`; `CliCommandTests.OutputFileAliasesNormalizeExactlyAndRejectMissingEmptyOrDuplicateValues`; `CliCommandTests.OutputFileAliasesProduceIdenticalPayloadAndPreserveDiagnostics`; `CliCommandTests.OutputFileFailuresPreserveExistingFilesAndReportTheCorrectErrorCategory`; `CliCommandTests.OutputFileFormatValidationFailurePreservesSentinelWithoutOpeningTemporaryFile`; `CliCommandTests.OutputFileDatabaseFailurePreservesSentinelWithoutOpeningTemporaryFile`; `CliCommandTests.OutputFileRequireSingleFailurePreservesSentinelWithoutOpeningTemporaryFile`; `CliCommandTests.OutputFileFinalRecordCancellationPreservesSentinelAndReportsCancellation`; `CliCommandTests.OutputFileEqualToDatabaseIsRejectedBeforeTheDatabaseCanChange`; `CliCommandTests.OutputFileDatabaseAliasesAreRejectedBeforeTheDatabaseCanChange`; `CliCommandTests.OutputFormatNotFileExtensionSelectsThePayloadFormat`; `CliCommandTests.LegacyOutputOptionIsUnknownForEveryFormerOutputCommand`; `OutputFormatterTests.OutputDestinationCommitReplacesExistingFileWithUtf8WithoutBom`; `OutputFormatterTests.OutputDestinationRejectsNormalizedDatabasePathWithoutChangingDatabase`; `OutputFormatterTests.OutputDestinationRejectsEquivalentWindowsExtendedUncComparisonPathWithoutAccessingTheShare`; `OutputFormatterTests.OutputDestinationRejectsMissingParentAsOutputErrorWithoutCreatingDirectories`; `OutputFormatterTests.OutputDestinationWriteFailurePreservesDestinationAndRemovesTemporaryFile`; `OutputFormatterTests.OutputDestinationFlushFailurePreservesDestinationAndRemovesTemporaryFile`; `OutputFormatterTests.OutputDestinationReplaceFailurePreservesDestinationAndRemovesTemporaryFile`. |
-
-Task 7's help/accepted-grammar additions are covered directly by
-`CliCommandTests.GlobalHelpMatchesTheNewCommandUsageGrammar`,
-`CliCommandTests.CommandHelpMatchesFunctionFilterAndOutputFormatMatrix`, and
-`CliCommandTests.IndexAndConditionsHelpExcludeFunctionFilters`. The last test
-also proves that `conditions` exposes `--output-format`/`--output-file` but
-does not expose function filters, while `index` exposes neither result-output
-nor function-filter options. The legacy `--output` spelling is intentionally
-covered only as a rejected historical option.
-
-### Cross-cutting integrity and cancellation evidence
-
-- In-flight cancellation after work has started is asserted by
-  `SourceNormalizerTests.NormalizeTokens_ObservesCancellationAfterEnumerationHasStarted`,
-  `SourceNormalizerTests.NormalizeTokens_ObservesCancellationAfterPairRelex`,
-  `SemanticExtractorCancellationTests.OrderLambdas_ObservesCancellationDuringOrdering`,
-  `AsyncInvolvementPropagatorTests.Apply_ObservesCancellationDuringCallOrdering`,
-  `SourceTextFilterTests.IsMatch_ObservesCancellationBetweenExcludeAndIncludeProbes`,
-  `CallerTreeBuilderTests.OrderCallers_ObservesCancellationDuringOrdering`, and
-  `OutputFormatterTests.OrderNodes_ObservesCancellationDuringOrdering` /
-  `OrderEdges_ObservesCancellationDuringOrdering`.
-- Schema-v4 index definitions and representative query plans are asserted by
-  `SqliteIndexTests.Save_CreatesVersionFourSchemaWithExecutableMetadataAndAsyncNextForeignKey`
-  and
-  `SqliteIndexTests.SymbolsIndexes_UseProfilePrefixedIndexesForRepresentativeRepositoryPredicates`.
-- Graph-root error candidates are asserted by
-  `GraphQueryTests.GraphRootResolutionDistinguishesMissingAndAmbiguousMethodsWithCanonicalCandidates`,
-  `ProjectScopedSourceSymbolPersistenceTests.GraphRootAmbiguityDisambiguatesDuplicateCanonicalNamesByDocumentAndId`,
-  and `CliCommandTests.GraphCommandsValidateValuesRootsAndUnsupportedOptions`.
-
-### Fresh verification record
-
-The final verification uses the completed implementation and documentation
-HEAD. The commands and results are recorded directly below rather than relying
-on an ignored task artifact.
-
-- `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`: exit 0;
-  0 files required formatting.
-- `rtk dotnet build CsIndex.sln -c Release --no-restore`: the sandboxed first
-  attempt stopped before compilation with 8 `MSB4184` SDK-discovery access
-  errors; the identical approved rerun passed for 9 projects with 0 warnings
-  and 0 errors.
+- `rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-restore --filter "FullyQualifiedName~VerboseHelpTests"`: exit 0; 13 passed, 0 failed, 0 skipped, 0 warnings.
+- `rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CliSymbolPathOptionMatrixTests|FullyQualifiedName~VerboseHelpTests|FullyQualifiedName~CliCommandTests"`: exit 0; 196 passed, 0 failed, 0 skipped, 0 warnings.
+- `rtk dotnet build src\CsIndex.Cli\CsIndex.Cli.csproj -c Release --no-restore`: exit 0; 4 projects, 0 errors, 0 warnings.
+- `rtk git diff --check`: exit 0; no whitespace errors.
+- `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`: exit 0.
+- `rtk dotnet build CsIndex.sln -c Release --no-restore`: the sandboxed attempt
+  stopped only on the known Microsoft SDK discovery access denial; the
+  identical approved run exited 0 with 9 projects, 0 errors, and 0 warnings.
 - `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`: exit 0;
-  403 passed, 0 failed, 0 skipped, 0 warnings across 4 test projects (92.8 s).
-- Release `csindex.exe` global help and every command help: 14/14 passed;
-  function filters, source layout, output format, and output file are shown
-  only where accepted, and no active legacy `--output` entry is present.
-- Fresh directory-mode index plus JSON `symbol list --kind all --async-status all`:
-  stdout and `--output-file` payloads were byte-identical (48,271 bytes), file
-  mode stdout was empty, diagnostics were identical, JSON was valid, and the
-  output had no UTF-8 BOM. The verified temporary index/output were removed.
-- `rtk git diff --check`: exit 0; the branch diff contains no schema DDL or
-  `docs/DB_SCHEMA.md` change.
+  1,176 passed across 4 projects, 0 failed, 0 skipped, 0 warnings.
 
-Date: 2026-08-13.
+`VerboseHelpTests` enumerates global, `index`, and every recognized command for
+both verbose spellings and verifies byte-identical output. The normal `--help`
+matrix is enumerated by `CliSymbolPathOptionMatrixTests`; together they verify
+concise normal help and complete terminal help coverage. The help tests keep old
+executable-child spellings only as labelled rejection cases. The primary agent
+separately owns the final full-solution format/build/test gates, schema/path
+probes, and independent reviews.
+
+The primary's pre-review executable probes created one standard and one custom
+schema-5 index through the built CLI, compared the documented DDL byte-for-byte
+after newline/indent normalization, inspected every table/column/index and the
+relevant foreign keys, and observed anchors `..` / `../workspace`, relative
+project/document/key data, one logical partial with two role rows, a preferred
+implementation, and zero foreign-key/rooted-path violations. Relocated
+absolute-default, relative, and `--base-dir` queries all succeeded. Fifteen
+positive and eleven negative CLI cases passed with their specified exit codes
+and no partial stdout; schema/output sentinels remained unchanged. PP08 and
+OH09 separately passed the deterministic cross-drive/UNC preflight and atomic
+output-failure seams. The ignored probe tree was removed after inspection.

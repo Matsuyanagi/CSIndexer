@@ -1,5 +1,11 @@
 # CLI
 
+> **Current contract:** the final section, "Canonical query interface (schema
+> version 5)", is authoritative for symbol-path grammar, typed conditions,
+> command option scope, portable paths, help, and query output. Earlier query
+> examples are retained as implementation history where explicitly marked;
+> the build and indexing instructions remain active.
+
 ## Build and executable
 
 ```powershell
@@ -35,6 +41,9 @@ csindex index C:\Source --mode directory --define FEATURE_AUDIO
 
 ## Queries
 
+> **Superseded where conflicting:** use the schema-version-5 matrix and grammar
+> in the final section. This section preserves earlier command examples only.
+
 ```powershell
 csindex symbol find "Player::Play"
 csindex async tree "Game.Player::Play()"
@@ -53,7 +62,7 @@ csindex overrides "BaseClass::Run()"
 csindex conditions
 ```
 
-共通の出力option（受理するcommandは後述のschema v4節のmatrixに従う）:
+共通の出力option（commandごとの受理範囲は後述のschema-version-5 matrixに従う）:
 
 - `--db <path>`。省略時はcurrent directoryの`.csindex/index.sqlite`。
 - `--profile <name>`
@@ -138,7 +147,7 @@ csindex callees "Alpha.DescendantCallees::Execute()" --exclude-lambda-calls
 
 ### 非同期解析情報の出力
 
-既存の検索コマンドの結果へ非同期解析情報を追加します。schema v4では、これとは別に
+既存の検索コマンドの結果へ非同期解析情報を追加します。schema version 5では、これとは別に
 `csindex async tree`が永続化された非同期経路を表示します。`--async-status`は直接の
 `AsyncRole`を対象とし、`symbol list --async-involved`は派生値
 `AsyncInvolvementDepth != null`を対象とします。両方を指定した場合はANDで結合します。
@@ -169,110 +178,289 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 - `4`: SQLite/schema failure
 - `5`: `--require-single` failure
 
-## シンボル、ソース、グラフコマンド（schema v4）
+## Previous query contract
 
-本節のコマンドは`--db <path>`（既定: current directory配下の`.csindex/index.sqlite`）と`--profile <name>`を受け付けます。`--short-names`は表示専用で、表示名、戻り値型、引数型だけを短縮し、保存済みcanonical値や検索意味を変更しません。
+The former flat matcher/schema-4 command contract is superseded. Its active
+source-layout and graph guarantees are incorporated into the canonical
+schema-version-5 section below; historical wording remains available in Git
+history.
 
-### 共通の実行可能target filter
+---
 
-`--kind all|method|lambda`と`--async-status all|async|sync`は、method/lambdaを候補またはrootとして解決する次のcommandで受理します。
+## Canonical query interface (schema version 5)
 
-| command | `--kind` / `--async-status`の適用先 |
+### Quick start
+
+```powershell
+csindex index Game.sln
+csindex symbol find "Game::Player::Run()"
+csindex definition "Game::Player::Run().Local()"
+csindex source search --include-literal "CancellationToken"
+csindex callers tree "Game::Player::Run()" --depth 3
+```
+
+All queries require a schema-version-5 database. If an older database is
+opened, CsIndex leaves it unchanged and reports how to rebuild: delete or
+rename the old file, or select a new `--db` path, and explicitly run
+`csindex index`.
+
+### Symbol-path grammar
+
+```text
+csharp:   Game.Core.Player.Inventory::Load(int).Validate()
+explicit: Game.Core::Player.Inventory::Load(int).Validate()
+```
+
+Csharp form has one top-level `::` separator and performs documented suffix
+matching across the possible namespace/type boundary. Explicit form has two
+top-level separators and fixes that boundary exactly. `Player::Run()` omits the
+namespace and searches all namespaces. `global::Program::<top-level-statements>`
+selects the empty/global namespace exactly; `@global` is a literal identifier.
+
+A whole hierarchy `*` component matches one level and a whole `**` component
+matches zero or more; an embedded `*` stays within its component. Executable
+children use `.` and immediate containment:
+
+```text
+Game::Player::Run().Local().<lambda#1>
+```
+
+The old `Game::Player::Run()::<lambda#1>` child spelling is rejected. An empty
+field/segment, malformed delimiter, or zero/three top-level separators is also
+rejected.
+
+Type generic arity is exact: `Repository` is non-generic, `Repository<T>` is
+arity 1, and `Repository<T,U>` is arity 2. Use a deliberate type glob such as
+`Repository*` to span arities.
+
+Generic-list and parameter-list omission are independent:
+
+```text
+Method          any generic arity, any parameters
+Method<T>       arity 1, any parameters
+Method()        non-generic, zero parameters
+Method<T>()     arity 1, zero parameters
+Method(int)     non-generic, exact int parameter
+Method<T>(T)    arity 1, exact canonical parameter list
+```
+
+Bare `Method` is the broad all-arity/all-overload form. Once a parameter list
+is present, omitted `<...>` means non-generic. Constructed invocation notation
+such as `Method<System.String>` is invalid.
+Aliases are accepted; concrete non-alias type output is fully qualified.
+
+Special callable forms are:
+
+```text
+[constructor]                       [static-constructor]
+[destructor]                        [operator:<token>]
+[checked-operator:<token>]          [conversion:implicit:<type>]
+[conversion:explicit:<type>]        [checked-conversion:explicit:<type>]
+[get:<member>]                      [set:<member>]
+[init:<member>]                     [add:<member>]
+[remove:<member>]                   [explicit:<interface-member>]
+<lambda#n>                          <anonymous-method#n>
+<initializer:Name>                  <top-level-statements>
+```
+
+For anonymous queries, `n` is a positive integer or `*`. The complete operator
+token list and copyable example for every form are in `csindex --help-verbose`
+and `SPEC.md` section 34.
+
+### Typed conditions
+
+All rows below are repeatable except the case selector:
+
+| Domain | Glob | Literal | Regex | Case selector |
+| --- | --- | --- | --- | --- |
+| namespace | `--namespace` | `--namespace-literal` | `--namespace-regex` | `--namespace-case strict|ignore` |
+| type | `--type` | `--type-literal` | `--type-regex` | `--type-case strict|ignore` |
+| method | `--method` | `--method-literal` | `--method-regex` | `--method-case strict|ignore` |
+| file | `--file` | `--file-literal` | `--file-regex` | `--file-case strict|ignore` |
+| include source | `--include` | `--include-literal` | `--include-regex` | `--source-case strict|ignore` |
+| exclude source | `--exclude` | `--exclude-literal` | `--exclude-regex` | `--source-case strict|ignore` |
+
+Case defaults independently to `strict`. Same-domain namespace/type/method/file
+conditions are ordered OR alternatives evaluated in CLI order; different
+domains AND. Every include must match, while any exclude rejects. File/source
+conditions must pass on one physical declaration; partial rows then project to
+one logical result. Source matching is unanchored over normalized source.
+Invalid regex or timeout emits no partial payload.
+
+The removed bare `--regex` and `--ignore-case` switches are always errors.
+
+### Common query options
+
+The common presentation/path group `Q` is:
+
+```text
+--db <path>
+--profile <name>
+--output-format <command-specific-value>
+-o <path> | --output-file <path>
+--symbol-path-style csharp|explicit
+--short-names
+--base-dir <path>
+--path-style absolute|relative
+--help
+--help-verbose
+--verbose                     valid on queries only with help
+```
+
+The selection group `C` contains every typed condition and case option above,
+plus:
+
+```text
+--kind all|method|lambda
+--async-status all|async|sync
+```
+
+`--kind` and `--async-status` describe the direct root. Initializers and
+top-level statements participate in `all`. `symbol list --async-involved` is a
+separate transitive filter.
+
+### Exact accepted-option matrix
+
+An option not present in a row is rejected for that command.
+
+| Scope | Accepted options |
 | --- | --- |
-| `symbol find`、`symbol list` | 一致/一覧のsymbol |
-| `source show`、`source search` | source-backed実行可能symbol |
-| `definition`、`definition --at` | 解決対象とdefinition結果 |
-| `references`、`callers` | 検索対象となるcallee target |
-| `callees` | 検索対象となるcaller root |
-| `async tree`、`callers tree` | 一意に解決するsource-backed executable root |
-| `overrides` | method root。`--kind lambda`は非適用エラー |
+| global help | `db`, `profile`, `output-format`, `output-file`, `help`, `help-verbose`, `verbose` |
+| `index` | `db`, `mode`, `solution`, `configuration`, `framework`, `target-framework`, `runtime`, `profile-name`, `define`, `undefine`, `define-file`, `reference`, `unity-editor`, `exclude`, `generated-source`, `rebuild`, `verbose`, `diagnostics`, `help`, `help-verbose` |
+| `symbol find` | `Q + C + require-single + include-overrides + show-source + source-layout` |
+| `symbol list` | `Q + C + async-involved` |
+| `source search` | `Q + C + source-layout` |
+| `source show` | `Q + C + source-layout` |
+| `definition <selector>` | `Q + C + require-single + include-overrides` |
+| `definition --at` | `Q + at` only; no root conditions |
+| `references` | `Q + C + exclude-generated + only-generated + require-single + include-overrides` |
+| `callers` | `Q + C + exclude-generated + only-generated + require-single + include-overrides + dispatch + caller-scope` |
+| `callees` | `Q + C + exclude-generated + only-generated + require-single + include-overrides + exclude-lambda-calls` |
+| `overrides` | `Q + C + require-single`; no `include-overrides` |
+| `async tree` | `Q + C + max-nodes` |
+| `callers tree` | `Q + C + depth + max-nodes` |
+| `conditions` | `db`, `profile`, `output-format`, `output-file`, `help`, `help-verbose`, `verbose`, `base-dir`, `path-style` |
 
-`index`と`conditions`はfunction targetを持たないため、両filterを未知optionとして拒否します。filterはtarget/rootの解決にだけ適用し、`references`/`callers`が返すcaller、`callees`が返すcallee、tree内の途中nodeやedgeを一律に削除しません。
+The symbols in the table are option names without their leading `--`. `Q` and
+`C` expand exactly to the groups above; verbose help prints a fully expanded,
+sorted `Accepted options:` list for machine comparison.
 
-既定はどちらも`all`です。`--kind all`はkind predicateを追加しないため、exact `symbol find`が従来返していた型などを排除しません。`--async-status async`は`AsyncRole != None`、`sync`は`AsyncRole == None`のmethod/lambdaに限定し、`all`はdirect async predicateを追加しません。未知値は次のusage errorです。
+### Command behavior
 
-```text
-Unknown symbol kind: <value>. Use all, method, or lambda.
-Unknown async status: <value>. Use all, async, or sync.
-```
+| Command | Root/selection rule | Output formats |
+| --- | --- | --- |
+| `symbol find [selector]` | selector or explicit condition/kind/async required; zero matches succeeds; optional `--require-single` | `table`, `json` |
+| `symbol list` | no selector; optional conditions; zero matches succeeds | `table`, `json` |
+| `source search` | no selector; explicit condition/kind/async required; zero matches succeeds | `table`, `json` |
+| `source show <selector>` | exactly one source-backed logical root | `table`, `json` |
+| `definition <selector>` | one or more roots; optional `--require-single` | `table`, `json` |
+| `definition --at <path:line:column>` | physical position mode; no selector conditions | `table`, `json` |
+| `references <selector>` | one or more roots; optional `--require-single` | `table`, `json` |
+| `callers <selector>` | one or more roots; optional `--require-single` | `table`, `json` |
+| `callees <selector>` | one or more roots; optional `--require-single` | `table`, `json` |
+| `overrides <selector>` | method roots only; optional `--require-single` | `table`, `json` |
+| `async tree <selector>` | exactly one source-backed logical root | `tree`, `line`, `json` |
+| `callers tree <selector>` | exactly one source-backed logical root | `tree`, `mermaid`, `json` |
+| `conditions` | no selector/root conditions | `table`, `json` |
 
-ラムダtargetは、各対象commandで次のcanonical grammarを解決します。
+`--source-layout single-line|multi-line` is available only on the rows that
+list it. `symbol find --source-layout` also requires `--show-source`.
 
-```text
-::<lambda#1>
-Owner()::<lambda#2>
-Namespace.Type::Owner()::<lambda#2>
-::<lambda#*>
-```
+`--include-overrides` is limited to the five rows that list it and requires one
+exact wildcard-free method selector. It rejects condition-only, lambda,
+initializer, top-level, or wildcard roots. Root conditions, direct kind/async,
+and generated-root filters run before cardinality. `--require-single` returns
+exit 5 unless exactly one logical root remains. Override expansion then occurs
+before command work. Root filters never remove secondary relation/graph rows.
 
-複数targetを許すcommandは決定的順序ですべて処理します。`async tree`と`callers tree`は1件のsource-backed executable rootを必要とし、0件または複数件なら候補を含む`Query error`にします。同じcanonical display nameの候補はdocument pathとsymbol IDで区別します。
+`--exclude-generated` and `--only-generated` are mutually exclusive. Their root
+effect is applied before cardinality; the relevant command's returned-edge
+generated filtering still applies.
 
-`--include-overrides`はまず実在するmethod targetをdescendant方向に展開し、その後にkind/direct-async filterを適用します。`--kind all`と`--kind method`はexact method queryで併用でき、`--kind lambda`は拒否されます。ラムダの所有関係はcall edgeではなく、delegate `Invoke`、event、callback、reflection、runtime flowを補ってlambda targetへのcall/referenceを推測しません。
+### Source layout and graph bounds
 
-### `symbol find`とsource command
+`single-line` source table output uses fixed physical records: `symbol find`
+has signature/location fields; `symbol find --show-source`, `source show`, and
+`source search` add normalized source; `symbol list` has only the signature.
+TAB, CRLF, CR, LF, U+0085, U+2028, and U+2029 are replaced with ASCII space at
+table-render time so each record stays on one physical line. `multi-line`
+retains headings and an indented source line. This presentation conversion does
+not alter stored normalized source/hash, matching, or JSON.
 
-```text
-csindex symbol find [<pattern>] [options]
-csindex source show <symbol> [options]
-csindex source search (--include <text> | --exclude <text>)... [options]
-```
+`async tree --max-nodes` defaults to 500 and must be positive. It follows the
+one persisted, validated next-hop chain and marks truncation in every format.
+`callers tree --depth` defaults to 3 (`0` is unlimited), while `--max-nodes`
+defaults to 500 and must be positive. Caller traversal is cycle-safe, retains
+eligible cycle/cross edges at a finite boundary, and represents one shared
+node/edge set in tree, Mermaid, and JSON. Neither graph infers delegate
+`Invoke`, event/callback, reflection, receiver data flow, or runtime-dispatch
+execution. Root conditions never prune stored path/caller descendants.
 
-`symbol find`の位置引数は最大1つで、省略時は`--namespace`、`--type`、`--method`の少なくとも1つを必要とします。component条件はANDで結合します。非regex modeでは`*`だけがwildcardで、それ以外はliteralです。`--regex`ではすべての名前conditionをculture-invariantな.NET regexとしてtimeout付きで評価し、`--ignore-case`は名前をculture-invariant ignore-case、source conditionをordinal ignore-caseにします。
-`--include`/`--exclude`は反復可能で、excludeをORで先に評価してからincludeをANDで評価します。`--show-source`は表示だけを変え、候補をsource-backedへ限定しません。
+### Logical partial declarations
 
-`symbol find`は`::<lambda#1>`、`Owner()::<lambda#2>`、完全なowner-qualified名、`::<lambda#*>`でlambdaを検索できます。source showは一致するsource-backed executableとoverloadを返し、source searchは位置引数を受け付けず少なくとも1つのinclude/excludeを必要とします。metadata-onlyまたは非実行可能symbolはsource commandから返しません。
-
-`symbol find`のexact queryでは、`--kind all`と`--async-status all`はpredicateを追加しないため、従来のexact type-query behaviorを維持します。`--async-status async|sync`を明示した場合は、exact候補に保存済み`AsyncRole`のdirect filterを適用します。
-
-### 出力形式と結果ファイル
-
-`--output-format`は形式を選ぶoptionであり、既定は通常commandでは`table`、`async tree`と`callers tree`では`tree`です。受理する値はcommandごとに次のとおりです。
-
-| command | format |
-| --- | --- |
-| `symbol find`、`symbol list`、`source show`、`source search`、`definition`、`references`、`callers`、`callees`、`overrides`、`conditions` | `table|json` |
-| `async tree` | `tree|line|json` |
-| `callers tree` | `tree|mermaid|json` |
-
-`-o <path>`と`--output-file <path>`は同義で、上表の結果payloadを持つすべてのcommandで使えます。`index`は結果payloadを持たないため受理しません。短縮形として認識するのは完全一致する`-o`だけであり、`-opath`と`-o=<path>`は位置引数です。file extensionからformatを推測せず、同じformatterがstdoutまたはfileへ同じpayloadを出力します。
-
-出力先を指定しない場合はpayloadをstdoutへ書きます。指定した場合は成功時のstdoutを空にし、diagnostic、warning、progress、argument/query/database/output errorはstderrのままにします。fileはBOMなしUTF-8で、relative pathはprocess current directoryから絶対化します。
-
-global helpと各commandの`--help`は通常どおりstdoutへ表示し、`--output-file`を併記しても結果fileを開いたりredirectしたりしません。
-
-file出力はlazyに出力先と同じdirectoryのtemporary fileを開き、formatterの完了・flush・cancellation checkに成功した場合だけ既存fileを置換または新規fileへcommitします。query/format/database/write/cancel失敗時は既存fileをtruncateせず、所有するtemporary fileをcleanupします。parent directoryは自動作成しません。正規化比較で出力先が使用中SQLite DB pathと同一ならusage error、存在しないparentまたはI/O failureなら`Output error:`で始まるanalysis failureです。空値、値なし、または`-o`/`--output-file`の重複はusage errorです。
-
-旧名`--output`はbreaking changeとして受理しません。指定すると`Unknown option(s): --output`のusage error（exit code 2）になります。
-
-### source table layout
-
-`--source-layout single-line|multi-line`の既定は`single-line`です。`symbol find`では`--show-source`と組み合わせる場合だけ、`source show`と`source search`では常に受理します。JSONとの併用、およびソースを表示しないcommandでの指定はusage errorです。
-
-未知値は次のusage errorです。
-
-```text
-Unknown source layout: <value>. Use single-line or multi-line.
-```
-
-single-line tableのstdoutにはrecordだけを出します。summaryはstderrへ出し、0件ならstdoutは空です。field separatorはTABで、同一実行中のfield数と順序は固定です。
-
-| command | 1 record |
-| --- | --- |
-| `symbol find` | `<signature><TAB><path>:<line>:<column>`（metadata-onlyは空location） |
-| `symbol find --show-source` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>`（metadata-onlyは空location/source） |
-| `source show`、`source search` | `<signature><TAB><path>:<line>:<column><TAB><normalized-source>` |
-| `symbol list` | `<signature>` |
-
-`multi-line`は互換layoutとしてheading、symbol行、`    source: <normalized-source>`行をstdoutへ維持します。single-lineの各field、およびmulti-lineのsignature/sourceは、実TAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ表示時だけ置換します。これにより各recordとsource行は1物理行になります。DBの`normalized_source`とhash、source search、JSONの`normalizedSource`はlosslessな保存値を維持します。
-
-### graph command補足
-
-`async tree`と`callers tree`のrootはexact source-backed executable queryです。前者は保存済みの1本のasync next-hop chainを`tree|line|json`で、後者はprofile内のbounded static caller graphを`tree|mermaid|json`で出力します。root filterは適用しますが、途中nodeをfilterしてpath/edgeを切断しません。delegate `Invoke`、event、callback、reflection、runtime dispatch、およびlambda ownership edgeは推論しません。
+A partial definition and implementation are one query candidate. Their physical
+declaration roles are exactly:
 
 ```text
-csindex async tree <symbol> [--max-nodes <count>] [--output-format tree|line|json]
-csindex callers tree <symbol> [--depth <count>] [--max-nodes <count>]
-    [--output-format tree|mermaid|json]
+partial-definition
+partial-implementation
 ```
 
-`async tree`の`--max-nodes`は正の値で既定500、`callers tree`の`--depth`は既定3（`0`は無制限）、`--max-nodes`は正の値で既定500です。両commandのambiguous rootは決定的順の候補を示す`Query error`になります。保存済みasync pathの整合性違反は、別経路を推測せずdatabase errorにします。
+Ordinary declarations use `ordinary`. The implementation is preferred when it
+exists. `definition` can emit both role rows; ordinary symbol/relation/graph
+output emits the logical symbol once and uses the preferred location. File and
+source conditions may select one physical row without splitting logical
+cardinality.
+
+### Portable paths and presentation
+
+The database stores forward-slash paths relative to the indexed storage root
+and an anchor from the database directory to that root. It never stores a
+machine-specific rooted source path. `--base-dir` changes query-time
+reconstruction only and never rewrites the database.
+
+```text
+--path-style absolute     reconstruct rooted locations (default)
+--path-style relative     emit paths relative to the effective base
+--symbol-path-style csharp
+--symbol-path-style explicit
+--short-names             display-only type-name shortening
+```
+
+`definition --at` accepts rooted or effective-base-relative input. A relocated
+database/source layout works when their relative relationship is preserved or
+`--base-dir` names the new root. A missing or unreadable reconstructed source is
+reported only by a command that must read it.
+
+Presentation options do not change identity or canonical ordering.
+
+### Help
+
+Normal help is concise. Full reference help is byte-identical for these two
+spellings at global scope and every recognized command:
+
+```text
+--help --verbose
+--help-verbose
+```
+
+Help validates tokenization and the command's allowed-option set, then exits
+before required positional validation, database/source opening, or output-file
+creation. Unknown commands/options remain errors. `index --verbose` without
+help enables progress; query `--verbose` is help-only.
+
+### Output and failures
+
+Payload goes to stdout unless `--output-file` is supplied. A file payload is
+rendered to an owned same-directory temporary file, flushed, cancellation
+checked, and committed atomically. Any query, regex, path, formatting, flush,
+cancellation, replace, or commit failure preserves an existing destination and
+does not expose a partial committed payload.
+
+```text
+0  success (including valid empty list/search results)
+2  invalid arguments or query
+3  input, analysis, cancellation, source, or output failure
+4  SQLite or incompatible-schema failure
+5  --require-single failure
+```

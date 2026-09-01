@@ -84,7 +84,7 @@ Date: 2026-07-20
 
 ## DEC-0009: Stable symbol key
 
-Status: Accepted
+Status: Superseded in part by DEC-0030 and DEC-0031
 
 Context: stable keyの最終形式とDocumentation Comment IDを持たないシンボルの形式が未確定だった。
 Decision: `profile + assembly + tfm + Documentation Comment ID`を基本とする。取得不能時はsymbol kind、fully-qualified display、source path/spanを含むfallbackを使用する。lambda/initializerはowner、document、syntax kind、span、content hashを使用する。
@@ -104,7 +104,7 @@ Date: 2026-07-20
 
 ## DEC-0011: Path normalization
 
-Status: Accepted
+Status: Superseded by DEC-0031
 
 Context: path正規化形式は未確定だった。
 Decision: `Path.GetFullPath`による絶対Windows pathとし、比較はordinal ignore-case、DBには元のcaseを保持する。
@@ -219,7 +219,7 @@ Date: 2026-08-05
 
 ## DEC-0020: Function-scoped lambda display numbering
 
-Status: Accepted
+Status: Superseded in part by DEC-0030
 
 Context: Nested lambdas need stable, searchable display names without losing
 their immediate lexical owner for call attribution. Field, property, and event
@@ -248,7 +248,7 @@ Date: 2026-08-08
 
 ## DEC-0021: Token-normalized executable source and source-filter semantics
 
-Status: Accepted
+Status: Superseded in part by DEC-0030
 
 Context: Source search needs stable text without corrupting literals or token
 boundaries, and must combine predictably with symbol filters.
@@ -272,7 +272,7 @@ Date: 2026-08-08
 
 ## DEC-0022: Schema version 4 with non-mutating rebuild rejection
 
-Status: Accepted
+Status: Superseded by DEC-0031
 
 Context: Executable metadata, normalized source, and a persisted async path
 need storage additions incompatible with schema version 3.
@@ -357,7 +357,7 @@ Date: 2026-08-08
 
 ## DEC-0025: Canonical wildcard and bounded regex symbol search
 
-Status: Accepted
+Status: Superseded by DEC-0030
 
 Context: Symbol search needs pattern flexibility without changing existing
 exact-query resolution or letting regex execution depend on culture or run
@@ -411,7 +411,7 @@ Date: 2026-08-09
 
 ## DEC-0027: Common executable target filters
 
-Status: Accepted
+Status: Superseded in part by DEC-0030
 
 Context: `--kind` had command-specific behavior and `--async-involved` is a
 derived reachability value, not a direct declaration property. Lambda targets
@@ -474,7 +474,7 @@ Date: 2026-08-11
 
 ## DEC-0029: Cache invalidation for zero-width array-rank normalization
 
-Status: Accepted
+Status: Superseded in part by DEC-0031
 
 Context: Roslyn omitted array-rank tokens have no source text, but allowing
 them to participate in separator decisions produced stale normalized source
@@ -493,3 +493,80 @@ its request hash changes. A user who directly queries an already-built legacy
 DB must run `index --rebuild` before expecting refreshed normalized source.
 
 Date: 2026-08-11
+
+## DEC-0030: Structured symbol paths and independently typed conditions
+
+Status: Accepted
+
+Context: Display-derived flat names, one global wildcard/regex mode, and
+function-scoped anonymous numbering cannot express an exact namespace/type
+boundary, nested executable containment, complete source-callable names, or
+independent search intent without ambiguity.
+
+Decision: Store and query a structured namespace/type/executable semantic
+path. Csharp form is a documented namespace/type suffix search; explicit form
+fixes the boundary exactly. Executable children use `.` and stored immediate
+containment. Generic/parameter omission follows the three-state callable rule,
+and the complete bracketed/synthetic callable catalog is canonical. Lambda and
+anonymous-method nodes share positive source-order ordinals per immediate
+owner. Compile namespace, type, method, file, include, and exclude conditions
+as independently selected glob/literal/regex forms with independent strict or
+ignore case categories. Same-category alternatives OR, categories AND,
+includes AND, and excludes OR. Apply declaration/root conditions before
+logical cardinality and traversal. Formatting style never changes identity or
+canonical order.
+
+Supersedes: DEC-0025 completely; DEC-0020's numbering/marker details;
+DEC-0021's process-global source ignore-case switch while retaining its token
+normalization, stored hash, and include/exclude composition; and DEC-0009's
+display-derived fallback identity details. Project/profile scoping and other
+unaffected identity decisions remain accepted.
+
+Alternatives: Preserve the flat display-name grammar, infer namespace/type
+boundaries, retain global matcher switches, or invent compatibility aliases.
+
+Consequences: The bare legacy matcher switches and old executable-child
+spelling are rejected. Csharp output remains copyable but may broaden; explicit
+output is exact. Every command uses one typed option matrix and one root-only
+selection pipeline. Anonymous ordinals are stable only inside one indexed
+snapshot.
+
+Date: 2026-09-01
+
+## DEC-0031: Schema version 5 logical declarations and portable index roots
+
+Status: Accepted
+
+Context: Machine-specific rooted persistence and one physical symbol row per
+source declaration prevent safe relocation and split partial definition and
+implementation into duplicate query/call/graph identities.
+
+Decision: Set `SchemaVersion = 5` and `AnalysisCacheVersion = 3`. Store one
+logical `symbols` row and physical `symbol_declarations` rows with the exact
+roles `ordinary`, `partial-definition`, and `partial-implementation`; prefer
+the implementation when present. Calls, relations, interface bindings,
+containment, async links, graph roots, and cardinality use logical IDs. Persist
+canonical forward-slash project/document/declaration paths relative to one
+storage root plus `index_runs.index_root_anchor` relative from the database
+directory. Reject cross-drive or cross-UNC-share layouts before mutation.
+`--base-dir` is a read-only reconstruction override; path and symbol styles are
+presentation-only.
+
+Supersedes: DEC-0011 completely; DEC-0022's schema layout/version; DEC-0029's
+schema/cache/rebuild consequence while retaining its zero-width-token
+normalization; and the rooted-path/display-derived portions of DEC-0009.
+DEC-0028's atomic destination design remains accepted and now covers every
+schema-5 query formatter.
+
+Alternatives: Migrate old files in place, silently delete/rebuild on `index`,
+store rooted paths as a fallback, model multiple unrelated roots, or preserve
+separate partial callable identities.
+
+Consequences: Version 4 and older are rejected without modification. Users
+must delete/rename the old database or choose a new `--db` and run
+`csindex index` explicitly. Standard and custom database layouts relocate when
+their relative relationship is preserved, and `--base-dir` handles a changed
+read-time root without rewriting stored data. A partial pair is one logical
+candidate with role-preserving definition output.
+
+Date: 2026-09-01

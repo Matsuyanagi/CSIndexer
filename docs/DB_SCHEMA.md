@@ -1,109 +1,264 @@
-# Database Schema
+# SQLite schema
 
-## Version
+This is the exact active schema for CsIndex. `SchemaMigrator.CurrentVersion` and `RequestHasher.SchemaVersion` are 5; `RequestHasher.AnalysisCacheVersion` is 3.
 
-- Current schema version: 4
-- Request hash schema version: 4
-- `schema_info`は必ず1行とし、未知のversionや破損を検出した場合はDBを削除・変更せずエラーにします。
-- Version 1, 2, 3, and every other unsupported database version are rejected without modification and must be rebuilt into a version 4 database. No ALTER migration or automatic deletion is performed; the database journal mode is not changed before a mismatch is rejected.
-- `schema_info`がない場合、SQLite内部object以外のuser table / index / view / triggerが存在しない空DBだけを新規DBとして初期化します。未認識の非空DBはWAL設定・DDLより前にfail-fastし、既存object、行、journal modeを変更しません。
+## Compatibility and creation
 
-## Tables
+- A new, otherwise empty database is placed in WAL mode and the complete schema is created in one transaction.
+- An existing database must have exactly one `schema_info` row whose value is 5.
+- A database with no `schema_info` but any user table/index/view/trigger is incompatible.
+- There is no migration, fallback, auto-delete, or implicit rebuild. A version-4-or-older query or index attempt leaves that database unchanged.
+- The recovery message is actionable: delete or rename the old database, or choose a new `--db` path, then run `csindex index` explicitly. `--rebuild` does not authorize incompatible-schema deletion.
+- Foreign-key enforcement is enabled for every opened connection. Existing schema compatibility is checked before WAL is enabled.
 
-- `analysis_profiles`: 入力モード、構成、TFM、RID、OS/architecture、決定的順序のpreprocessor symbols、profile hash。
-- `index_runs`: input root、input fingerprint、request hash、最終更新時刻。変更なしキャッシュの判定に使用します。
-- `projects`: profile/run、assembly、project path、target framework、project fingerprint。
-- `documents`: 絶対正規化path、content hash、予約済みsemantic hash、生成コード情報。
-- `symbols`: project-scoped source stable key、型/メソッド/ラムダ/initializer、表示・検索名、source span、nullable `type_kind INTEGER`（型symbolのRoslyn type kind、非型symbolはNULL）、`method_kind`、`accessibility`、`is_static`、direct async role `async_role INTEGER NOT NULL DEFAULT 0`、async-origin distance `async_involvement_depth INTEGER`、persisted next-hop ID `async_next_symbol_id INTEGER`、`return_type_key TEXT`、`normalized_source TEXT`、and `normalized_source_hash BLOB`。source定義は所属project keyをstable keyへ含め、metadata-only symbolはassembly/TFM identityを共有します。
-- `method_parameters`: ordinal、正規化type key、ref kind、optional。
-- `calls`: invocation/reference分類、static/virtual/interface/dynamic dispatch、resolution status/reason、呼び出し結果の利用方法`async_usage_kind INTEGER NOT NULL DEFAULT 0`、source span。
-- `call_candidates`: 曖昧呼び出しの全候補。
-- `symbol_relations`: inherits、implements、overrides、interface implementation、partial関係。
-- `interface_method_bindings`: profileごとの実装型、正確なinterface contract method、実際のimplementation methodの対応。interface-rooted queryのbranch contextを保持します。
-- `conditional_symbols_used`: Documentごとの条件付きシンボルと出現回数。
+## Portable path and identity invariants
 
-`docs/SPEC.md` 19.2の必須indexに加え、`index_runs`のキャッシュ検索indexを持ちます。FTS5は使用していません。
+- `index_runs.input_root` is `.` for a current index.
+- `index_runs.index_root_anchor` is the canonical relative path from the database directory to the storage root. The default `.csindex/index.sqlite` layout stores `..`.
+- `projects.project_path` and `documents.normalized_path` are canonical forward-slash paths relative to the storage root. Linked source paths may begin with normalized `../` segments.
+- Logical and declaration keys use semantic identity and stored relative path data; no persisted path/key field may contain a machine-specific rooted source path.
+- Index preflight rejects a storage root, database directory, or linked source on a different Windows drive or UNC server/share before database mutation.
 
-## Version 4 executable-source and async-path storage
+## Logical symbols and declarations
 
-The following version 4 columns are part of `symbols` in addition to the
-pre-existing identity, location, and async-role fields:
+`symbols` contains logical semantic rows. It deliberately has no legacy `fully_qualified_name`, `display_name`, source-span, or normalized-source columns. Semantic display/identity components are stored separately. Physical source payload lives in `symbol_declarations`.
 
-```sql
-return_type_key          TEXT,
-normalized_source        TEXT,
-normalized_source_hash   BLOB,
-async_next_symbol_id     INTEGER,
+The declaration-role encoding is exact:
 
-FOREIGN KEY(containing_symbol_id)
-  REFERENCES symbols(id) ON DELETE SET NULL,
+| Numeric value | Output value |
+| --- | --- |
+| 1 | `ordinary` |
+| 2 | `partial-definition` |
+| 3 | `partial-implementation` |
 
-FOREIGN KEY(async_next_symbol_id)
-  REFERENCES symbols(id) ON DELETE SET NULL
-```
+The database check constraint accepts only 1, 2, or 3. A logical partial pair has one `symbols` row and two declaration rows. `preferred_declaration_id` points to the implementation when present, otherwise to the definition or ordinary declaration. A definition-only partial is valid. Calls, candidates, relations, interface bindings, containing/async links, and graph roots all reference logical symbol IDs.
 
-`normalized_source` is the token-normalized executable syntax and
-`normalized_source_hash` is its SHA-256 hash. A source-backed definition is
-identified by a non-null `source_document_id`; metadata-only symbols retain no
-normalized source. `async_next_symbol_id` is null for async origins (depth
-zero) and points to the one selected next symbol for a non-origin. It is not a
-set of alternate routes.
+## Exact version-5 DDL
 
-Version 4の実行可能シンボルは、メソッド、コンストラクター、ローカル関数、ラムダ、アクセサー、演算子、変換演算子を含みます。`method_kind`、`accessibility`、`is_static`、`return_type_key`、`containing_symbol_id`、`source_document_id`、`source_start`、`source_length`により、宣言kind、適用可能な属性、owner、元ファイル・範囲を復元します。field/property/event initializerは`Namespace.Type::<initializer:memberName>`形式のsource-backed合成ownerとして`symbols`へ保存し、そのIDをラムダの所有関係に使用します。表示名だけをforeign keyの代わりに使用しません。
-
-`normalized_source`はRoslynのactive tokenから生成し、コメント、documentation trivia、directive、inactive branch、literal外のlayoutを除きます。literal tokenの`Text`はそのまま保持し、隣接tokenの再字句解析結果が変わる場合だけ1空白を補います。したがって複数行raw literalの内部改行は保存される場合があります。任意substring検索にはB-tree/FTS indexを設けず、source-backed executable候補へ絞った後に評価します。
-
-Version 4 defines the following `symbols` indexes:
+The block below is copied from `SchemaMigrator.CreateVersionFiveAsync`. It is normative for every column, default, uniqueness constraint, check constraint, foreign key, delete action, partial index, and index column order.
 
 ```sql
-CREATE INDEX ix_symbols_profile_kind
-ON symbols(analysis_profile_id, kind);
+CREATE TABLE schema_info (
+    version INTEGER NOT NULL
+);
 
-CREATE INDEX ix_symbols_profile_containing
-ON symbols(analysis_profile_id, containing_symbol_id);
+INSERT INTO schema_info(version) VALUES (5);
 
-CREATE INDEX ix_symbols_profile_async_depth
-ON symbols(analysis_profile_id, async_involvement_depth);
+CREATE TABLE analysis_profiles (
+    id                    INTEGER PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    input_mode            INTEGER NOT NULL,
+    configuration         TEXT,
+    target_framework      TEXT,
+    runtime_identifier    TEXT,
+    operating_system      TEXT,
+    architecture          TEXT,
+    preprocessor_symbols  TEXT NOT NULL,
+    profile_hash          BLOB NOT NULL UNIQUE
+);
 
-CREATE INDEX ix_symbols_profile_name
-ON symbols(analysis_profile_id, name);
+CREATE TABLE index_runs (
+    id                    INTEGER PRIMARY KEY,
+    analysis_profile_id   INTEGER NOT NULL,
+    input_root            TEXT NOT NULL,
+    index_root_anchor     TEXT NOT NULL,
+    input_fingerprint     BLOB NOT NULL,
+    request_hash          BLOB NOT NULL,
+    indexed_at_utc        TEXT NOT NULL,
 
-CREATE INDEX ix_symbols_profile_short_method
-ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
+    FOREIGN KEY(analysis_profile_id)
+      REFERENCES analysis_profiles(id)
+);
 
-CREATE INDEX ix_symbols_profile_namespace_type_method
-ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
+CREATE TABLE projects (
+    id                    INTEGER PRIMARY KEY,
+    index_run_id          INTEGER NOT NULL,
+    analysis_profile_id   INTEGER NOT NULL,
+    name                  TEXT NOT NULL,
+    assembly_name         TEXT,
+    project_path          TEXT,
+    target_framework      TEXT,
+    project_fingerprint   BLOB NOT NULL,
 
-CREATE INDEX ix_symbols_profile_fully_qualified
-ON symbols(analysis_profile_id, fully_qualified_name);
+    FOREIGN KEY(index_run_id)
+      REFERENCES index_runs(id) ON DELETE CASCADE,
 
-CREATE INDEX ix_symbols_location
-ON symbols(source_document_id, source_start);
+    FOREIGN KEY(analysis_profile_id)
+      REFERENCES analysis_profiles(id)
+);
 
-CREATE INDEX ix_symbols_profile_async_next
-ON symbols(analysis_profile_id, async_next_symbol_id);
+CREATE TABLE documents (
+    id                    INTEGER PRIMARY KEY,
+    project_id            INTEGER NOT NULL,
+    normalized_path       TEXT NOT NULL,
+    content_hash          BLOB NOT NULL,
+    semantic_hash         BLOB,
+    is_generated          INTEGER NOT NULL DEFAULT 0,
+    generation_kind       INTEGER NOT NULL DEFAULT 0,
 
-CREATE INDEX ix_symbols_profile_source_executable
-ON symbols(analysis_profile_id, kind)
-WHERE source_document_id IS NOT NULL;
-```
+    UNIQUE(project_id, normalized_path),
 
-The other indexes remain: `ix_index_runs_cache`, `ix_calls_callee`,
-`ix_calls_caller`, `ix_calls_location`, `ix_relations_target`,
-`ix_interface_method_bindings_contract`, and
-`ix_interface_method_bindings_type`. The previous non-profile-prefixed symbol
-name/component indexes are not created by schema v4. Source-only repository
-queries use a direct `source_document_id IS NOT NULL` predicate so SQLite can
-use the partial executable index. PRAGMA tests lock the exact columns and
-partial flag; representative `EXPLAIN QUERY PLAN` tests require the intended
-index and reject a full `symbols` scan. Arbitrary substring matching against
-`normalized_source` deliberately has no B-tree index or FTS table.
+    FOREIGN KEY(project_id)
+      REFERENCES projects(id) ON DELETE CASCADE
+);
 
-## Override-aware method-search storage
+CREATE TABLE symbols (
+    id                    INTEGER PRIMARY KEY,
+    analysis_profile_id   INTEGER NOT NULL,
+    project_id            INTEGER,
+    stable_key            TEXT NOT NULL,
+    kind                  INTEGER NOT NULL,
+    name                  TEXT NOT NULL,
+    namespace_name        TEXT NOT NULL DEFAULT '',
+    type_simple_name      TEXT,
+    type_metadata_name    TEXT,
+    path_segment_kind     INTEGER NOT NULL,
+    path_segment_display  TEXT NOT NULL,
+    path_segment_identity TEXT NOT NULL,
+    type_display_path     TEXT NOT NULL,
+    type_identity_path    TEXT NOT NULL,
+    executable_display_path TEXT NOT NULL,
+    executable_identity_path TEXT NOT NULL,
+    preferred_declaration_id INTEGER,
+    containing_symbol_id  INTEGER,
+    arity                 INTEGER NOT NULL DEFAULT 0,
+    parameter_count      INTEGER,
+    method_kind           INTEGER,
+    accessibility         INTEGER,
+    type_kind             INTEGER,
+    is_static             INTEGER NOT NULL DEFAULT 0,
+    is_abstract           INTEGER NOT NULL DEFAULT 0,
+    is_virtual            INTEGER NOT NULL DEFAULT 0,
+    is_override           INTEGER NOT NULL DEFAULT 0,
+    async_role            INTEGER NOT NULL DEFAULT 0,
+    async_involvement_depth INTEGER,
+    return_type_key       TEXT,
+    return_type_display   TEXT,
+    conversion_type_key   TEXT,
+    conversion_type_display TEXT,
+    async_next_symbol_id  INTEGER,
+    is_generated          INTEGER NOT NULL DEFAULT 0,
 
-The version 4 `interface_method_bindings` table and its foreign keys are:
+    UNIQUE(analysis_profile_id, stable_key),
 
-```sql
+    FOREIGN KEY(analysis_profile_id)
+      REFERENCES analysis_profiles(id),
+
+    FOREIGN KEY(project_id)
+      REFERENCES projects(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(containing_symbol_id)
+      REFERENCES symbols(id) ON DELETE SET NULL,
+
+    FOREIGN KEY(async_next_symbol_id)
+      REFERENCES symbols(id) ON DELETE SET NULL,
+
+    FOREIGN KEY(preferred_declaration_id)
+      REFERENCES symbol_declarations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE method_parameters (
+    method_id       INTEGER NOT NULL,
+    ordinal          INTEGER NOT NULL,
+    name             TEXT,
+    type_key         TEXT NOT NULL,
+    type_display     TEXT NOT NULL,
+    ref_kind         INTEGER NOT NULL,
+    is_optional      INTEGER NOT NULL DEFAULT 0,
+
+    PRIMARY KEY(method_id, ordinal),
+
+    FOREIGN KEY(method_id)
+      REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE TABLE symbol_declarations (
+    id                     INTEGER PRIMARY KEY,
+    declaration_key       TEXT NOT NULL UNIQUE,
+    symbol_id             INTEGER NOT NULL,
+    document_id           INTEGER NOT NULL,
+    declaration_role      INTEGER NOT NULL CHECK (declaration_role IN (1, 2, 3)),
+    source_start           INTEGER NOT NULL,
+    source_length         INTEGER NOT NULL,
+    normalized_source     TEXT NOT NULL,
+    normalized_source_hash BLOB NOT NULL,
+    is_generated          INTEGER NOT NULL,
+
+    UNIQUE(symbol_id, document_id, source_start, source_length, declaration_role),
+
+    FOREIGN KEY(symbol_id)
+      REFERENCES symbols(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(document_id)
+      REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE calls (
+    id                      INTEGER PRIMARY KEY,
+    analysis_profile_id     INTEGER NOT NULL,
+    caller_symbol_id        INTEGER NOT NULL,
+    callee_symbol_id       INTEGER,
+    callee_definition_id   INTEGER,
+    reference_kind         INTEGER NOT NULL,
+    dispatch_kind          INTEGER NOT NULL,
+    resolution_status      INTEGER NOT NULL,
+    resolution_reason      INTEGER NOT NULL,
+    async_usage_kind       INTEGER NOT NULL DEFAULT 0,
+    document_id            INTEGER NOT NULL,
+    source_start           INTEGER NOT NULL,
+    source_length          INTEGER NOT NULL,
+    unresolved_name        TEXT,
+    receiver_type_key      TEXT,
+
+    FOREIGN KEY(analysis_profile_id)
+      REFERENCES analysis_profiles(id),
+
+    FOREIGN KEY(caller_symbol_id)
+      REFERENCES symbols(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(callee_symbol_id)
+      REFERENCES symbols(id) ON DELETE SET NULL,
+
+    FOREIGN KEY(callee_definition_id)
+      REFERENCES symbols(id) ON DELETE SET NULL,
+
+    FOREIGN KEY(document_id)
+      REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE call_candidates (
+    call_id             INTEGER NOT NULL,
+    candidate_symbol_id INTEGER NOT NULL,
+
+    PRIMARY KEY(call_id, candidate_symbol_id),
+
+    FOREIGN KEY(call_id)
+      REFERENCES calls(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(candidate_symbol_id)
+      REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE TABLE symbol_relations (
+    analysis_profile_id INTEGER NOT NULL,
+    source_symbol_id    INTEGER NOT NULL,
+    target_symbol_id    INTEGER NOT NULL,
+    relation_kind       INTEGER NOT NULL,
+
+    PRIMARY KEY(
+        analysis_profile_id,
+        source_symbol_id,
+        target_symbol_id,
+        relation_kind
+    ),
+
+    FOREIGN KEY(source_symbol_id)
+      REFERENCES symbols(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(target_symbol_id)
+      REFERENCES symbols(id) ON DELETE CASCADE
+);
+
 CREATE TABLE interface_method_bindings (
     analysis_profile_id      INTEGER NOT NULL,
     implementing_type_id     INTEGER NOT NULL,
@@ -130,6 +285,74 @@ CREATE TABLE interface_method_bindings (
       REFERENCES symbols(id) ON DELETE CASCADE
 );
 
+CREATE TABLE conditional_symbols_used (
+    analysis_profile_id INTEGER NOT NULL,
+    document_id         INTEGER NOT NULL,
+    symbol_name         TEXT NOT NULL,
+    occurrence_count    INTEGER NOT NULL,
+
+    PRIMARY KEY(
+        analysis_profile_id,
+        document_id,
+        symbol_name
+    ),
+
+    FOREIGN KEY(document_id)
+      REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_index_runs_cache
+ON index_runs(input_root, request_hash, input_fingerprint);
+
+CREATE INDEX ix_symbols_profile_kind
+ON symbols(analysis_profile_id, kind);
+
+CREATE INDEX ix_symbols_profile_containing
+ON symbols(analysis_profile_id, containing_symbol_id);
+
+CREATE INDEX ix_symbols_profile_async_depth
+ON symbols(analysis_profile_id, async_involvement_depth);
+
+CREATE INDEX ix_symbols_profile_async_next
+ON symbols(analysis_profile_id, async_next_symbol_id);
+
+CREATE INDEX ix_symbols_profile_preferred_declaration
+ON symbols(analysis_profile_id, preferred_declaration_id);
+
+CREATE INDEX ix_symbols_profile_name
+ON symbols(analysis_profile_id, name);
+
+CREATE INDEX ix_symbols_profile_short_method
+ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_namespace_type_method
+ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
+
+CREATE INDEX ix_symbols_profile_path_identity
+ON symbols(analysis_profile_id, namespace_name, type_identity_path, executable_identity_path);
+
+CREATE INDEX ix_symbols_profile_source_executable
+ON symbols(analysis_profile_id, kind)
+WHERE preferred_declaration_id IS NOT NULL;
+
+CREATE INDEX ix_symbol_declarations_symbol
+ON symbol_declarations(symbol_id);
+
+CREATE INDEX ix_symbol_declarations_document_location_role
+ON symbol_declarations(document_id, source_start, source_length, declaration_role);
+
+CREATE INDEX ix_calls_callee
+ON calls(callee_definition_id);
+
+CREATE INDEX ix_calls_caller
+ON calls(caller_symbol_id);
+
+CREATE INDEX ix_calls_location
+ON calls(document_id, source_start);
+
+CREATE INDEX ix_relations_target
+ON symbol_relations(target_symbol_id, relation_kind);
+
 CREATE INDEX ix_interface_method_bindings_contract
 ON interface_method_bindings(analysis_profile_id, interface_method_id);
 
@@ -137,33 +360,22 @@ CREATE INDEX ix_interface_method_bindings_type
 ON interface_method_bindings(analysis_profile_id, implementing_type_id);
 ```
 
-`symbols.type_kind` is intentionally nullable: it is populated for type
-symbols and remains NULL for all other symbol kinds.
+## Save-time consistency and atomicity
 
-## Update Transaction
+Before replacement, snapshot validation requires canonical relative run/project/document paths, one profile-scoped stable key per logical symbol, valid declaration keys/roles/locations, a valid preferred declaration owned by the same logical symbol, logical call/relation endpoints, and no partial self relation. Invalid snapshots are rejected.
 
-1. Roslyn結果を`IndexSnapshot`としてメモリに完成させます。
-2. 1つのSQLite transaction内で同一Profileの旧runを削除します。
-3. profile/run/project/document/symbol rowsをprepared commandで挿入します。
-4. 全symbolのnumeric IDが確定してから、同じtransaction内で
-   `containing_symbol_id`と`async_next_symbol_id`をstable keyから更新します。
-5. parameter/call/relation/interface-binding/conditional-symbol rowsを挿入します。
-6. `PRAGMA foreign_key_check`を実行します。
-7. 成功時だけcommitし、例外・キャンセル時は以前のindexを保持します。
+A save writes the run, projects, documents, logical symbols, parameters, declarations, calls/candidates, relations, interface bindings, and conditional-symbol usage in one transaction. Deferred numeric links such as containing, async-next, callee, and preferred-declaration IDs are resolved against persisted logical/declaration maps. `PRAGMA foreign_key_check` must succeed before commit. Failure or cancellation rolls back and preserves the previous valid index.
 
-Foreign keyは有効、journal modeはWALです。テストと短命CLIでファイルを確実に解放するためconnection poolingは無効です。
+## Inspection reference
 
-`async_role`と`async_usage_kind`はCore enumの整数値を保存します。
-`async_involvement_depth` is zero at an async origin, increases by one toward
-callers, and is NULL for a non-involved symbol. `async_next_symbol_id` records
-the one deterministic next hop toward that origin. Every symbol/call reader in
-`QueryRepository` reconstructs these fields, return type, method kind, and
-normalized source for DB-only queries; Roslyn is not loaded while querying.
-Query-time reconstruction rejects a depth-zero row without a direct async
-origin role, non-executable or source-less hops, missing normalized source,
-incoherent depth/next state, cross-profile hops, and cycles.
-Index-time propagation uses the same source-backed method/lambda eligibility
-for origins and both call endpoints, so normal metadata awaitable calls cannot
-create a chain that query-time reconstruction would reject.
+Useful read-only checks for a fresh database are:
 
-空の新規DBと対応済みversion 4 DBにだけWALを設定します。version 3を含むversion不一致時と`schema_info`のない非空DBでは例外を返し、テーブル、行、journal modeを変更しません。connection-localな`PRAGMA foreign_keys=ON`だけはschema検査前に設定します。
+```sql
+SELECT version FROM schema_info;
+PRAGMA table_info(symbols);
+PRAGMA table_info(symbol_declarations);
+PRAGMA foreign_key_list(symbol_declarations);
+PRAGMA index_list(symbols);
+PRAGMA index_list(symbol_declarations);
+SELECT input_root, index_root_anchor FROM index_runs;
+```

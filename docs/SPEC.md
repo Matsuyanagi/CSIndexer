@@ -5,6 +5,12 @@
 英語で考えてください。ソースコード内のコメントは日本語で書いてください。
 本書は設計仕様、実装順序、制約、未実装機能、復旧方法をまとめた唯一の基準文書です。記載されていない仕様を推測して勝手に補完しないでください。
 
+> **Current canonical revision:** Section 34 is the authoritative contract for
+> structured symbol paths, typed query conditions, logical declarations,
+> schema version 5, portable persisted paths, help, ordering, and atomic query
+> output. It supersedes conflicting details in sections 14, 16, 18, 19, 21,
+> and 33. All unrelated requirements in sections 1-33 remain active.
+
 実装中に判断が必要になった場合は、次のいずれかとして明示してください。
 
 1. 本書に記載された確定仕様
@@ -300,11 +306,8 @@ src/
 
     Symbols/
       SymbolCanonicalizer.cs
-      SymbolIdentity.cs
-      SymbolQuery.cs
-      SymbolQueryParser.cs
-      SymbolMatcher.cs
-      TypeNameNormalizer.cs
+      SymbolSignatureCanonicalizer.cs
+      SymbolPathFormatter.cs
 
     Profiles/
       AnalysisProfile.cs
@@ -346,6 +349,11 @@ src/
     CalleeQuery.cs
     OverrideQuery.cs
     CallTreeQuery.cs
+    Symbols/
+      SymbolPathParser.cs
+      SymbolPathResolver.cs
+      TypedConditionCompiler.cs
+      StructuralGlobMatcher.cs
 
 tests/
   CsIndex.Core.Tests/
@@ -1029,7 +1037,7 @@ enum ReferenceKind
 
 CLIの`--async-status all|async|sync`はこの派生depthではなく直接`AsyncRole`にだけ適用する。`async`は`AsyncRole != None`、`sync`は`AsyncRole == None`のmethod/lambdaを対象にし、型などの非関数symbolを`sync`へ含めない。既存の`symbol list --async-involved`は`AsyncInvolvementDepth != null`による派生条件のまま維持し、両optionの併用はAND条件とする。
 
-Coreモデルとschema version 4のSQLite列は次の対応とする。
+Coreモデルとschema version 5のSQLite列は次の対応とする。
 
 | Coreモデル | SQLite列 |
 |---|---|
@@ -1041,6 +1049,10 @@ Coreモデルとschema version 4のSQLite列は次の対応とする。
 ---
 
 # 14. シンボル同一性
+
+> **Superseded where conflicting:** the schema-5 logical/declaration identity
+> and canonical semantic-path rules are specified in section 34. Sections
+> 14.1-14.3 remain historical context for the earlier display-derived model.
 
 SQLite内部参照には整数IDを使用する。
 
@@ -1136,22 +1148,26 @@ M:X.Play(System.Int32)
 
 # 16. ラムダ、ローカル関数、初期化子
 
+> **Superseded where conflicting:** section 34 defines current executable-child
+> containment, synthetic markers, anonymous ordinals, and logical identities.
+> This section is retained for the unaffected extraction intent and history.
+
 ## 16.1 ラムダ
 
 表示名例:
 
 ```text
-Game.Player::Update()::<lambda#1>
-Game.Player::Update()::<lambda#2>
+Game.Player::Update().<lambda#1>
+Game.Player::Update().<lambda#2>
 ```
 
 ラムダをtargetとして扱うquery commandは、少なくとも次の表記を共通に解決する。
 
 ```text
-::<lambda#1>
-Owner()::<lambda#2>
-Namespace.Type::Owner()::<lambda#2>
-::<lambda#*>
+Game::Player::Owner().<lambda#1>
+Game::Player::Owner().<anonymous-method#2>
+Game::Player::Owner().<lambda#*>
+Game.Player::Owner().<anonymous-method#*>
 ```
 
 複数targetを扱えるcommandは決定的順序ですべて処理する。一意rootが必要な`async tree`と`callers tree`は、filter適用後に0件または複数件なら候補を含む明示的なquery errorにする。候補は同一canonical display nameであればdocument pathとsymbol IDを併記する。
@@ -1180,17 +1196,17 @@ version: sha256:...
 
 表示用番号と永続識別子を分離する。
 
-### 16.1.1 関数単位の表示用採番
+### 16.1.1 Immediate-owner表示用採番
 
-各ラムダは、最寄りの非ラムダ実行可能owner内でソース順に採番する。ネストしたラムダでも直近のラムダで番号をリセットせず、外側のメソッド、ローカル関数、アクセサー、または合成初期化子のカウンターを共有する。
+lambdaとanonymous methodは、直近の字句上の実行可能owner内で1から始まる同じソース順sequenceを共有する。nested anonymous functionは直近のanonymous ownerに所属し、そのownerで新しいsequenceを開始する。
 
 ```text
-Game.Player::Update()::<lambda#1>
-Game.Player::Update()::<lambda#2>
-Game.Player::Update()::<lambda#3>
+Game.Player::Update().<lambda#1>
+Game.Player::Update().<lambda#2>
+Game.Player::Update().<lambda#3>
 ```
 
-保存する`containing_symbol_id`は直近の字句上のownerを示す。表示番号が非ラムダowner単位であっても、ネストしたラムダ内の呼び出しはそのラムダ自身からの呼び出しとする。所有関係はcall edgeではない。
+保存する`containing_symbol_id`は直近の字句上のownerを示す。ネストしたlambda内の呼び出しはそのlambda自身からの呼び出しとする。所有関係はcall edgeではない。
 
 ### 16.1.2 メンバー初期化子owner
 
@@ -1238,7 +1254,7 @@ void Execute()
 直接呼び出し元:
 
 ```text
-Execute::<lambda#1>
+Game::Player::Execute().<lambda#1>
 ```
 
   外側の名前付きメソッド:
@@ -1267,7 +1283,7 @@ XClass::<initializer:PropertyName>
 XClass::<initializer:EventName>
 ```
 
-初期化子内に複数のラムダがある場合は、その合成owner内でソース順に採番する。表示名だけを所有関係のキーにせず、stable keyとsymbol IDで関連付ける。top-level statementsなど、ここに列挙していない名前付きメソッド外の実行コードは別仕様として扱う。
+初期化子内に複数のanonymous nodeがある場合は、その合成owner内でソース順に採番する。表示名だけを所有関係のキーにせず、stable keyとsymbol IDで関連付ける。top-level codeは`global::Program::<top-level-statements>` synthetic ownerとして同じcontainment規則を使用する。
 
 ---
 
@@ -1345,6 +1361,10 @@ Program.cs:42
 ---
 
 # 18. 名前空間省略検索
+
+> **Superseded where conflicting:** section 34 defines current csharp suffix
+> matching, explicit exact boundaries, signature omission, typed matching, and
+> override expansion. Earlier flat-name matcher details below are historical.
 
 検索構文の基本形:
 
@@ -1504,342 +1524,48 @@ override.
 
 # 19. SQLite設計
 
-SQLiteを主データベースにする。
+Current storage uses schema version 5 and analysis-cache version 3. The exact
+DDL, including every column, index, foreign key, unique constraint, check
+constraint, default, and delete action, is normative in `docs/DB_SCHEMA.md`.
 
-推奨配置:
+The schema contains:
 
 ```text
-.csindex/
-  index.sqlite
-  manifest.json
+schema_info
+analysis_profiles
+index_runs
+projects
+documents
+symbols
+method_parameters
+symbol_declarations
+calls
+call_candidates
+symbol_relations
+interface_method_bindings
+conditional_symbols_used
 ```
 
-The current database schema version and request-hash schema version are `4`.
-Version 1, 2, 3, and every other unsupported version are rejected without
-modification and must be rebuilt into a version 4 database. No automatic
-migration or deletion is performed.
-
-## 19.1 必須テーブル
-
-### schema_info
-
-```sql
-CREATE TABLE schema_info (
-    version INTEGER NOT NULL
-);
-```
-
-`schema_info`が存在しないDBを初期化できるのは、SQLiteの内部objectを除くuser table / index / view / triggerが1つもない場合だけとする。非空の未認識DBでは、`PRAGMA journal_mode=WAL`やDDLを実行する前に明示的なエラーを返し、既存object、行、journal modeを変更しない。空の新規DBは通常どおり現行schemaで初期化する。
-
-### analysis_profiles
-
-```sql
-CREATE TABLE analysis_profiles (
-    id                    INTEGER PRIMARY KEY,
-    name                  TEXT NOT NULL,
-    input_mode            INTEGER NOT NULL,
-    configuration         TEXT,
-    target_framework      TEXT,
-    runtime_identifier    TEXT,
-    operating_system      TEXT,
-    architecture          TEXT,
-    preprocessor_symbols  TEXT NOT NULL,
-    profile_hash          BLOB NOT NULL UNIQUE
-);
-```
-
-`preprocessor_symbols` の保存形式は、決定的な順序を持つJSON配列などを使用する。
-
-### projects
-
-```sql
-CREATE TABLE projects (
-    id                    INTEGER PRIMARY KEY,
-    analysis_profile_id   INTEGER NOT NULL,
-    name                  TEXT NOT NULL,
-    assembly_name         TEXT,
-    project_path          TEXT,
-    target_framework      TEXT,
-    project_fingerprint   BLOB NOT NULL,
-
-    FOREIGN KEY(analysis_profile_id)
-      REFERENCES analysis_profiles(id)
-);
-```
-
-### documents
-
-```sql
-CREATE TABLE documents (
-    id                    INTEGER PRIMARY KEY,
-    project_id            INTEGER NOT NULL,
-    normalized_path       TEXT NOT NULL,
-    content_hash          BLOB NOT NULL,
-    semantic_hash         BLOB,
-    is_generated          INTEGER NOT NULL DEFAULT 0,
-    generation_kind       INTEGER NOT NULL DEFAULT 0,
-
-    UNIQUE(project_id, normalized_path),
-
-    FOREIGN KEY(project_id)
-      REFERENCES projects(id)
-);
-```
-
-### symbols
-
-```sql
-CREATE TABLE symbols (
-    id                    INTEGER PRIMARY KEY,
-    analysis_profile_id   INTEGER NOT NULL,
-    project_id            INTEGER,
-    stable_key            TEXT NOT NULL,
-    kind                  INTEGER NOT NULL,
-
-    name                  TEXT NOT NULL,
-    namespace_name        TEXT NOT NULL DEFAULT '',
-    type_simple_name      TEXT,
-    type_metadata_name    TEXT,
-    fully_qualified_name  TEXT NOT NULL,
-    display_name          TEXT NOT NULL,
-
-    containing_symbol_id  INTEGER,
-    arity                 INTEGER NOT NULL DEFAULT 0,
-    parameter_count       INTEGER,
-
-    method_kind           INTEGER,
-    accessibility         INTEGER,
-    type_kind             INTEGER,
-
-    is_static             INTEGER NOT NULL DEFAULT 0,
-    is_abstract           INTEGER NOT NULL DEFAULT 0,
-    is_virtual            INTEGER NOT NULL DEFAULT 0,
-    is_override           INTEGER NOT NULL DEFAULT 0,
-
-    async_role            INTEGER NOT NULL DEFAULT 0,
-    async_involvement_depth INTEGER,
-
-    return_type_key       TEXT,
-    normalized_source     TEXT,
-    normalized_source_hash BLOB,
-    async_next_symbol_id  INTEGER,
-
-    source_document_id    INTEGER,
-    source_start          INTEGER,
-    source_length         INTEGER,
-
-    is_generated          INTEGER NOT NULL DEFAULT 0,
-
-    UNIQUE(analysis_profile_id, stable_key),
-
-    FOREIGN KEY(containing_symbol_id)
-      REFERENCES symbols(id) ON DELETE SET NULL,
-
-    FOREIGN KEY(async_next_symbol_id)
-      REFERENCES symbols(id) ON DELETE SET NULL,
-
-    FOREIGN KEY(source_document_id)
-      REFERENCES documents(id)
-);
-```
-
-### method_parameters
-
-```sql
-CREATE TABLE method_parameters (
-    method_id       INTEGER NOT NULL,
-    ordinal         INTEGER NOT NULL,
-    name            TEXT,
-    type_key        TEXT NOT NULL,
-    ref_kind        INTEGER NOT NULL,
-    is_optional     INTEGER NOT NULL DEFAULT 0,
-
-    PRIMARY KEY(method_id, ordinal),
-
-    FOREIGN KEY(method_id)
-      REFERENCES symbols(id)
-);
-```
-
-### calls
-
-```sql
-CREATE TABLE calls (
-    id                      INTEGER PRIMARY KEY,
-    analysis_profile_id     INTEGER NOT NULL,
-
-    caller_symbol_id        INTEGER NOT NULL,
-    callee_symbol_id        INTEGER,
-    callee_definition_id    INTEGER,
-
-    reference_kind          INTEGER NOT NULL,
-    dispatch_kind           INTEGER NOT NULL,
-    resolution_status       INTEGER NOT NULL,
-    resolution_reason       INTEGER NOT NULL,
-    async_usage_kind        INTEGER NOT NULL DEFAULT 0,
-
-    document_id             INTEGER NOT NULL,
-    source_start            INTEGER NOT NULL,
-    source_length           INTEGER NOT NULL,
-
-    unresolved_name         TEXT,
-    receiver_type_key       TEXT,
-
-    FOREIGN KEY(caller_symbol_id)
-      REFERENCES symbols(id),
-
-    FOREIGN KEY(callee_symbol_id)
-      REFERENCES symbols(id),
-
-    FOREIGN KEY(document_id)
-      REFERENCES documents(id)
-);
-```
-
-### symbol_relations
-
-```sql
-CREATE TABLE symbol_relations (
-    analysis_profile_id INTEGER NOT NULL,
-    source_symbol_id    INTEGER NOT NULL,
-    target_symbol_id    INTEGER NOT NULL,
-    relation_kind       INTEGER NOT NULL,
-
-    PRIMARY KEY(
-        analysis_profile_id,
-        source_symbol_id,
-        target_symbol_id,
-        relation_kind
-    )
-);
-```
-
-### interface_method_bindings
-
-`interface_method_bindings` preserves the selected real implementation for a
-specific interface contract and implementing type. The binding is scoped to
-the analysis profile so a query can retain its interface branch context.
-
-```sql
-CREATE TABLE interface_method_bindings (
-    analysis_profile_id      INTEGER NOT NULL,
-    implementing_type_id     INTEGER NOT NULL,
-    interface_method_id      INTEGER NOT NULL,
-    implementation_method_id INTEGER NOT NULL,
-
-    PRIMARY KEY (
-        analysis_profile_id,
-        implementing_type_id,
-        interface_method_id,
-        implementation_method_id
-    ),
-
-    FOREIGN KEY(analysis_profile_id)
-      REFERENCES analysis_profiles(id),
-
-    FOREIGN KEY(implementing_type_id)
-      REFERENCES symbols(id) ON DELETE CASCADE,
-
-    FOREIGN KEY(interface_method_id)
-      REFERENCES symbols(id) ON DELETE CASCADE,
-
-    FOREIGN KEY(implementation_method_id)
-      REFERENCES symbols(id) ON DELETE CASCADE
-);
-```
-
-`symbols.type_kind` is nullable. It stores the Roslyn type kind for type
-symbols and is NULL for non-type symbols; inherited alias resolution uses it
-to distinguish class base chains from interface base-interface chains.
-
-### conditional_symbols_used
-
-```sql
-CREATE TABLE conditional_symbols_used (
-    analysis_profile_id INTEGER NOT NULL,
-    document_id         INTEGER NOT NULL,
-    symbol_name         TEXT NOT NULL,
-    occurrence_count    INTEGER NOT NULL,
-
-    PRIMARY KEY(
-        analysis_profile_id,
-        document_id,
-        symbol_name
-    )
-);
-```
-
-## 19.2 必須インデックス
-
-```sql
-CREATE INDEX ix_symbols_profile_kind
-ON symbols(analysis_profile_id, kind);
-
-CREATE INDEX ix_symbols_profile_containing
-ON symbols(analysis_profile_id, containing_symbol_id);
-
-CREATE INDEX ix_symbols_profile_async_depth
-ON symbols(analysis_profile_id, async_involvement_depth);
-
-CREATE INDEX ix_symbols_profile_name
-ON symbols(analysis_profile_id, name);
-
-CREATE INDEX ix_symbols_profile_short_method
-ON symbols(analysis_profile_id, type_simple_name, name, parameter_count);
-
-CREATE INDEX ix_symbols_profile_namespace_type_method
-ON symbols(analysis_profile_id, namespace_name, type_simple_name, name, parameter_count);
-
-CREATE INDEX ix_symbols_profile_fully_qualified
-ON symbols(analysis_profile_id, fully_qualified_name);
-
-CREATE INDEX ix_symbols_location
-ON symbols(source_document_id, source_start);
-
-CREATE INDEX ix_symbols_profile_async_next
-ON symbols(analysis_profile_id, async_next_symbol_id);
-
-CREATE INDEX ix_symbols_profile_source_executable
-ON symbols(analysis_profile_id, kind)
-WHERE source_document_id IS NOT NULL;
-
-CREATE INDEX ix_calls_callee
-ON calls(callee_definition_id);
-
-CREATE INDEX ix_calls_caller
-ON calls(caller_symbol_id);
-
-CREATE INDEX ix_calls_location
-ON calls(document_id, source_start);
-
-CREATE INDEX ix_relations_target
-ON symbol_relations(target_symbol_id, relation_kind);
-
-CREATE INDEX ix_interface_method_bindings_contract
-ON interface_method_bindings(analysis_profile_id, interface_method_id);
-
-CREATE INDEX ix_interface_method_bindings_type
-ON interface_method_bindings(analysis_profile_id, implementing_type_id);
-```
-
-## 19.3 トランザクション
-
-プロジェクトまたは更新単位ごとにトランザクションを使用する。
-
-解析途中の不完全な更新で既存インデックスを破損しないこと。
-
-推奨手順:
-
-```text
-1. 解析結果をメモリ上または一時テーブルへ作成
-2. SQLiteトランザクション開始
-3. 古い対象データを削除
-4. 新しい対象データを挿入
-5. 整合性確認
-6. コミット
-```
+`symbols` is a logical semantic table with structured path identity/display
+components. Physical source location, normalized source/hash, generated state,
+and the typed `ordinary | partial-definition | partial-implementation` role
+are stored in `symbol_declarations`. The preferred declaration is the partial
+implementation when available. Calls, relations, interface bindings,
+containment, and async links reference logical symbol IDs.
+
+`index_runs.input_root` is `.`, and `index_root_anchor` is relative from the
+database directory to the one storage root. Project/document/source-derived
+key paths are canonical forward-slash paths relative to that root. A
+cross-drive/share layout is rejected before mutation.
+
+A save validates logical/declaration/path invariants, inserts all rows and
+deferred IDs in one transaction, runs `PRAGMA foreign_key_check`, and commits
+only on success. Failure or cancellation rolls back. Schema version 4 or
+older, a malformed marker, or a non-empty unrecognized database is rejected
+without migration, deletion, truncation, implicit rebuild, or WAL change.
 
 ---
+
 
 # 20. 定義位置検索
 
@@ -1879,6 +1605,10 @@ Source Link対応は将来課題。
 ---
 
 # 21. CLI仕様
+
+> **Superseded where conflicting:** current symbol-path grammar, typed option
+> families, command scope, path/presentation options, and cardinality behavior
+> are in section 34 and `docs/CLI.md`. Unrelated indexing intent remains active.
 
 実行ファイル名の作業名は `csindex` とする。
 
@@ -2045,9 +1775,9 @@ Unknown source layout: <value>. Use single-line or multi-line.
 
 single-lineのstdoutはrecordだけとし、件数summaryはstderrへ出す。`multi-line`はheading、symbol行、`    source: <normalized-source>`行を維持する。single-lineの各fieldとmulti-lineのsignature/sourceは、TAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ表示時だけ置換し、各record/source行を1物理行にする。この表示変換はDBの`normalized_source`とhash、source search、JSONの`normalizedSource`を変更してはならない。
 
-Schema version 4 retains the existing async-analysis fields and adds persisted
-async next-hop, executable metadata, normalized-source, and graph-query
-support described in section 33.
+Schema version 5 retains the async-analysis fields, persisted async next-hop,
+executable metadata, normalized-source, and graph-query support. Source payload
+is stored on declaration rows as specified in section 34 and `DB_SCHEMA.md`.
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
@@ -2467,7 +2197,7 @@ public class Player
 呼び出し元:
 
 ```text
-Player::Execute()::<lambda#1>
+Player::Execute().<lambda#1>
 ```
 
 外側所有者:
@@ -2736,11 +2466,14 @@ Cache reused / rebuilt
 
 # 33. シンボル・ソース・グラフ拡張の正式仕様
 
-本章は、ラムダ検索、実行可能シンボル属性、正規化ソース、非同期最短経路、caller graphに関する正式な最新仕様である。CLIの完全な構文と出力例は`docs/CLI.md`、SQLiteのDDLと更新順は`docs/DB_SCHEMA.md`、決定理由は`docs/DECISIONS.md`、受け入れ条件と自動テストの対応は`docs/TEST_PLAN.md`に分離する。これらの文書と過去の記述が競合する場合は本章を優先する。
+> Section 34 is authoritative for shared path, matcher, schema, and command
+> rules. This section retains the compatible source/async/graph detail.
+
+本章は、lambda検索、実行可能symbol属性、正規化source、非同期最短経路、caller graphの詳細仕様である。共通契約は第34章を優先する。
 
 ## 33.1 共通要件
 
-* 後方互換のための旧DB migrationは行わない。現在のschema version 4以外は、既存DBを一切変更せずに拒否して再indexを要求する。
+* schema version 5以外は既存DBを変更せずに拒否する。migration/auto-delete/implicit rebuildは行わず、delete/renameまたは新しい`--db`の後に明示的な`csindex index`を要求する。
 * 構造解析にはRoslynの構文木、`SemanticModel`、シンボルを使用する。呼び出し、所有、最短経路、継承などの関係は表示名ではなくstable keyとDB上のsymbol IDで保持する。
 * 再帰構造はvisited IDで循環を防止する。深いグラフは再帰呼び出しではなく反復処理で探索する。
 * 解析、正規化、並べ替え、検索、グラフ構築、出力は処理途中でも`CancellationToken`を確認する。
@@ -2754,17 +2487,17 @@ Cache reused / rebuilt
 `symbol find`、`source show`、`definition`、`references`、`callers`、`callees`、`async tree`、`callers tree`は、該当するtarget/root位置で次のいずれでもラムダを検索できる。
 
 ```text
-::<lambda#1>
-Function()::<lambda#2>
-Namespace.Type::Function()::<lambda#2>
-::<lambda#*>
+Game::Player::Function().<lambda#1>
+Game::Player::Function().<anonymous-method#2>
+Game::Player::Function().<lambda#*>
+Game.Player::Function().<anonymous-method#*>
 ```
 
 検索はラムダsuffix、owner付きsuffix、正式な完全表示名に対応し、`--kind lambda`と組み合わせられる。同じ番号を持つ別ownerのラムダが複数一致した場合は、すべてを決定的な順序で列挙する。
 
 `async tree`と`callers tree`は単一のsource-backed executable rootだけを受理する。filter適用後に複数のラムダtargetが残る場合は、既存のgraph ambiguity契約に従って決定的順の候補を列挙して失敗する。ラムダownerの包含関係はcall edgeではなく、delegate `Invoke`、event、callback、reflection、runtime flowからlambdaのcall/reference edgeを推測しない。
 
-ラムダの表示番号は、最寄りの非ラムダ実行可能ownerごとにソース順で`<lambda#1>`から開始する。ネストしたラムダも同じ非ラムダownerの連番を使用し、内側のラムダで番号をリセットしない。ラムダを追加または削除したときに番号が変わり得るのは、同じowner内でその位置より後ろにあるラムダだけである。
+lambdaとanonymous methodは直近の字句上の実行可能ownerごとに共有source-order sequenceを1から開始する。nested anonymous nodeは直近のanonymous ownerで新しいsequenceを開始する。追加または削除により同じimmediate owner内の後続ordinalが変わり得る。
 
 フィールド、プロパティ、イベントの初期化子は次の合成ownerを持つ。
 
@@ -2797,9 +2530,9 @@ accessibility static async return-type display-name(parameters)
 
 ### 33.4.1 名前検索
 
-`symbol find`は省略可能な位置引数と、`--namespace`、`--type`、`--method`のcomponent条件を受け付ける。位置引数を省略する場合は少なくとも1つのcomponent条件が必要であり、複数条件はANDで結合する。
+`symbol find`は省略可能なstructured selectorと、namespace/type/method/file/sourceのtyped condition、kind、direct async-statusを受け付ける。selector省略時は少なくとも1つの明示selection conditionを必要とする。
 
-非regex modeでは`*`だけを0文字以上のwildcardとして扱い、それ以外の文字はliteralとする。例:
+concise conditionはstructural glob、`-literal`はliteral、`-regex`はbounded regexである。例:
 
 ```text
 *.Gamer::Play
@@ -2807,9 +2540,7 @@ Tokyo.*::Play
 Tokyo.Gamer::P*l*y
 ```
 
-`--regex`では各名前条件をculture-invariantな.NET正規表現として評価し、有限のtimeoutを設定する。`*`は正規表現の一部でありwildcard modeと重ねて解釈しない。既定はcase-sensitiveで、`--ignore-case`指定時だけ名前はculture-invariant ignore-case、ソースはordinal ignore-caseにする。無効な正規表現またはtimeoutは部分結果ではなくquery errorにする。
-
-`symbol find`のexact pathは、位置引数があり、`*`と`::<lambda#`を含まず、`--regex`、`--ignore-case`、component、kind predicate、include、excludeの各検索modifierを持たない場合に使用できる。`--kind all`と`--async-status all`はpredicateを追加しないためexact type-query behaviorを維持し、`--async-status async|sync`はexact候補へ保存済み`AsyncRole`のdirect filterを適用する。`--show-source`は表示専用なのでexact pathを妨げない。引数リストを省略したメソッドpatternはoverloadを列挙し、完全な引数リストを指定したpatternは完全signatureを照合する。`--include-overrides`との併用範囲は第18.7節と`docs/CLI.md`に従う。
+caseはnamespace/type/method/file/sourceごとに`strict|ignore`を独立指定する。同categoryの反復条件はCLI順のOR、category間はAND、includeはAND、excludeはORである。bare legacy matcher switchは拒否する。structured selector、overload omission、`--include-overrides`契約は第34章と`docs/CLI.md`に従う。
 
 結果はcanonical display name、source path、source start、numeric symbol IDの順で安定化する。
 
@@ -2831,7 +2562,7 @@ source幅0のmissing/omitted tokenは正規化文字列へ追加せず、その�
 
 `symbol find`は反復可能な`--include`と`--exclude`を名前条件と組み合わせられ、これらを1つも指定しなくてもよい。名前・属性で候補を絞った後、source-less候補を除き、excludeをORで先に短絡評価し、それを通過した候補にincludeをANDで短絡評価する。includeがなければexcludeを通過した候補を採用する。`--show-source`は表示だけを変更し、候補集合を変更しない。
 
-`source show <symbol>`は一致するsource-backed実行可能シンボルとoverloadの正規化ソースを表示する。`source search`は位置引数を受け付けず、少なくとも1つの`--include`または`--exclude`を必須とする。両コマンドはtableとJSONを提供し、正式名、適用可能な属性、ファイル、位置、正規化ソースを返す。実装上、DB optimizerが述語順を変更しても意味を変えてはならず、アプリケーション層ではexcludeによる早期除外を維持する。
+`source show <symbol>`は一意のsource-backed logical executableのpreferred declaration sourceを表示する。`source search`は位置引数を受け付けず、typed condition、kind、direct async-statusの少なくとも1つを必須とする。両コマンドはtableとJSONを提供し、正式名、適用可能な属性、declaration role、ファイル、位置、正規化ソースを返す。実装上、DB optimizerが述語順を変更しても意味を変えてはならず、アプリケーション層ではexcludeによる早期除外を維持する。
 
 tableの`single-line` layoutでは、`symbol find`は2field（`signature<TAB>location`）、`symbol find --show-source`と`source show`/`source search`は3field（`signature<TAB>location<TAB>normalized-source`）、`symbol list`はsignatureだけの1fieldを出力する。metadata-only `symbol find`候補も空fieldで同じfield数を保つ。summary、warning、progress、errorはrecord-only stdoutへ混在させず、summaryはstderrへ出す。`multi-line` layoutでは既存のheadingと`source:`行を維持する。
 
@@ -2839,21 +2570,21 @@ tableの`single-line` layoutでは、`symbol find`は2field（`signature<TAB>loc
 
 ## 33.5 非同期関数までの最短経路
 
-`csindex async tree <symbol>`は、一意に解決されたsource-backed executable root（methodまたはlambda）から呼び出し先方向へ進み、到達可能な非同期起点までの最短経路を1つ表示する。既定のtree出力に加えて`line`と`json`を提供する。lineは厳密に` -> `で接続する。root自身が非同期起点なら1nodeで終了し、到達不能なら成功結果として明示する。
+`csindex async tree <symbol>`は、一意に解決されたsource-backed logical executable root（initializer/top-levelを含む）から呼び出し先方向へ進み、到達可能な非同期起点までの最短経路を1つ表示する。既定のtree出力に加えて`line`と`json`を提供する。lineは厳密に` -> `で接続する。root自身が非同期起点なら1nodeで終了し、到達不能なら成功結果として明示する。
 
 非同期起点は、宣言`async`、`Task`/`Task<T>`、`ValueTask`/`ValueTask<T>`、`UniTask`/`UniTask<T>`、`UniTaskVoid`、非同期stream、または登録済みawaitable型など、Roslynで得たdirect async roleに基づく。名前が`Async`で終わるだけでは起点にしない。非同期型の追加登録を可能にする拡張点は保持するが、未登録型を名前だけで推測しない。非同期ラムダも起点に含める。
 
-index時にsource-backed method/lambda間の解決済みinvocation逆辺を決定的に並べた複数始点BFSを実行し、`async_involvement_depth`と1つの`async_next_symbol_id`を保存する。起点はdepth 0かつnext nullである。未訪問またはより短い距離を見つけたときだけ更新し、同距離では最初に記録したnextを置換しない。metadata-only awaitableは起点にもpath nodeにも含めない。
+index時にeligible source-backed logical executable間の解決済みinvocation逆辺を決定的に並べた複数始点BFSを実行し、`async_involvement_depth`と1つの`async_next_symbol_id`を保存する。起点はdepth 0かつnext nullである。未訪問またはより短い距離を見つけたときだけ更新し、同距離では最初に記録したnextを置換しない。metadata-only awaitableは起点にもpath nodeにも含めない。
 
-query時は再探索せず保存済みnext chainだけを反復的にたどる。各nodeは同一profileのsource-backed method/lambdaで正規化ソースを持ち、depthが1ずつ減少しなければならない。欠落ID、profile越境、cycle、非実行可能・source-less node、origin/non-origin状態の不整合はdatabase integrity errorとする。node上限を判定する前に取得済みnodeを検証する。
+query時は再探索せず保存済みnext chainだけを反復的にたどる。各nodeは同一profileのeligible source-backed logical executableで正規化ソースを持ち、depthが1ずつ減少しなければならない。欠落ID、profile越境、cycle、非実行可能・source-less node、origin/non-origin状態の不整合はdatabase integrity errorとする。node上限を判定する前に取得済みnodeを検証する。
 
 `--max-nodes`の既定は500でrootを含み、正の値だけを許可する。打ち切った場合はtree/line/JSONのすべてでtruncationを明示する。
 
 ## 33.6 呼び出し元グラフ
 
-`csindex callers tree <symbol>`は、一意に解決されたsource-backed executable root（methodまたはlambda）をrootとして、呼び出し元方向へprofile-scoped BFSを行う。rootのdepthは0、既定depthは3、`--depth 0`は深度無制限である。`--max-nodes`の既定は500でrootを含み、上限時は明示的にtruncateする。
+`csindex callers tree <symbol>`は、一意に解決されたsource-backed logical executable root（initializer/top-levelを含む）をrootとして、呼び出し元方向へprofile-scoped BFSを行う。rootのdepthは0、既定depthは3、`--depth 0`は深度無制限である。`--max-nodes`の既定は500でrootを含み、上限時は明示的にtruncateする。
 
-対象edgeは解決済みinvocationとobject creationで、nodeはsource-backed method/lambdaに限定する。metadata-only・外部libraryの定義と`System`/`System.*` namespaceを除外する。source有無は文書・assembly情報で判定し、名前空間文字列だけで外部と決めない。同一depthの候補はcanonical display name、source path、source start、symbol IDで全体sortしてからnode上限を適用する。
+対象edgeは解決済みinvocationとobject creationで、nodeはsource-backed logical executableに限定する。metadata-only・外部libraryの定義と`System`/`System.*` namespaceを除外する。source有無は文書・assembly情報で判定し、名前空間文字列だけで外部と決めない。同一depthの候補はcanonical semantic keyとstored relative locationで全体sortしてからnode上限を適用する。
 
 nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界でもreverse edgeを読み、両端がすでに含まれるcycle/cross edgeは保持するが、より深いnodeは追加・enqueueしない。ラムダ内のcallはラムダ自身からのedgeとし、ownerへのedgeを合成しない。delegate `Invoke()`、event、callback、reflection、receiver data flow、runtime dispatchの実行位置は推論しない。
 
@@ -2861,9 +2592,7 @@ nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界
 
 ## 33.7 スキーマと更新の原子性
 
-schema version 4は、属性、method kind、owner、初期化子、return type、source presence、正規化ソース/hash、async depth/nextを`symbols`と関連tableへ保存する。自己参照する`containing_symbol_id`と`async_next_symbol_id`はsymbol rowのnumeric ID確定後に解決する。profile、kind、名前component、owner、async depth/next、source-backed executableを効率よく検索できるprofile-prefix indexを持つ。正確なDDLは`docs/DB_SCHEMA.md`を正式なschema定義とする。
-
-array rankの正規化修正はschema形状を変えないためschema versionは4のままとする。一方、旧正規化ソースをcache reuseしないようrequest hashへ含める`AnalysisCacheVersion`は2とする。次回の同一index requestはhash不一致により自動再解析されるが、既に構築済みのlegacy DBへ直接queryする場合は、更新済み正規化ソースを得るため`index --rebuild`を実行しなければならない。
+schema version 5はlogical path/metadata/async depth-nextを`symbols`へ、physical source location/role/normalized source/hashを`symbol_declarations`へ保存する。analysis-cache versionは3である。正確なDDLは第34章と`docs/DB_SCHEMA.md`を正式定義とする。
 
 更新は1つのSQLite transactionで行い、全symbol row、自己参照、parameter/call/relation/interface binding/conditional symbolを保存して`PRAGMA foreign_key_check`に成功した場合だけcommitする。例外またはcancel時はrollbackして直前のindexを保持する。旧schema、未知schema、`schema_info`のない非空DBはWALやDDLを変更する前に拒否する。
 
@@ -2919,3 +2648,377 @@ array rankの正規化修正はschema形状を変えないためschema version�
 11. 統合、cycle、旧schema拒否、cancel、決定的順序の回帰テスト
 
 各段階で既存機能を含む関連テストを実行し、失敗を解消してから次へ進む。
+
+---
+
+# 34. Canonical structured-path and portable-index contract (current)
+
+This section is normative for the current build. Schema version 5 and
+analysis-cache version 3 are required.
+
+## 34.1 Structured symbol-path grammar
+
+A symbol path has three semantic fields:
+
+```text
+namespace path | type path | executable path
+```
+
+The two textual styles below map to the same structured constraints:
+
+```text
+csharp:   Game.Core.Player.Inventory::Load(int).Validate()
+explicit: Game.Core::Player.Inventory::Load(int).Validate()
+```
+
+Balanced lexical scanning finds only top-level `::` separators. Exactly one
+selects csharp style; exactly two select explicit style. Nested constructs such
+as `global::System.String`, generics, tuples, arrays, pointers, nullable types,
+and function pointers do not split a path.
+
+Csharp style treats its dotted prefix as a suffix query over a possible
+namespace prefix plus the complete type hierarchy. A csharp-form result copied
+back into a query is valid but can broaden to another namespace/type boundary.
+Explicit style fixes the namespace/type boundary and matches both hierarchies
+exactly. The two-field form omits namespace and searches all namespaces.
+`global` as the explicit namespace is exactly the empty/global namespace;
+`@global` is an identifier literally named `global`.
+
+Hierarchy components use `.`. In glob form, a whole `*` component matches one
+level and a whole `**` component matches zero or more; embedded `*` stays
+within its component. Escaped C# identifiers normalize to value text.
+Nested type components remain distinct. Type generic arity is exact:
+`Repository` is non-generic, `Repository<T>` is arity 1, and
+`Repository<T,U>` is arity 2. Use an intentional type glob such as
+`Repository*` to search multiple arities.
+
+Executable children use `.` and require immediate containment:
+
+```text
+Game::Player::Run().Local().<lambda#1>
+```
+
+The following are explicit rejection examples, not accepted spellings:
+
+```text
+Game::Player::Run()::<lambda#1>    invalid: old child :: separator
+Game::Player::Run()::Local()       invalid: three top-level fields
+```
+
+Empty fields/segments, zero or more than two top-level separators, unbalanced
+or misordered delimiters, and a child not immediately contained by its
+predecessor are query errors.
+
+## 34.2 Generic and overload constraints
+
+Generic-list omission and parameter-list omission are independent at every
+callable segment:
+
+| Form | Generic arity | Parameters |
+| --- | --- | --- |
+| `Method` | any | any |
+| `Method<T>` | exactly 1 | any |
+| `Method()` | exactly 0 | exactly zero |
+| `Method<T>()` | exactly 1 | exactly zero |
+| `Method(int)` | exactly 0 | exact one-`int` list |
+| `Method<T>(T)` | exactly 1 | exact canonical list |
+
+Bare `Method` is the intentionally broad all-arity/all-overload form. Once a
+parameter list is present, omitting `<...>` means generic arity zero. Generic
+placeholder names normalize by ordinal. A placeholder list expresses arity;
+it is not a constructed invocation. Therefore
+`Game::Player::Method<System.String>` is invalid.
+
+C# aliases and their framework spellings have the same identity. Concrete
+non-alias output is fully qualified. Identity distinguishes placeholder
+ordinal, `ref`, `out`, `in`, `ref readonly`, nullable value types, array rank,
+pointers, tuple shape, function pointers, and conversion target. Nullable
+reference annotation is display-only identity metadata. Unsupported parameter
+modifiers are rejected.
+
+## 34.3 Complete special-callable catalog
+
+Every supported bracketed callable has a copyable concrete form:
+
+```text
+Game::Player::[constructor](int,string)
+Game::Player::[static-constructor]()
+Game::Player::[destructor]()
+Math::Number::[operator:+](Math.Number,Math.Number)
+Math::Number::[checked-operator:+](Math.Number,Math.Number)
+Game::Value::[conversion:implicit:int](Game.Value)
+Game::Value::[conversion:explicit:string](Game.Value)
+Game::Value::[checked-conversion:explicit:int](Game.Value)
+Game::Player::[get:Name]()
+Game::Player::[set:Name](string)
+Game::Player::[init:Name](string)
+Game::Player::[get:Item](int)
+Game::Player::[set:Item](int,string)
+Game::Player::[add:Changed](System.EventHandler)
+Game::Player::[remove:Changed](System.EventHandler)
+Game::Player::[explicit:System.IDisposable.Dispose]()
+Game::Player::[explicit:Game.Contracts.IMapper.Map]<T>(T)
+```
+
+The accepted tag grammar is exactly:
+
+```text
+[constructor]
+[static-constructor]
+[destructor]
+[operator:<token>]
+[checked-operator:<token>]
+[conversion:implicit:<type>]
+[conversion:explicit:<type>]
+[checked-conversion:explicit:<type>]
+[get:<member>]
+[set:<member>]
+[init:<member>]
+[add:<member>]
+[remove:<member>]
+[explicit:<fully-qualified-interface-member>]
+```
+
+Supported operator tokens are:
+
+```text
++  -  !  ~  ++  --  true  false  *  /  %  &  |  ^
+<<  >>  >>>  ==  !=  <  >  <=  >=
++=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>=  >>>=
+```
+
+Source-only synthetic forms are:
+
+```text
+Game::Player::Run().<lambda#1>
+Game::Player::Run().<anonymous-method#2>
+Game::Player::<initializer:Score>
+global::Program::<top-level-statements>
+```
+
+Queries may use `<lambda#*>` or `<anonymous-method#*>`. A concrete ordinal is a
+positive integer. Lambda and anonymous-method nodes share source-order ordinals
+within one immediate owner, and the counter resets for each nested owner.
+Initializer and top-level callables participate in `--kind all` and direct
+paths but add no new kind value. Compiler-only callables without a supported
+source declaration receive no invented query name.
+
+## 34.4 Typed condition families
+
+| Category | Concise glob | Literal | Regex | Case policy |
+| --- | --- | --- | --- | --- |
+| namespace | `--namespace` | `--namespace-literal` | `--namespace-regex` | `--namespace-case strict|ignore` |
+| type | `--type` | `--type-literal` | `--type-regex` | `--type-case strict|ignore` |
+| method | `--method` | `--method-literal` | `--method-regex` | `--method-case strict|ignore` |
+| file | `--file` | `--file-literal` | `--file-regex` | `--file-case strict|ignore` |
+| include source | `--include` | `--include-literal` | `--include-regex` | `--source-case strict|ignore` |
+| exclude source | `--exclude` | `--exclude-literal` | `--exclude-regex` | `--source-case strict|ignore` |
+
+Case defaults to `strict` independently for each category. Duplicate case
+options, invalid values, invalid regex, or regex timeout abort the query without
+a partial payload. The legacy bare `--regex` and `--ignore-case` options are
+removed and rejected.
+
+Namespace/type/method/file glob and literal conditions are structural. A `*`
+inside one component matches characters without crossing its boundary; a whole
+`*` component matches exactly one level. A whole `**` component matches zero or
+more levels, while an embedded `**` is equivalent to `*`. Method glob respects
+balanced signature punctuation. Method literal retains omission semantics.
+Method regex evaluates the whole canonical executable text. File conditions
+use stored forward-slash paths. Source literal, glob, and regex are unanchored
+substring matches over normalized source and may span supported newline forms.
+
+Repeated conditions in one category are ordered OR alternatives, evaluated in
+CLI order with short-circuiting. Different categories are ANDed. Repeated
+includes are ANDed, and any matching exclude rejects a row. All
+declaration-scoped file/source conditions must pass on the same physical
+declaration; passing declarations project to one logical result.
+
+`--kind all|method|lambda` applies to direct executable category.
+`--async-status all|async|sync` applies to direct async status.
+`symbol list --async-involved` is the distinct transitive-involvement filter.
+
+## 34.5 Logical symbol and declaration model
+
+`symbols` stores one logical semantic identity. `symbol_declarations` stores
+physical source locations and normalized source. The exact declaration-role
+domain is:
+
+```text
+ordinary | partial-definition | partial-implementation
+```
+
+A partial definition/implementation pair creates one logical row and two role
+rows. The implementation is preferred when present; otherwise the definition
+or ordinary declaration is preferred. A definition-only partial is valid.
+Role order is ordinary, partial-definition, partial-implementation.
+
+Logical stable keys are independent of preferred declaration, formatted style,
+partial role, and machine-specific rooted paths. When semantic identity alone
+cannot distinguish a source callable (for example a local, anonymous, or
+synthetic node), a logical key may use only stored relative path, span, and
+ordinal discriminators. Declaration keys add their stored relative document
+identity, span, and role. Calls, candidates, relations, interface bindings,
+async links, graph roots, and cardinality reference logical IDs. A partial pair
+is never two candidates and never creates a partial self relation.
+
+`definition` returns all applicable physical declaration rows. Ordinary symbol
+and graph output uses the preferred declaration for location/source projection.
+Source search may return multiple passing declarations while keeping their one
+logical symbol identity. Table/text declaration records use a dedicated role
+column, and declaration-unit JSON uses `declarationRole` with exactly the three
+values above; the role is never appended to the symbol path.
+
+## 34.6 Command and root-selection contract
+
+`docs/CLI.md` and verbose help contain the exact accepted-option matrix. The
+command-level selection rules are:
+
+| Command | Selector/cardinality |
+| --- | --- |
+| `symbol find [selector]` | selector or explicit condition/kind/async required; empty match succeeds; optional `--require-single` |
+| `symbol list` | no selector; empty match succeeds; optional conditions |
+| `source search` | no selector; explicit condition/kind/async required; empty match succeeds |
+| `source show <selector>` | exactly one logical source-backed root |
+| `definition <selector>` | one or more roots; optional `--require-single` |
+| `definition --at <path:line:column>` | position mode; no selector/root conditions |
+| `references`, `callers`, `callees` | selector required; one or more roots; optional `--require-single` |
+| `overrides` | selector required; method roots only; optional `--require-single` |
+| `async tree`, `callers tree` | exactly one logical source-backed root |
+| `conditions` | no selector or root conditions |
+
+After terminal help handling, execution order is:
+
+```text
+parse CLI
+-> validate command option scope
+-> open/check schema and profile
+-> parse selector and compile typed conditions
+-> filter declarations and select logical roots
+-> apply kind/direct-async/generated root filters
+-> de-duplicate logical roots
+-> cardinality check
+-> optional exact override expansion
+-> relation/graph traversal
+-> canonical sort
+-> shared formatting
+-> flush and atomic output commit
+```
+
+Root conditions do not remove secondary relation or graph results. No traversal
+starts before filtering, partial normalization, and cardinality. Valid empty
+list/search queries return exit 0. Required-root commands report a query error
+for zero roots. `source show` and graph commands also report a query error for
+ambiguity; flat multi-root commands accept ambiguity unless `--require-single`
+is present, in which case a post-filter count other than one returns exit 5.
+
+`--include-overrides` is limited to `symbol find`, `definition`, `references`,
+`callers`, and `callees`. It requires one exact wildcard-free method selector
+and rejects condition-only, lambda/synthetic, initializer, and top-level roots.
+Expansion occurs after root filtering/cardinality and before command work.
+
+## 34.7 Schema version 5 invariants
+
+The exact DDL is `docs/DB_SCHEMA.md`. Version 5 contains:
+
+```text
+schema_info
+analysis_profiles
+index_runs
+projects
+documents
+symbols
+method_parameters
+symbol_declarations
+calls
+call_candidates
+symbol_relations
+interface_method_bindings
+conditional_symbols_used
+```
+
+Semantic path identity/display components live in dedicated `symbols` columns;
+the removed legacy `fully_qualified_name` and `display_name` columns are not
+part of version 5. Source span/text/hash live in `symbol_declarations`, not the
+logical row. `declaration_role` has a database check constraint for numeric
+values 1, 2, and 3. Logical identity is unique per profile, declaration identity
+is unique per key and location/role, and all call/relation endpoints use logical
+symbol foreign keys.
+
+Snapshot validation rejects rooted stored paths, invalid anchors, duplicate or
+split logical identities, invalid declaration roles/preference, declaration
+endpoints used as logical endpoints, and partial self relations. Saving is one
+transaction followed by foreign-key validation; failure rolls back without
+replacing the prior valid snapshot.
+
+There is no old-schema migration, auto-deletion, or fallback. Querying or
+indexing schema version 4 or older fails before modifying it. `--rebuild` does
+not authorize deletion. The recovery is to delete or rename the old database,
+or choose a new `--db` path, and then explicitly run `csindex index`.
+
+## 34.8 Portable persisted paths
+
+All persisted project, document, declaration, and source-key paths are
+canonical forward-slash paths relative to one storage root. The run stores
+`input_root = '.'` and an `index_root_anchor` relative from the database
+directory to that root. The default `.csindex/index.sqlite` layout has anchor
+`..`; a custom database stores its corresponding relative anchor.
+
+Linked sources may use normalized leading `../`. The database directory,
+storage root, and persisted source locations must share a Windows drive or UNC
+server/share. A cross-volume/share case fails in preflight before SQLite
+mutation; this is a one-root model, not a multi-root fallback.
+
+The default query base is `FullPath(database directory + index_root_anchor)`.
+`--base-dir` overrides that base for the current read without changing any
+stored value. `--path-style absolute|relative` controls reconstructed display.
+Rooted and effective-base-relative `definition --at` locations map to the same
+stored document identity. Relocation works when the database/source relative
+layout is preserved, or when `--base-dir` identifies the new root.
+
+Physical source files are opened lazily. A missing or unreadable reconstructed
+source is reported only by a command that must read it; formatting a stored
+location alone does not require file existence.
+
+## 34.9 Presentation, ordering, help, and output
+
+`--symbol-path-style csharp|explicit` selects symbol formatting and
+`--short-names` is display-only. Table, JSON, tree, line, and Mermaid output use
+the same formatters. Canonical ordering uses semantic identity plus stored
+relative location, never formatted text or reconstructed rooted paths. Style,
+short names, path style, base override, case mode, and output format therefore
+cannot reorder an equivalent result. Trees are parent-first; declaration rows
+then use role, stored path, and source position.
+
+Normal help is concise. For global scope and every recognized command,
+`--help --verbose` and `--help-verbose` are byte-identical and order-independent.
+Help is terminal before required positionals, database/source opening, or output
+creation, but tokenization and allowed-option scope are validated first. An
+unknown option/command is still a usage error. `index --verbose` without help
+retains runtime progress meaning; query `--verbose` is help-only.
+
+Without `--output-file`, payload goes to stdout and diagnostics to stderr.
+File output renders to an owned same-directory temporary file, flushes, checks
+cancellation, and atomically commits. Query, regex, path, formatting, flush,
+cancellation, replace, or commit failure preserves any existing destination and
+removes owned temporary files where possible. Help never creates a destination.
+
+Cancellation is checked during candidate processing, matching, traversal,
+ordering, formatting, flush, and immediately before commit. No failure exposes
+a partial committed payload.
+
+## 34.10 Exit categories
+
+```text
+0  success (including valid empty list/search results)
+2  invalid arguments or query
+3  input, analysis, cancellation, source, or output failure
+4  SQLite or incompatible-schema failure
+5  --require-single failure
+```
+
+Exit 2 includes command-inapplicable options, removed matcher switches, legacy
+or malformed path grammar, invalid generic/anonymous/glob/regex/case/style
+input, and forbidden combinations. A required-root zero match and single-root
+ambiguity remain query errors; exit 5 is reserved for the explicit
+`--require-single` contract.
