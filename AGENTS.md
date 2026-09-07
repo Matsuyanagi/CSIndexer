@@ -174,37 +174,60 @@ Stop and request direction when requirements conflict, a material product or
 architecture decision is unresolved, permissions are missing, or the next
 action would be destructive, externally visible, or materially expand scope.
 
-## Subagent Model Fallback
+## Subagent Model Selection and Usage-Limit Recovery
 
-For bounded implementation tasks, use the `implementer` custom agent.
+A model-selection cycle is one uninterrupted execution attempt. A logical task
+may span multiple cycles when execution is stopped by a model usage limit and
+later resumed.
 
-Model-selection procedure:
+For each model-selection cycle:
 
 1. First attempt to spawn `implementer` with `gpt-5.6-luna` and `max`
    reasoning effort.
-2. If and only if the spawn fails because Luna is unavailable, unsupported,
-   disabled, or not included in the current account or workspace entitlement,
-   retry the same task once with `gpt-5.6-terra` and `max` reasoning effort.
-3. Preserve the exact same task brief, constraints, acceptance criteria,
-   interfaces, and report contract when retrying.
-4. Record that the fallback occurred and include the original availability
-   error in the final report.
-5. Do not retry Luna repeatedly during the same task after an availability
-   failure.
+2. If and only if that attempt fails because Luna is unavailable, unsupported,
+   disabled, excluded from the current entitlement, or blocked by an explicit
+   usage-limit/credit-exhaustion error, retry the same bounded task once with
+   `gpt-5.6-terra` and `max` reasoning effort.
+3. Preserve the exact task brief, constraints, acceptance criteria, interfaces,
+   working tree, and report contract when retrying.
+4. Record the fallback and the original availability error in the task ledger
+   and final report.
+5. Do not retry Luna or Terra repeatedly within the same model-selection cycle.
+
+### Usage-limit recovery boundary
+
+A new model-selection cycle begins when all of the following are true:
+
+- execution was previously stopped and yielded back to the user because of an
+  explicit model usage-limit or credit-exhaustion error;
+- the previous subagent is no longer running; and
+- a later user turn or a newly started Codex session asks to resume the work.
+
+At this recovery boundary:
+
+1. Retry `gpt-5.6-luna` with `max` reasoning effort first, even when Luna failed
+   earlier in the same logical task.
+2. Resume from the existing worktree, partial edits, test evidence, ledger, and
+   task brief. Do not restart completed work.
+3. If Luna is still unavailable, retry `gpt-5.6-terra` once under the normal
+   fallback rule.
+4. If both attempts fail again, report the new errors and stop or follow an
+   explicitly documented higher-model escalation rule. Do not create an
+   automatic retry loop.
+
+An internal subagent failure does not create a recovery boundary while the
+primary agent is still actively continuing the task. The boundary applies only
+after execution was actually stopped or yielded because no permitted model
+remained available.
 
 Do not treat the following as model-availability failures:
 
-- Permission or sandbox denial
-- Invalid agent configuration
-- Missing files or dependencies
-- Test or build failure
-- Implementation difficulty
-- Context or requirements ambiguity
+- permission or sandbox denial;
+- invalid agent configuration;
+- missing files or dependencies;
+- test or build failure;
+- implementation difficulty;
+- context or requirements ambiguity.
 
 Handle those failures according to their actual cause instead of switching
 models.
-
-If explicit model selection is unavailable in the current client, spawn
-`implementer` without a model override. The configured default
-`gpt-5.6-terra` will then be used.
-
