@@ -1713,6 +1713,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 pending.Push(implementation);
             }
 
+            if (current.ReducedFrom is { } reducedFrom)
+            {
+                pending.Push(reducedFrom);
+            }
+
             var original = current.OriginalDefinition;
             if (!SymbolEqualityComparer.Default.Equals(original, current))
             {
