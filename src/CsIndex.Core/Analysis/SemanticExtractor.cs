@@ -1342,16 +1342,23 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-    private static DeclarationRole GetDeclarationRole(
+    private DeclarationRole GetDeclarationRole(
         IMethodSymbol method,
         BaseMethodDeclarationSyntax declaration)
     {
         if (method.PartialDefinitionPart is not null)
         {
-            return DeclarationRole.PartialImplementation;
+            return IsCompilationOnlySourceSymbol(method.PartialDefinitionPart)
+                ? DeclarationRole.Ordinary
+                : DeclarationRole.PartialImplementation;
         }
 
-        if (method.PartialImplementationPart is not null ||
+        if (method.PartialImplementationPart is not null)
+        {
+            return DeclarationRole.PartialDefinition;
+        }
+
+        if (
             declaration.Modifiers.Any(modifier => modifier.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PartialKeyword)) &&
             declaration.Body is null &&
             declaration.ExpressionBody is null)
@@ -1360,6 +1367,26 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         }
 
         return DeclarationRole.Ordinary;
+    }
+
+    private bool IsCompilationOnlySourceSymbol(ISymbol symbol)
+    {
+        var hasSourceLocation = false;
+        foreach (var location in symbol.Locations)
+        {
+            if (!location.IsInSource || location.SourceTree is not { } sourceTree)
+            {
+                continue;
+            }
+
+            hasSourceLocation = true;
+            if (!_compilationOnlySourceTrees.Contains(sourceTree))
+            {
+                return false;
+            }
+        }
+
+        return hasSourceLocation;
     }
 
     private void AddDeclaration(
@@ -1555,13 +1582,16 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return logicalKey;
         }
 
+        var containingKey = normalized.ContainingType is { } containingType
+            ? EnsureType(containingType, sourceProjectKey)
+            : null;
         var data = _canonicalizer.CreateMethod(normalized, sourceProjectKey) with
         {
+            ContainingSymbolKey = containingKey,
             AsyncRole = AsyncSymbolClassifier.Classify(
                 normalized,
                 _currentCompilation ?? _projectStates[0].Compilation),
         };
-        EnsureType(normalized.ContainingType, sourceProjectKey);
         UpsertSymbol(data);
         return data.StableKey;
     }
@@ -1576,11 +1606,13 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return sourceKey;
         }
 
-        var data = _canonicalizer.CreateType(normalized, sourceProjectKey);
-        if (normalized.ContainingType is not null)
+        var containingKey = normalized.ContainingType is { } containingType
+            ? EnsureType(containingType, sourceProjectKey)
+            : null;
+        var data = _canonicalizer.CreateType(normalized, sourceProjectKey) with
         {
-            EnsureType(normalized.ContainingType, sourceProjectKey);
-        }
+            ContainingSymbolKey = containingKey,
+        };
 
         UpsertSymbol(data);
         return data.StableKey;
@@ -1596,12 +1628,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private string? ResolveSourceProjectKey(ISymbol symbol)
     {
-        var normalized = NormalizeSourceSymbol(symbol);
-        if (HasOnlyCompilationOnlySourceLocations(normalized))
+        if (HasOnlyCompilationOnlySourceLocations(symbol))
         {
             return null;
         }
 
+        var normalized = NormalizeSourceSymbol(symbol);
         if (_currentProjectState is { } currentProjectState)
         {
             if (ReferenceEquals(normalized.ContainingAssembly, currentProjectState.Compilation.Assembly))
@@ -1631,21 +1663,62 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private bool HasOnlyCompilationOnlySourceLocations(ISymbol symbol)
     {
         var hasSourceLocation = false;
-        foreach (var location in symbol.Locations)
+        foreach (var sourceSymbol in EnumerateSourceDispositionSymbols(symbol))
         {
-            if (!location.IsInSource || location.SourceTree is not { } sourceTree)
+            foreach (var location in sourceSymbol.Locations)
             {
-                continue;
-            }
+                if (!location.IsInSource || location.SourceTree is not { } sourceTree)
+                {
+                    continue;
+                }
 
-            hasSourceLocation = true;
-            if (!_compilationOnlySourceTrees.Contains(sourceTree))
-            {
-                return false;
+                hasSourceLocation = true;
+                if (!_compilationOnlySourceTrees.Contains(sourceTree))
+                {
+                    return false;
+                }
             }
         }
 
         return hasSourceLocation;
+    }
+
+    private static IEnumerable<ISymbol> EnumerateSourceDispositionSymbols(ISymbol symbol)
+    {
+        if (symbol is not IMethodSymbol method)
+        {
+            yield return symbol;
+            yield break;
+        }
+
+        var pending = new Stack<IMethodSymbol>();
+        var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        pending.Push(method);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            if (!seen.Add(current))
+            {
+                continue;
+            }
+
+            yield return current;
+            if (current.PartialDefinitionPart is { } definition)
+            {
+                pending.Push(definition);
+            }
+
+            if (current.PartialImplementationPart is { } implementation)
+            {
+                pending.Push(implementation);
+            }
+
+            var original = current.OriginalDefinition;
+            if (!SymbolEqualityComparer.Default.Equals(original, current))
+            {
+                pending.Push(original);
+            }
+        }
     }
 
     private string? GetReferencedProjectKey(
