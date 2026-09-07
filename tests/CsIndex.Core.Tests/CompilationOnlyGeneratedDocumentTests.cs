@@ -151,14 +151,21 @@ public sealed class CompilationOnlyGeneratedDocumentTests
 
         var consumer = Assert.Single(snapshot.Symbols.Values, symbol => symbol.Name == "Run");
         var value = Assert.Single(snapshot.Symbols.Values, symbol => symbol.Name == "Value");
+        var helper = Assert.Single(snapshot.Symbols.Values, symbol => symbol.Name == "Helper");
         Assert.NotNull(consumer.PreferredDeclarationKey);
+        Assert.Null(value.ProjectKey);
         Assert.Null(value.PreferredDeclarationKey);
         Assert.Null(value.SourceDocumentKey);
+        Assert.Null(helper.ProjectKey);
         Assert.DoesNotContain(snapshot.Symbols.Values, symbol => symbol.Name == "Hidden");
         Assert.Contains(snapshot.Calls, call =>
             call.CallerSymbolKey == consumer.StableKey && call.CalleeDefinitionKey == value.StableKey);
         Assert.DoesNotContain(snapshot.Calls, call => call.CallerSymbolKey == value.StableKey);
         Assert.Single(snapshot.Documents);
+        Assert.Equal(1, snapshot.DocumentsExcluded);
+        Assert.Single(
+            snapshot.Warnings,
+            warning => warning.Contains("Helper.generated.cs", StringComparison.OrdinalIgnoreCase));
         Assert.All(snapshot.Declarations.Values, declaration =>
             Assert.DoesNotContain("Helper.generated.cs", declaration.DocumentKey, StringComparison.OrdinalIgnoreCase));
     }
@@ -196,6 +203,12 @@ public sealed class CompilationOnlyGeneratedDocumentTests
             "Helper.cs",
             indexedSource,
             changedGeneratedSource);
+        var changedDocumentNameFingerprint = await AnalyzeProjectFingerprintAsync(
+            'Y',
+            @"packages\generator\Helper.generated.cs",
+            "RenamedHelper.cs",
+            indexedSource,
+            generatedSource);
         var fileNameGenerationFingerprint = await AnalyzeProjectFingerprintAsync(
             'Y',
             @"packages\generator\Helper.generated.cs",
@@ -211,6 +224,7 @@ public sealed class CompilationOnlyGeneratedDocumentTests
 
         Assert.Equal(firstRelocatedFingerprint, secondRelocatedFingerprint);
         Assert.NotEqual(firstRelocatedFingerprint, changedContentFingerprint);
+        Assert.NotEqual(firstRelocatedFingerprint, changedDocumentNameFingerprint);
         Assert.NotEqual(fileNameGenerationFingerprint, generatedDirectoryFingerprint);
 
         var repeated = await AnalyzeProjectFingerprintTwiceAsync(

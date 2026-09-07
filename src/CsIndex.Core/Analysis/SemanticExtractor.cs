@@ -19,6 +19,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 {
     private readonly Dictionary<SourceSymbolLookupKey, string> _sourceSymbolKeys = [];
     private readonly Dictionary<SyntaxTree, string> _sourceTreeProjectKeys = [];
+    private readonly HashSet<SyntaxTree> _compilationOnlySourceTrees =
+        new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, SymbolData> _declarationProjectionData = [];
     private readonly Dictionary<string, AsyncRole> _declarationAsyncRoles = [];
     private readonly Dictionary<string, AsyncRole> _bodyAsyncRoles = [];
@@ -98,6 +100,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         _projectStates.Clear();
         _sourceSymbolKeys.Clear();
         _sourceTreeProjectKeys.Clear();
+        _compilationOnlySourceTrees.Clear();
         _declarationProjectionData.Clear();
         _declarationAsyncRoles.Clear();
         _bodyAsyncRoles.Clear();
@@ -111,6 +114,19 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             cancellationToken.ThrowIfCancellationRequested();
             var compilation = await project.GetCompilationAsync(cancellationToken)
                 ?? throw new InvalidOperationException($"Compilation could not be created: {project.Name}");
+            var compilationOnlyDocumentIds = documentSelection
+                .GetCompilationOnly(project)
+                .Select(document => document.DocumentId)
+                .ToHashSet();
+            foreach (var syntaxTree in compilation.SyntaxTrees)
+            {
+                if (project.GetDocumentId(syntaxTree) is { } documentId &&
+                    compilationOnlyDocumentIds.Contains(documentId))
+                {
+                    _compilationOnlySourceTrees.Add(syntaxTree);
+                }
+            }
+
             var diagnostics = compilation.GetDiagnostics(cancellationToken);
             var errors = diagnostics.Count(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
             var warnings = diagnostics.Count(diagnostic => diagnostic.Severity == DiagnosticSeverity.Warning);
@@ -1581,6 +1597,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private string? ResolveSourceProjectKey(ISymbol symbol)
     {
         var normalized = NormalizeSourceSymbol(symbol);
+        if (HasOnlyCompilationOnlySourceLocations(normalized))
+        {
+            return null;
+        }
+
         if (_currentProjectState is { } currentProjectState)
         {
             if (ReferenceEquals(normalized.ContainingAssembly, currentProjectState.Compilation.Assembly))
@@ -1605,6 +1626,26 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         }
 
         return TryGetSourceTreeProjectKey(normalized, out var projectKey) ? projectKey : null;
+    }
+
+    private bool HasOnlyCompilationOnlySourceLocations(ISymbol symbol)
+    {
+        var hasSourceLocation = false;
+        foreach (var location in symbol.Locations)
+        {
+            if (!location.IsInSource || location.SourceTree is not { } sourceTree)
+            {
+                continue;
+            }
+
+            hasSourceLocation = true;
+            if (!_compilationOnlySourceTrees.Contains(sourceTree))
+            {
+                return false;
+            }
+        }
+
+        return hasSourceLocation;
     }
 
     private string? GetReferencedProjectKey(
