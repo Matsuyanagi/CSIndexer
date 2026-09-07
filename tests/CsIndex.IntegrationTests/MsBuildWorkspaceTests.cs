@@ -91,5 +91,35 @@ public sealed class MsBuildWorkspaceTests
                 PathNormalizer.RelativePath(input.RootPath, reporter.FilePath!),
                 prepared.Mappings.GetDocumentPath(reporter));
         }
+
+        var result = await coordinator.AnalyzeAsync(
+            prepared,
+            options,
+            [],
+            RequestHasher.Build(input, options),
+            cancellationToken);
+        if (crossVolume)
+        {
+            Assert.DoesNotContain(
+                result.Snapshot.Documents,
+                document => document.NormalizedPath.Contains(
+                    "DefaultRunnerReporters.cs",
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.True(result.Snapshot.DocumentsExcluded >= prepared.DocumentsExcluded);
+            Assert.Contains(
+                result.Snapshot.Warnings,
+                warning => warning.Contains(
+                    "DefaultRunnerReporters.cs",
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            var reporterDocument = Assert.Single(
+                result.Snapshot.Documents,
+                document => document.NormalizedPath.EndsWith(
+                    "DefaultRunnerReporters.cs",
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.True(reporterDocument.IsGenerated);
+        }
     }
 }

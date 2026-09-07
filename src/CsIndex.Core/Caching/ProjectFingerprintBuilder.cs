@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using CsIndex.Core.Analysis;
@@ -43,6 +44,7 @@ public sealed class ProjectFingerprintBuilder
         Project project,
         string? storedProjectPath,
         AnalysisPathMappings paths,
+        AnalysisDocumentSelection documentSelection,
         CancellationToken cancellationToken)
     {
         using var aggregate = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -62,6 +64,7 @@ public sealed class ProjectFingerprintBuilder
         await AppendMetadataReferencesAsync(aggregate, project, cancellationToken);
 
         foreach (var document in project.Documents
+                     .Where(documentSelection.IsIndexable)
                      .Where(document => document.FilePath is not null)
                      .OrderBy(paths.GetDocumentPath, StringComparer.OrdinalIgnoreCase))
         {
@@ -69,6 +72,20 @@ public sealed class ProjectFingerprintBuilder
             Append(aggregate, paths.GetDocumentPath(document));
             var text = await document.GetTextAsync(cancellationToken);
             aggregate.AppendData(HashUtilities.Sha256(text.ToString()));
+        }
+
+        foreach (var document in documentSelection.GetCompilationOnly(project)
+                     .OrderBy(item => item.Name, StringComparer.Ordinal)
+                     .ThenBy(item => item.GenerationKind)
+                     .ThenBy(
+                         item => Convert.ToHexString(item.ContentHash.AsSpan()),
+                         StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Append(aggregate, "compilation-only-generated");
+            Append(aggregate, document.Name);
+            Append(aggregate, ((int)document.GenerationKind).ToString(CultureInfo.InvariantCulture));
+            aggregate.AppendData(document.ContentHash.AsSpan());
         }
 
         return aggregate.GetHashAndReset();

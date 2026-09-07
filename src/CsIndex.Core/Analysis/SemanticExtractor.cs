@@ -44,14 +44,28 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         var paths = IndexPathResolver.CreateForIndex(
             Path.Combine(storageRoot, ".csindex", "index.sqlite"),
             storageRoot);
+        var documentSelection = await AnalysisDocumentSelection.CreateAsync(
+            storageRoot,
+            projects,
+            cancellationToken);
         var mappings = await AnalysisPathMappings.CreateAsync(
             storageRoot,
             paths,
             projects,
+            documentSelection,
             cancellationToken);
         snapshot.InputRoot = ".";
         snapshot.IndexRootAnchor = paths.IndexRootAnchor;
-        await ExtractAsync(projects, mappings, snapshot, includeDiagnostics, cancellationToken);
+        snapshot.Warnings.AddRange(documentSelection.Warnings);
+        snapshot.DocumentsExcluded = checked(
+            snapshot.DocumentsExcluded + documentSelection.CompilationOnlyCount);
+        await ExtractAsync(
+            projects,
+            mappings,
+            documentSelection,
+            snapshot,
+            includeDiagnostics,
+            cancellationToken);
     }
 
     public Task ExtractAsync(
@@ -65,6 +79,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         return ExtractAsync(
             prepared.Projects,
             prepared.Mappings,
+            prepared.DocumentSelection,
             snapshot,
             includeDiagnostics,
             cancellationToken);
@@ -73,6 +88,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private async Task ExtractAsync(
         IReadOnlyList<Project> projects,
         AnalysisPathMappings mappings,
+        AnalysisDocumentSelection documentSelection,
         IndexSnapshot snapshot,
         bool includeDiagnostics,
         CancellationToken cancellationToken)
@@ -129,6 +145,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     project,
                     projectPath,
                     mappings,
+                    documentSelection,
                     cancellationToken),
             };
             snapshot.Projects.Add(projectData);
@@ -141,7 +158,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     diagnostic.Id is "CS0012" or "CS0234" or "CS0246"),
             };
             _projectStates.Add(state);
-            await ExtractProjectDocumentsAndDeclarationsAsync(state, mappings, cancellationToken);
+            await ExtractProjectDocumentsAndDeclarationsAsync(
+                state,
+                mappings,
+                documentSelection,
+                cancellationToken);
         }
 
         foreach (var state in _projectStates)
@@ -156,6 +177,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private async Task ExtractProjectDocumentsAndDeclarationsAsync(
         ProjectAnalysisState projectState,
         AnalysisPathMappings mappings,
+        AnalysisDocumentSelection documentSelection,
         CancellationToken cancellationToken)
     {
         _currentCompilation = projectState.Compilation;
@@ -164,6 +186,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             ? mappings.RuntimeStorageRoot
             : Path.GetDirectoryName(projectState.Project.FilePath)!;
         foreach (var document in projectState.Project.Documents
+                     .Where(documentSelection.IsIndexable)
                      .OrderBy(
                          document => document.FilePath is null ? document.Name : mappings.GetDocumentPath(document),
                          StringComparer.OrdinalIgnoreCase))
