@@ -335,6 +335,42 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task QueryRepository_HandlesLargeIdListsWithoutSQLiteVariableLimit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+
+        await index.SaveAsync(CreateSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var realSymbol = Assert.Single(await repository.FindSymbolCandidatesAsync(
+            profile.Id,
+            name: "Caller",
+            kind: IndexedSymbolKind.Method,
+            cancellationToken: cancellationToken));
+        var ids = Enumerable.Range(1, 32765)
+            .Select(static value => -(long)value)
+            .Prepend(realSymbol.Id)
+            .ToArray();
+        Assert.Equal(32766, ids.Length);
+
+        var declarations = await repository.GetDeclarationsAsync(
+            profile.Id,
+            ids,
+            includeSourceText: false,
+            cancellationToken);
+
+        var declaration = Assert.Single(declarations);
+        Assert.Equal(realSymbol.Id, declaration.SymbolId);
+
+        var symbols = await repository.GetSymbolsByIdsAsync(profile.Id, ids, cancellationToken);
+
+        Assert.Equal(realSymbol.Id, Assert.Single(symbols).Id);
+    }
+
+    [Fact]
     public async Task Save_RestoresAsyncAnalysisFromDatabase()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

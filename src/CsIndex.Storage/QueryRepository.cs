@@ -1258,14 +1258,16 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
 
     private static string AddIdParameters(SqliteCommand command, IReadOnlyList<long> ids)
     {
-        var names = new string[ids.Count];
-        for (var index = 0; index < ids.Count; index++)
+        const string baseParameterName = "$id_list";
+        var parameterName = baseParameterName;
+        var suffix = 0;
+        while (command.Parameters.Contains(parameterName))
         {
-            names[index] = $"$id{index}";
-            command.Parameters.AddWithValue(names[index], ids[index]);
+            parameterName = $"{baseParameterName}{++suffix}";
         }
 
-        return string.Join(',', names);
+        command.Parameters.AddWithValue(parameterName, JsonSerializer.Serialize(ids));
+        return $"SELECT CAST(value AS INTEGER) FROM json_each({parameterName})";
     }
 
     private static string AddMethodSearchSeedParameters(
