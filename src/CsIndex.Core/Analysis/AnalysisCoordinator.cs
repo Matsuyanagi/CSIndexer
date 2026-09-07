@@ -19,6 +19,8 @@ public sealed class AnalysisCoordinator(
 
     internal Action? AfterPathValidationItem { get; set; }
 
+    internal Action? AfterDocumentClassificationItem { get; set; }
+
     private AnalysisCoordinator(
         InputModeResolver inputModeResolver,
         WorkspaceLoader workspaceLoader,
@@ -78,13 +80,19 @@ public sealed class AnalysisCoordinator(
         try
         {
             loaded = await _loadWorkspaceAsync(input, options, cancellationToken);
+            var documentSelection = await AnalysisDocumentSelection.CreateAsync(
+                input.RootPath,
+                loaded.Projects,
+                cancellationToken,
+                AfterDocumentClassificationItem);
             var mappings = await AnalysisPathMappings.CreateAsync(
                 input.RootPath,
                 paths,
                 loaded.Projects,
+                documentSelection,
                 cancellationToken,
                 AfterPathValidationItem);
-            return new PreparedAnalysis(input, paths, loaded, mappings);
+            return new PreparedAnalysis(input, paths, loaded, documentSelection, mappings);
         }
         catch
         {

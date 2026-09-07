@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Collections.Immutable;
 using CsIndex.Core.Input;
 using CsIndex.Core.Model;
 using Microsoft.CodeAnalysis;
@@ -10,16 +11,22 @@ public sealed class PreparedAnalysis : IDisposable
     private readonly ResolvedInput _input;
     private readonly IndexPathResolver _paths;
     private LoadedWorkspace? _loadedWorkspace;
+    private readonly ImmutableArray<string> _warnings;
+    private readonly int _documentsExcluded;
 
     internal PreparedAnalysis(
         ResolvedInput input,
         IndexPathResolver paths,
         LoadedWorkspace loadedWorkspace,
+        AnalysisDocumentSelection documentSelection,
         AnalysisPathMappings mappings)
     {
         _input = input;
         _paths = paths;
         _loadedWorkspace = loadedWorkspace;
+        DocumentSelection = documentSelection;
+        _warnings = loadedWorkspace.Warnings.Concat(documentSelection.Warnings).ToImmutableArray();
+        _documentsExcluded = checked(loadedWorkspace.DocumentsExcluded + documentSelection.CompilationOnlyCount);
         Mappings = mappings;
     }
 
@@ -64,7 +71,7 @@ public sealed class PreparedAnalysis : IDisposable
         get
         {
             ThrowIfDisposed();
-            return _loadedWorkspace!.Warnings;
+            return _warnings;
         }
     }
 
@@ -73,9 +80,11 @@ public sealed class PreparedAnalysis : IDisposable
         get
         {
             ThrowIfDisposed();
-            return _loadedWorkspace!.DocumentsExcluded;
+            return _documentsExcluded;
         }
     }
+
+    internal AnalysisDocumentSelection DocumentSelection { get; }
 
     internal AnalysisPathMappings Mappings { get; }
 
@@ -115,8 +124,30 @@ internal sealed class AnalysisPathMappings
         CancellationToken cancellationToken,
         Action? afterPathValidationItem = null)
     {
+        var documentSelection = await AnalysisDocumentSelection.CreateAsync(
+            storageRoot,
+            projects,
+            cancellationToken);
+        return await CreateAsync(
+            storageRoot,
+            paths,
+            projects,
+            documentSelection,
+            cancellationToken,
+            afterPathValidationItem);
+    }
+
+    internal static async Task<AnalysisPathMappings> CreateAsync(
+        string storageRoot,
+        IndexPathResolver paths,
+        IReadOnlyList<Project> projects,
+        AnalysisDocumentSelection documentSelection,
+        CancellationToken cancellationToken,
+        Action? afterPathValidationItem = null)
+    {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(projects);
+        ArgumentNullException.ThrowIfNull(documentSelection);
 
         var projectPaths = new Dictionary<ProjectId, string>();
         var documentPaths = new Dictionary<DocumentId, string>();
@@ -147,6 +178,11 @@ internal sealed class AnalysisPathMappings
             foreach (var document in project.Documents)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!documentSelection.IsIndexable(document))
+                {
+                    continue;
+                }
+
                 if (document.FilePath is not { } documentPath)
                 {
                     continue;
