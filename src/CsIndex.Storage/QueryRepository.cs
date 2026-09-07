@@ -528,7 +528,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.CommandText = $"""
             WITH RECURSIVE
             input_seeds(root_method_id, receiver_type_id) AS (
-                VALUES {seedRows}
+                {seedRows}
             ),
             seeds(root_method_id, receiver_type_id) AS (
                 SELECT input.root_method_id, input.receiver_type_id
@@ -618,7 +618,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.CommandText = $"""
             WITH RECURSIVE
             input_seeds(interface_method_id, interface_scope_type_id) AS (
-                VALUES {seedRows}
+                {seedRows}
             ),
             seeds(interface_method_id, interface_scope_type_id) AS (
                 SELECT input.interface_method_id, input.interface_scope_type_id
@@ -1274,34 +1274,39 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         SqliteCommand command,
         IReadOnlyList<MethodSearchSeed> seeds)
     {
-        var rows = new string[seeds.Count];
-        for (var index = 0; index < seeds.Count; index++)
-        {
-            var methodName = $"$seed_method_id{index}";
-            var receiverName = $"$seed_receiver_type_id{index}";
-            command.Parameters.AddWithValue(methodName, seeds[index].MethodId);
-            command.Parameters.AddWithValue(receiverName, seeds[index].ReceiverTypeId);
-            rows[index] = $"({methodName}, {receiverName})";
-        }
-
-        return string.Join(',', rows);
+        return AddSeedPairParameters(
+            command,
+            seeds.Select(seed => new[] { seed.MethodId, seed.ReceiverTypeId }));
     }
 
     private static string AddInterfaceSearchSeedParameters(
         SqliteCommand command,
         IReadOnlyList<InterfaceSearchSeed> seeds)
     {
-        var rows = new string[seeds.Count];
-        for (var index = 0; index < seeds.Count; index++)
+        return AddSeedPairParameters(
+            command,
+            seeds.Select(seed => new[] { seed.InterfaceMethodId, seed.InterfaceScopeTypeId }));
+    }
+
+    private static string AddSeedPairParameters(
+        SqliteCommand command,
+        IEnumerable<long[]> seedPairs)
+    {
+        const string baseParameterName = "$seed_pairs";
+        var parameterName = baseParameterName;
+        var suffix = 0;
+        while (command.Parameters.Contains(parameterName))
         {
-            var methodName = $"$seed_interface_method_id{index}";
-            var scopeName = $"$seed_interface_scope_type_id{index}";
-            command.Parameters.AddWithValue(methodName, seeds[index].InterfaceMethodId);
-            command.Parameters.AddWithValue(scopeName, seeds[index].InterfaceScopeTypeId);
-            rows[index] = $"({methodName}, {scopeName})";
+            parameterName = $"{baseParameterName}{++suffix}";
         }
 
-        return string.Join(',', rows);
+        command.Parameters.AddWithValue(parameterName, JsonSerializer.Serialize(seedPairs));
+        return $"""
+            SELECT
+                CAST(json_extract(value, '$[0]') AS INTEGER),
+                CAST(json_extract(value, '$[1]') AS INTEGER)
+            FROM json_each({parameterName})
+            """;
     }
 
     private static string AddReferenceKindClause(

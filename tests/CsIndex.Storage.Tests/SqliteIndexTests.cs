@@ -684,6 +684,48 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task ExpandOverrideMethodIdsAsync_HandlesLargeSeedListsWithoutSQLiteVariableLimit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var d1 = await GetSymbolAsync(repository, profile.Id, "D1", IndexedSymbolKind.Type, cancellationToken);
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+        var d2Play = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "D2");
+        var seeds = Enumerable.Range(1, 16380)
+            .Select(static value => new MethodSearchSeed(-value, -100_000L - value))
+            .Prepend(new MethodSearchSeed(basePlay.Id, d1.Id))
+            .ToArray();
+        Assert.Equal(16381, seeds.Length);
+        Assert.Equal(seeds.Length, seeds.Distinct().Count());
+
+        var branchMethods = await repository.ExpandOverrideMethodIdsAsync(
+            profile.Id,
+            seeds,
+            cancellationToken);
+
+        Assert.Contains(basePlay.Id, branchMethods);
+        Assert.Contains(d2Play.Id, branchMethods);
+        Assert.Equal(branchMethods.Count, branchMethods.Distinct().Count());
+    }
+
+    [Fact]
     public async Task FindInterfaceImplementationMethodIdsAsync_UsesExactInterfaceScope()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -780,6 +822,60 @@ public sealed class SqliteIndexTests
         Assert.DoesNotContain(proPlay.Id, derivedInterfaceMethods);
         Assert.DoesNotContain(gamePlay.Id, derivedInterfaceMethods);
         Assert.DoesNotContain(otherPlay.Id, derivedInterfaceMethods);
+    }
+
+    [Fact]
+    public async Task FindInterfaceImplementationMethodIdsAsync_HandlesLargeSeedListsWithoutSQLiteVariableLimit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var index = new SqliteIndex(Path.Combine(temporary.Path, "index.sqlite"));
+        await index.SaveAsync(CreateOverrideSearchSnapshot(temporary.Path), cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var interfaceType = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "IPlayable",
+            IndexedSymbolKind.Type,
+            cancellationToken);
+        var interfacePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "IPlayable");
+        var basePlay = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "Base");
+        var d2Play = await GetSymbolAsync(
+            repository,
+            profile.Id,
+            "Play",
+            IndexedSymbolKind.Method,
+            cancellationToken,
+            "D2");
+        var seeds = Enumerable.Range(1, 16380)
+            .Select(static value => new InterfaceSearchSeed(-value, -200_000L - value))
+            .Prepend(new InterfaceSearchSeed(interfacePlay.Id, interfaceType.Id))
+            .ToArray();
+        Assert.Equal(16381, seeds.Length);
+        Assert.Equal(seeds.Length, seeds.Distinct().Count());
+
+        var implementationMethods = await repository.FindInterfaceImplementationMethodIdsAsync(
+            profile.Id,
+            seeds,
+            cancellationToken);
+
+        Assert.Contains(basePlay.Id, implementationMethods);
+        Assert.Contains(d2Play.Id, implementationMethods);
+        Assert.Equal(implementationMethods.Count, implementationMethods.Distinct().Count());
     }
 
     [Fact]
