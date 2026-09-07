@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（implementation Tasks 1--13 completed; Task 14 documentation/final closure in progress）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending）
 
 ## Last Completed Work
 
@@ -38,55 +38,67 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - zero-width array-rank tokenを正規化およびseparator判定から除外した。現在はschema version 5 / `AnalysisCacheVersion = 3`で旧display path、rooted path、anonymous marker、split partial identityを含むcache reuseを防ぐ。旧DBは暗黙rebuildせず非変更で拒否する。
 - Added canonical csharp/explicit parsing and formatting, complete source-callable special segments, semantic identity ordering, typed condition compilation, root-first command orchestration, one-logical/two-declaration partial persistence, portable standard/custom DB relocation, read-only `--base-dir`, and absolute/relative path presentation.
 - Added terminal concise/verbose help for global and every recognized command; `--help --verbose` and `--help-verbose` are byte-identical and dependency-free after option-scope validation.
+- Replaced unbounded per-ID and per-search-seed SQLite parameter expansion with
+  one JSON parameter plus `json_each`, with regressions at the bundled SQLite
+  variable limit for ID lists, override seeds, and interface seeds.
 - Task 8で、上記の正式仕様、CLI契約、decision、acceptance-test mapping、status、limitationを同期した。
 - Task 9で、最終diff、format、Release build、全test、全command help、stdout/file等価性をfresh runし、下記の公式検証recordを更新した。
+- Task 14でactive documentationとhelpを同期し、82 acceptance ID、schema/path/CLI probes、spec review、quality review、post-review final gatesを完了した。
 
 ## Currently Implementing
 
-- Task 14: the focused help/document synchronization slice is complete; the
-  schema/path probes and pre-review full-solution gates are complete. Independent
-  reviews, the post-review final gate rerun, and branch closure remain pending.
+- None for this feature. Task 14 implementation, independent reviews, and
+  post-review verification are complete; only the user's branch-integration
+  choice remains.
 
 ## Next Actions
 
-1. Primary agentがTask 14のindependent reviews、post-review final gates、branch completionを実施
+1. 検証済みfeature branchのintegration方法を選択
 2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
 3. Phase 3のUnityアセンブリ復元へ着手
 
 ## Build Status
 
-Task 14 pre-review full-solution verification:
+Task 14 post-review full-solution verification:
 
 - Command: `rtk dotnet build CsIndex.sln -c Release --no-restore`
 - Result: 9 projects; 0 warnings, 0 errors
-- Date: 2026-09-01
-- Environment note: the sandboxed first attempt stopped before compilation with
-  8 `MSB4184` SDK-discovery access errors. The identical approved rerun produced
-  the successful result above.
+- Date: 2026-09-07
+- Environment note: Windows SDK discovery is denied by the sandbox on this host;
+  the identical final build ran with the approved escalation. The earlier
+  sandboxed attempt recorded only `MSB4184` access errors before compilation.
 
 ## Test Status
 
-Task 14 pre-review full-solution verification:
+Task 14 post-review full-solution verification:
 
 - Command: `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`
-- Passed: 1,176 across 4 test projects
+- Passed: 1,179 across 4 test projects
 - Failed: 0
 - Skipped: 0
 - Warnings: 0
-- Date: 2026-09-01
+- Date: 2026-09-07
 - Additional gates: `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`
   exited 0; `rtk git diff --check` exited 0.
 
-## Task 14 Focused Verification (2026-09-01)
+## Task 14 Focused Verification (final: 2026-09-07)
 
 - `VerboseHelpTests`: exit 0; 13 passed, 0 failed, 0 skipped, 0 warnings.
+- Combined 82-ID acceptance classes plus `VerboseHelpTests`: exit 0; 189
+  passed, 0 failed, 0 skipped, 0 warnings. The acceptance-only subtotal is 176.
+- SQLite variable-limit regressions for bulk IDs, override seeds, and interface
+  seeds: exit 0; 3 passed, 0 failed, 0 skipped, 0 warnings. Full Storage tests:
+  74 passed, 0 failed, 0 skipped, 0 warnings.
 - Combined `CliSymbolPathOptionMatrixTests | VerboseHelpTests | CliCommandTests`:
   exit 0; 196 passed, 0 failed, 0 skipped, 0 warnings.
 - CLI Release build: exit 0; 4 projects, 0 errors, 0 warnings.
 - `rtk git diff --check`: exit 0; no whitespace errors.
 - The documented version-5 DDL is ordinally identical to the SQL raw string in
   `SchemaMigrator.CreateVersionFiveAsync` after raw-string indentation and
-  newline normalization (9,981 characters each).
+  newline normalization (320 lines and 9,981 characters each; SHA-256
+  `C81C2A08700F1D36F4BB747196A6E61E3A915F09774C77A86DA8FBDCBD10AD5B`).
+- Independent specification and code-quality reviews both finished with zero
+  Critical, Important, or Minor findings after their fix loops.
 - The built CLI returned exit 0 and empty stderr for normal help and all three
   orderings/spellings of verbose help in global plus 14 recognized command
   scopes. The three verbose outputs were byte-identical in every scope.
