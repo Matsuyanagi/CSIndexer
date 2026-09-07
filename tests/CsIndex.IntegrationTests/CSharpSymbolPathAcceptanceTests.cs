@@ -139,7 +139,7 @@ public sealed class CSharpSymbolPathAcceptanceTests(CSharpSymbolPathAcceptanceFi
 
     [Theory]
     [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string,System.Collections.Generic.List<int?[]>>)", "System.Collections.Generic.Dictionary<string,System.Collections.Generic.List<int?[]>>")]
-    [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::RankTwo(int[,])", "int[,]" )]
+    [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::RankTwo(int[,])", "int[,]")]
     [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::Pointer(int*)", "int*")]
     [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::Tuple((int,string))", "(int,string)")]
     [InlineData("PF05", "Acceptance.Signatures.Outer<T>.Inner<U>::FunctionPointer(delegate*<int,void>)", "delegate*<int,void>")]
