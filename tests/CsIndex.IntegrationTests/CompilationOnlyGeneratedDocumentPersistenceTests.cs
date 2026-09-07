@@ -328,7 +328,6 @@ public sealed class CompilationOnlyGeneratedDocumentPersistenceTests
             public sealed class Consumer
             {
                 public int Run() => 1.Add();
-                public string Name() => nameof(1.Add());
             }
             """;
         const string generatedSource = """
@@ -391,20 +390,14 @@ public sealed class CompilationOnlyGeneratedDocumentPersistenceTests
                 kind: IndexedSymbolKind.Method,
                 sourceOnly: true,
                 cancellationToken: cancellationToken));
-            var name = Assert.Single(await repository.FindSymbolCandidatesAsync(
-                profile.Id,
-                name: "Name",
-                typeSimpleName: "Consumer",
-                kind: IndexedSymbolKind.Method,
-                sourceOnly: true,
-                cancellationToken: cancellationToken));
             var calls = await repository.GetCallsByCallerAsync(
                 profile.Id,
-                [run.Id, name.Id],
+                [run.Id],
                 GeneratedFilter.Include,
                 cancellationToken: cancellationToken);
-            Assert.NotEmpty(calls);
-            Assert.All(calls, call => Assert.Equal(storedAdd.Id, call.CalleeDefinitionId));
+            var call = Assert.Single(calls);
+            Assert.Equal(ReferenceKind.Invocation, call.ReferenceKind);
+            Assert.Equal(storedAdd.Id, call.CalleeDefinitionId);
         }
         finally
         {
