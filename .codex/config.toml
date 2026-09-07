@@ -1,6 +1,14 @@
 model = "gpt-5.6-sol"
 model_reasoning_effort = "max"
 
+default_permissions = "dotnet-workspace"
+
+[permissions.dotnet-workspace]
+extends = ":workspace"
+
+[permissions.dotnet-workspace.filesystem]
+":minimal" = "read"
+
 [features]
 multi_agent = true
 
