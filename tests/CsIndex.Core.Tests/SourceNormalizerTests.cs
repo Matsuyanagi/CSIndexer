@@ -265,7 +265,7 @@ class C
             .GetRoot(TestContext.Current.CancellationToken);
         var document = SourceNormalizer.NormalizeDocument(root, TestContext.Current.CancellationToken);
 
-        Assert.Contains("\"譌･譛ｬ隱橇沽\"", document.Text, StringComparison.Ordinal);
+        Assert.Contains("\"日本語\"", document.Text, StringComparison.Ordinal);
         Assert.Contains("\"😀\"", document.Text, StringComparison.Ordinal);
         Assert.Contains("\"\"\"\n/* keep raw */\n// keep raw\n\"\"\"", document.Text, StringComparison.Ordinal);
         Assert.Contains("$\"value:{1+2}\"", document.Text, StringComparison.Ordinal);
@@ -277,7 +277,7 @@ class C
     public void NormalizeDocument_ReturnInvocationRangeExcludesOutsideSeparator()
     {
         var root = CSharpSyntaxTree.ParseText(
-                "class C { int M() => M(); }",
+                "class C { int M() { return M(); } }",
                 cancellationToken: TestContext.Current.CancellationToken)
             .GetRoot(TestContext.Current.CancellationToken);
         var document = SourceNormalizer.NormalizeDocument(root, TestContext.Current.CancellationToken);
@@ -373,7 +373,7 @@ var topLevel = A(1); // outside-ascii
 class Sample
 {
     private int _field = 42; /* 外部コメント */
-    private string _unicode = "譌･譛ｬ隱橇沽";
+    private string _unicode = "日本語";
     private string _emoji = "😀";
     private string _raw = """
 /* keep raw */
