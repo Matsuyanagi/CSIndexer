@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（Task 3 complete; branch integration pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（implementation and task acceptance/review complete; whole-branch final review and post-review fresh gates pending; branch integration pending）
 
 ## Last Completed Work
 
@@ -48,10 +48,15 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Currently Implementing
 
-- None for this feature. Task 3 documentation, full-solution verification,
-  and three-form CLI acceptance are complete; only branch integration remains.
+- Implementation and task-scoped acceptance/review for this feature are
+  complete. Whole-branch final review and post-review fresh build/test/format
+  gates remain pending.
 
 ## Next Actions
+
+- Primary-owned whole-branch final review.
+- Post-review fresh status, diff, build, test, and format gates.
+- Branch integration choice after those gates.
 
 1. 検証済みfeature branchのintegration方法を選択
 2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
@@ -59,7 +64,7 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Build Status
 
-Task 3 full-solution verification:
+Task 3 pre-review full-solution acceptance verification:
 
 - Command: `rtk dotnet build CsIndex.sln -c Release --no-restore`
 - Result: 9 projects; 0 warnings, 0 errors
@@ -70,7 +75,7 @@ Task 3 full-solution verification:
 
 ## Test Status
 
-Task 3 full-solution verification:
+Task 3 pre-review full-solution acceptance verification:
 
 - Command: `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`
 - Passed: 1,193 across 4 test projects
@@ -85,6 +90,9 @@ The prior Task 14 full-suite record was 1,179 tests; the fresh Task 3 run adds
 the compilation-only generated-input coverage.
 
 ## Cross-volume generated compilation-input verification
+
+These are Task 3 acceptance runs before the whole-branch final review; they are
+not the post-review final gates.
 
 - Fresh CLI commands used `rtk dotnet run --project src\CsIndex.Cli\CsIndex.Cli.csproj -c Release --no-build -- index ... --rebuild`; the installed `C:\DosFree\csindex\csindex.exe` was not used.
 - Directory auto-solution (`index .`) and explicit `CsIndex.sln` each exited 0,

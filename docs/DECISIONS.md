@@ -535,7 +535,7 @@ Date: 2026-09-01
 
 ## DEC-0031: Schema version 5 logical declarations and portable index roots
 
-Status: Accepted
+Status: Accepted; Superseded in part by DEC-0032
 
 Context: Machine-specific rooted persistence and one physical symbol row per
 source declaration prevent safe relocation and split partial definition and
@@ -548,7 +548,9 @@ the implementation when present. Calls, relations, interface bindings,
 containment, async links, graph roots, and cardinality use logical IDs. Persist
 canonical forward-slash project/document/declaration paths relative to one
 storage root plus `index_runs.index_root_anchor` relative from the database
-directory. Reject cross-drive or cross-UNC-share layouts before mutation.
+directory. Reject ordinary persisted cross-drive or cross-UNC-share layouts
+before mutation; the generated compilation-input exception is defined by
+DEC-0032.
 `--base-dir` is a read-only reconstruction override; path and symbol styles are
 presentation-only.
 
@@ -570,3 +572,45 @@ read-time root without rewriting stored data. A partial pair is one logical
 candidate with role-preserving definition output.
 
 Date: 2026-09-01
+
+## DEC-0032: Compilation-only generated documents across storage roots
+
+Status: Accepted
+
+Context: `MSBuildWorkspace` can inject a physical C# document from another
+Windows drive or UNC share. Persisting that document would violate the
+single-root portable-path model, while rejecting it can prevent an otherwise
+valid project or solution from being indexed. The existing
+`GeneratedCodeDetector` already provides the vendor-neutral generated-code
+classification needed for this boundary.
+
+Decision: Keep DEC-0031's one-storage-root invariant for every ordinary
+persisted project, document, and linked source. A physical C# document on
+another drive or UNC server/share is compilation-only only when the existing
+`GeneratedCodeDetector` positively identifies it as generated. Keep that
+document in the original Roslyn `Project` and `Compilation`, but persist no
+path, database document, declaration, body-derived fact, or query root for it.
+Emit one warning and add one `DocumentsExcluded` count per such document.
+Named symbols used by indexed source may remain as declaration-less dependency
+endpoints. Same-volume generated source remains normally indexed, and an
+ordinary non-generated cross-volume/share document remains an input error
+before database mutation.
+
+This rule is vendor-neutral: it does not name xUnit, a package, a NuGet cache,
+an MSBuild target, or a runtime switch. It requires no schema change or
+migration.
+
+Supersedes: DEC-0031's unconditional cross-drive/cross-UNC-share rejection
+clause only. DEC-0031's schema version 5, relative persisted paths,
+`index_root_anchor`, one-root model for persisted data, and pre-mutation
+rejection of ordinary external documents remain accepted.
+
+Alternatives: Add a package-specific MSBuild switch, treat every external file
+as generated, persist absolute paths, or introduce a multi-root schema.
+
+Consequences: Roslyn compilation semantics remain available for recognized
+external generated inputs, while portable SQLite data remains rooted and
+machine-independent. Warning and exclusion counts make the omission visible;
+the original absolute path may appear in diagnostics but is never persisted.
+
+Date: 2026-09-08

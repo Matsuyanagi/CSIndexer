@@ -1,6 +1,8 @@
 # Cross-volume generated compilation documents design
 
-Status: approved in conversation on 2026-09-07; implementation pending.
+Status: approved in conversation on 2026-09-07; implementation and task-scoped
+review complete; whole-branch final review, post-review fresh gates, and
+integration pending.
 
 ## Context
 
@@ -165,4 +167,3 @@ Update the active specification, limitations, implementation status, and test
 plan to distinguish persisted linked sources from compilation-only generated
 inputs. The single-root limitation remains; only generated compilation inputs
 that are deliberately not persisted bypass cross-volume rejection.
-
