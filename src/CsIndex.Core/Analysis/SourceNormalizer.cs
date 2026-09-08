@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using CsIndex.Core.Caching;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -13,12 +14,39 @@ public static class SourceNormalizer
     private static readonly ConcurrentDictionary<(string PreviousText, string CurrentText), bool>
         PairRoundTrips = new();
 
+    private readonly record struct NormalizedEmission(
+        string Text,
+        byte[] Hash,
+        IReadOnlyList<NormalizedTokenSpan> TokenSpans);
+
     public static NormalizedSourceData Normalize(
         SyntaxNode node,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(node);
-        return NormalizeTokens(node.DescendantTokens(), cancellationToken);
+        return ToSourceData(EmitTokens(
+            node.DescendantTokens(),
+            cancellationToken,
+            captureTokenSpans: false,
+            afterPairRelex: null,
+            afterTokenMapped: null));
+    }
+
+    public static NormalizedSourceDocument NormalizeDocument(
+        SyntaxNode root,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        return NormalizeDocumentCore(root, cancellationToken, afterTokenMapped: null);
+    }
+
+    internal static NormalizedSourceDocument NormalizeDocumentForTesting(
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        Action? afterTokenMapped)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        return NormalizeDocumentCore(root, cancellationToken, afterTokenMapped);
     }
 
     internal static NormalizedSourceData NormalizeTokens(
@@ -27,7 +55,40 @@ public static class SourceNormalizer
         Action? afterPairRelex = null)
     {
         ArgumentNullException.ThrowIfNull(tokens);
-        var builder = new System.Text.StringBuilder();
+        return ToSourceData(EmitTokens(
+            tokens,
+            cancellationToken,
+            captureTokenSpans: false,
+            afterPairRelex,
+            afterTokenMapped: null));
+    }
+
+    private static NormalizedSourceDocument NormalizeDocumentCore(
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        Action? afterTokenMapped)
+    {
+        var emission = EmitTokens(
+            root.DescendantTokens(),
+            cancellationToken,
+            captureTokenSpans: true,
+            afterPairRelex: null,
+            afterTokenMapped);
+        return new NormalizedSourceDocument(emission.Text, emission.Hash, emission.TokenSpans);
+    }
+
+    private static NormalizedSourceData ToSourceData(NormalizedEmission emission) =>
+        new(emission.Text, emission.Hash);
+
+    private static NormalizedEmission EmitTokens(
+        IEnumerable<SyntaxToken> tokens,
+        CancellationToken cancellationToken,
+        bool captureTokenSpans,
+        Action? afterPairRelex,
+        Action? afterTokenMapped)
+    {
+        var builder = new StringBuilder();
+        var spans = captureTokenSpans ? new List<NormalizedTokenSpan>() : null;
         SyntaxToken? previous = null;
         foreach (var token in tokens)
         {
@@ -43,12 +104,21 @@ public static class SourceNormalizer
                 builder.Append(' ');
             }
 
+            var start = builder.Length;
             builder.Append(token.Text);
+            spans?.Add(new NormalizedTokenSpan(
+                token.SyntaxTree!,
+                token.Span,
+                token.RawKind,
+                start,
+                token.Text.Length));
             previous = token;
+            afterTokenMapped?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         var text = builder.ToString();
-        return new NormalizedSourceData(text, HashUtilities.Sha256(text));
+        return new NormalizedEmission(text, HashUtilities.Sha256(text), spans ?? []);
     }
 
     private static bool RequiresSeparator(
