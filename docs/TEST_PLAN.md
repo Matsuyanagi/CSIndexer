@@ -24,6 +24,38 @@ Status: 完了。5,001ファイル列挙、任意階層`obj`除外、`bin`包含
 
 - `TASKS.md` の項目を削除せず、実装着手時に詳細ケースを追加する。
 
+## Cross-volume generated MSBuild inputs
+
+The portable-index exception is vendor-neutral and must be tested at both the
+classifier and semantic/persistence boundaries. The focused synthetic suite
+`CompilationOnlyGeneratedDocumentTests` covers:
+
+- `Prepare_CrossVolumeGeneratedDocumentIsCompilationOnlyForEveryMsBuildMode`
+  for solution/project classification, one warning, one exclusion count, and
+  no document mapping;
+- established filename, generated-directory, and assembly-attributes detector
+  categories;
+- `Prepare_SameVolumeGeneratedDocumentRemainsMappedAndIndexed`;
+- `Analyze_UsesCompilationOnlyDeclarationForBindingButDoesNotIndexItsSourceOrBody`
+  for declaration-less dependency endpoints, no generated declaration/body facts,
+  and no generated query root;
+- `ProjectFingerprint_CompilationOnlyDocumentsArePortableContentSensitiveKindSensitiveAndDeterministic`
+  for relocation, content/name changes, generation-kind changes, and repeated
+  deterministic analysis; and
+- cancellation during classification and workspace disposal.
+
+`CompilationOnlyGeneratedDocumentPersistenceTests` verifies that the SQLite
+save/query seam accepts calls to named compilation-only symbols without storing
+their source document, declaration, or body. The real
+`MsBuildWorkspaceTests.ProjectMode_KeepsExternalGeneratedReporterCompilationOnly`
+regression loads `DefaultRunnerReporters.cs` without a vendor-specific MSBuild
+property and exercises both the cross-volume and same-volume branches.
+
+The same behavior is accepted for all five MSBuild forms: directory
+auto-solution, explicit `.sln`/`.slnx`, explicit `.csproj`, directory
+`--mode project`, and directory `--solution`. Forced `--mode directory` is a
+separate source-enumerator route and does not load MSBuild-injected documents.
+
 ## 非同期解析
 
 - 宣言と戻り値: `DeclaredAsync`と`ReturnsAwaitable`を独立に検証し、`Task` / `Task<T>`、`ValueTask` / `ValueTask<T>`、`UniTask` / `UniTask<T>`、`UniTaskVoid`、`IAsyncEnumerable<T>`、`IUniTaskAsyncEnumerable<T>`の各ロールを確認する。UniTaskはテストソース内の最小互換型を使用し、製品依存を追加しない。

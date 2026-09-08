@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（Task 3 complete; branch integration pending）
 
 ## Last Completed Work
 
@@ -44,12 +44,12 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Task 8で、上記の正式仕様、CLI契約、decision、acceptance-test mapping、status、limitationを同期した。
 - Task 9で、最終diff、format、Release build、全test、全command help、stdout/file等価性をfresh runし、下記の公式検証recordを更新した。
 - Task 14でactive documentationとhelpを同期し、82 acceptance ID、schema/path/CLI probes、spec review、quality review、post-review final gatesを完了した。
+- Task 3で、MSBuildWorkspaceの5つの入力形式におけるcross-volume generated documentのvendor-neutralなcompilation-only境界、warning/count、portable path/DB除外、named dependency endpoint、forced `--mode directory`の非適用範囲を文書化した。Task 1--2のsynthetic classifier/semantic/fingerprint/persistence testsとreal `DefaultRunnerReporters.cs` regressionはgreenである。
 
 ## Currently Implementing
 
-- None for this feature. Task 14 implementation, independent reviews, and
-  post-review verification are complete; only the user's branch-integration
-  choice remains.
+- None for this feature. Task 3 documentation, full-solution verification,
+  and three-form CLI acceptance are complete; only branch integration remains.
 
 ## Next Actions
 
@@ -59,27 +59,44 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Build Status
 
-Task 14 post-review full-solution verification:
+Task 3 full-solution verification:
 
 - Command: `rtk dotnet build CsIndex.sln -c Release --no-restore`
 - Result: 9 projects; 0 warnings, 0 errors
-- Date: 2026-09-07
+- Date: 2026-09-08
 - Environment note: Windows SDK discovery is denied by the sandbox on this host;
   the identical final build ran with the approved escalation. The earlier
   sandboxed attempt recorded only `MSB4184` access errors before compilation.
 
 ## Test Status
 
-Task 14 post-review full-solution verification:
+Task 3 full-solution verification:
 
 - Command: `rtk dotnet test CsIndex.sln -c Release --no-build --no-restore`
-- Passed: 1,179 across 4 test projects
+- Passed: 1,193 across 4 test projects
 - Failed: 0
 - Skipped: 0
 - Warnings: 0
-- Date: 2026-09-07
+- Date: 2026-09-08
 - Additional gates: `rtk dotnet format CsIndex.sln --verify-no-changes --no-restore`
   exited 0; `rtk git diff --check` exited 0.
+
+The prior Task 14 full-suite record was 1,179 tests; the fresh Task 3 run adds
+the compilation-only generated-input coverage.
+
+## Cross-volume generated compilation-input verification
+
+- Fresh CLI commands used `rtk dotnet run --project src\CsIndex.Cli\CsIndex.Cli.csproj -c Release --no-build -- index ... --rebuild`; the installed `C:\DosFree\csindex\csindex.exe` was not used.
+- Directory auto-solution (`index .`) and explicit `CsIndex.sln` each exited 0,
+  reported 8 projects, 124 detected documents, 36 excluded documents, and
+  emitted four exact `DefaultRunnerReporters.cs` compilation-only warnings (one
+  for each injected test-project document).
+- Explicit `tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj` exited 0,
+  reported 2 projects, 53 detected documents, 9 excluded documents, and
+  emitted one exact `DefaultRunnerReporters.cs` warning.
+- Read-only SQLite storage checks for `documents.normalized_path` returned
+  `reporter_paths=0`, `drive_qualified_paths=0`, and `unc_paths=0` for all
+  three DBs. The databases were `.superpowers/sdd/2026-09-07-cross-volume-generated-documents/{auto,solution,project}.sqlite`.
 
 ## Task 14 Focused Verification (final: 2026-09-07)
 

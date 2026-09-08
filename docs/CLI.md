@@ -39,6 +39,41 @@ csindex index C:\Source --mode directory --define FEATURE_AUDIO
 
 `obj` path segmentは大文字小文字を区別せず常時除外され、`bin`や生成コードは既定で含まれます。進捗と警告はstderr、検索結果はstdoutへ出します。
 
+### MSBuild入力形式とcross-volume generated document
+
+次の5つの入力形式は`MSBuildWorkspace`を通るため、外部からCompileへ追加された
+物理C# documentにも同じportable-index規則を適用します。
+
+1. solutionを自動選択するdirectory入力: `csindex index .`
+2. 明示した`.sln`または`.slnx`: `csindex index CsIndex.sln`
+3. 明示した`.csproj`: `csindex index tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj`
+4. directoryに対する`--mode project`: `csindex index . --mode project`
+5. directoryに対する`--solution`: `csindex index . --solution CsIndex.sln`
+
+通常の永続化対象であるproject、document、linked sourceはstorage rootと同じ
+Windows driveまたは同じUNC server/shareに置かれていなければなりません。別の
+volume/shareにある物理C# documentは、既存の`GeneratedCodeDetector`が生成コードだと
+陽性判定した場合だけcompilation-onlyとして扱います。Roslyn compilationには残しますが、
+portable path、SQLite document、declaration、body-derived fact、query rootには保存せず、
+1件のwarningと`DocumentsExcluded` 1件を加えます。indexed sourceが使う名前付きsymbolは
+declaration-less dependency endpointとして残ることがあります。同じvolume/shareの
+generated sourceは通常どおりindexします。Detectorが陽性でないcross-volume/share
+documentは入力エラーのままです。warningに元の絶対pathが表示される場合がありますが、
+SQLiteへは保存されません。この判定はvendor/package/NuGet cacheに依存せず、xUnit固有の
+runtime switchを必要としません。
+
+warningの形式は次のとおりです（末尾の絶対pathは診断表示だけに使い、DBへ保存しません）。
+
+```text
+Generated document was kept in the compilation but excluded from the portable index because it is on another volume/share: <absolute path>
+```
+
+compilation-only documentごとにwarningは1件、`DocumentsExcluded`の加算も1件です。
+
+`--mode directory`を明示したdirectory入力は別のsource-enumerator routeです。このrouteは
+MSBuildWorkspaceを起動せず、MSBuildが注入するdocumentを読み込みません。したがって、
+上記5形式のcompilation-only規則とforced `--mode directory`の挙動を混同しないでください。
+
 ## Queries
 
 > **Superseded where conflicting:** use the schema-version-5 matrix and grammar

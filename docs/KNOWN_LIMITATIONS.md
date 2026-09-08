@@ -43,10 +43,18 @@
   compatibility reader, auto-delete, or implicit `--rebuild` for any older or
   unknown database. Delete/rename the old file or choose a new `--db`, then run
   `csindex index` explicitly.
-- The persisted-path model has one storage root. The database directory,
-  storage root, and linked source must share the same Windows drive or UNC
-  server/share; cross-volume/share multi-root indexing is intentionally not
-  supported and is rejected before database mutation.
+- The persisted-path model has one storage root. An ordinary persisted project,
+  document, or linked source must share the storage root's Windows drive or UNC
+  server/share. A physical C# document on another volume/share is retained in
+  the Roslyn compilation only when the existing `GeneratedCodeDetector`
+  positively identifies it as generated; its path, document, declarations,
+  body-derived facts, and query-root status are not persisted. It contributes
+  exactly one warning and one `DocumentsExcluded` count. Named symbols used by
+  indexed source may remain as declaration-less dependency endpoints. Same-
+  volume generated source remains normally indexed, while an ordinary
+  cross-volume/share document is still rejected before SQLite mutation. This is
+  vendor-neutral and does not use an xUnit/package/NuGet-specific runtime
+  switch; it also covers the reported external reporter incident generically.
 - Csharp-form symbol paths are suffix searches across the possible
   namespace/type boundary. A copied csharp result is valid input but may match
   extra namespace prefixes; use explicit form for an exact boundary.

@@ -17,7 +17,8 @@ This is the exact active schema for CsIndex. `SchemaMigrator.CurrentVersion` and
 - `index_runs.index_root_anchor` is the canonical relative path from the database directory to the storage root. The default `.csindex/index.sqlite` layout stores `..`.
 - `projects.project_path` and `documents.normalized_path` are canonical forward-slash paths relative to the storage root. Linked source paths may begin with normalized `../` segments.
 - Logical and declaration keys use semantic identity and stored relative path data; no persisted path/key field may contain a machine-specific rooted source path.
-- Index preflight rejects a storage root, database directory, or linked source on a different Windows drive or UNC server/share before database mutation.
+- The single-root invariant remains for ordinary persisted projects, documents, and linked sources: the storage root, database directory, and persisted source locations must share a Windows drive or UNC server/share. A physical C# document from another volume/share is not a database document when the existing `GeneratedCodeDetector` positively identifies it as generated. It remains in the Roslyn compilation, but contributes no `documents` row, normalized path, declaration, body-derived fact, or query root; it contributes one warning and one `DocumentsExcluded` count. Same-volume generated source remains a normal `documents` row. A non-generated cross-volume/share document is rejected before database mutation.
+- This compilation-only disposition changes no schema, adds no migration, and creates no synthetic database row or path.
 
 ## Logical symbols and declarations
 

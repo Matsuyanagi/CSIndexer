@@ -1555,8 +1555,15 @@ containment, and async links reference logical symbol IDs.
 
 `index_runs.input_root` is `.`, and `index_root_anchor` is relative from the
 database directory to the one storage root. Project/document/source-derived
-key paths are canonical forward-slash paths relative to that root. A
-cross-drive/share layout is rejected before mutation.
+key paths are canonical forward-slash paths relative to that root. An ordinary
+persisted project, document, or linked source must share the storage root's
+Windows drive or UNC server/share. A physical C# document on another
+volume/share is the sole exception only when the existing `GeneratedCodeDetector`
+positively identifies it as generated: it remains in the Roslyn compilation but
+contributes no persisted path, document, declaration, body fact, or query root.
+It contributes one warning and one excluded-document count. A non-generated
+cross-volume/share document is still rejected before SQLite mutation, and
+same-volume generated source remains a normal indexed document.
 
 A save validates logical/declaration/path invariants, inserts all rows and
 deferred IDs in one transaction, runs `PRAGMA foreign_key_check`, and commits
@@ -2971,9 +2978,20 @@ directory to that root. The default `.csindex/index.sqlite` layout has anchor
 `..`; a custom database stores its corresponding relative anchor.
 
 Linked sources may use normalized leading `../`. The database directory,
-storage root, and persisted source locations must share a Windows drive or UNC
-server/share. A cross-volume/share case fails in preflight before SQLite
-mutation; this is a one-root model, not a multi-root fallback.
+storage root, and every persisted source location must share a Windows drive or
+UNC server/share. This remains a one-root model, not a multi-root fallback. An
+ordinary cross-volume/share project, document, or linked source fails in
+preflight before SQLite mutation. The only positive exception is a physical C#
+document that the existing `GeneratedCodeDetector` identifies as generated:
+Roslyn keeps it for compilation semantics, while portable paths, documents,
+declarations, body-derived facts, and query roots exclude it. Each such
+compilation-only document emits one warning and increments `DocumentsExcluded`
+once. Named symbols used by indexed source may survive as declaration-less
+dependency endpoints. Same-volume generated source remains normally indexed.
+The detector rule is vendor-neutral: it does not name a package, NuGet cache,
+MSBuild target, or runtime switch. It therefore resolves a reported external
+test-runner reporter incident generically rather than adding an xUnit-specific
+exception.
 
 The default query base is `FullPath(database directory + index_root_anchor)`.
 `--base-dir` overrides that base for the current read without changing any
