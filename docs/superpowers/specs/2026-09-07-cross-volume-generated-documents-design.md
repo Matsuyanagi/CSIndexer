@@ -1,8 +1,8 @@
 # Cross-volume generated compilation documents design
 
-Status: approved in conversation on 2026-09-07; implementation and task-scoped
-review complete; whole-branch final review, post-review fresh gates, and
-integration pending.
+Status: approved in conversation on 2026-09-07; implementation, task-scoped
+review, whole-branch final review, and post-review fresh gates complete; branch
+integration and optional installed-binary deployment pending.
 
 ## Context
 

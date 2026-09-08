@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（implementation and task acceptance/review complete; whole-branch final review and post-review fresh gates pending; branch integration pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（implementation, final review, and post-review fresh gates complete; branch integration and optional installed-binary deployment pending）
 
 ## Last Completed Work
 
@@ -45,18 +45,20 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Task 9で、最終diff、format、Release build、全test、全command help、stdout/file等価性をfresh runし、下記の公式検証recordを更新した。
 - Task 14でactive documentationとhelpを同期し、82 acceptance ID、schema/path/CLI probes、spec review、quality review、post-review final gatesを完了した。
 - Task 3で、MSBuildWorkspaceの5つの入力形式におけるcross-volume generated documentのvendor-neutralなcompilation-only境界、warning/count、portable path/DB除外、named dependency endpoint、forced `--mode directory`の非適用範囲を文書化した。Task 1--2のsynthetic classifier/semantic/fingerprint/persistence testsとreal `DefaultRunnerReporters.cs` regressionはgreenである。
+- Whole-branch reviewで見つかったduplicate-assembly project間のcompilation-only endpoint衝突を、stable-key用project scopeと永続`ProjectKey`の分離で修正した。再レビューはcleanで、post-reviewのRelease buildは9 projects / 0 warnings、全testは1,194件 / 0 warnings、formatとdiff checkも成功した。
+- Fresh built CLIによるdirectory auto-solution、明示`.sln`、明示`.csproj`の再索引はいずれも成功した。3 DBすべてでreporter path、drive/UNC document path、rooted project path、reporter由来symbol/declaration keyは0件だった。
 
 ## Currently Implementing
 
-- Implementation and task-scoped acceptance/review for this feature are
-  complete. Whole-branch final review and post-review fresh build/test/format
-  gates remain pending.
+- No feature implementation remains on this branch. Integration and any
+  installed-binary deployment are intentionally separate user choices.
 
 ## Next Actions
 
-- Primary-owned whole-branch final review.
-- Post-review fresh status, diff, build, test, and format gates.
-- Branch integration choice after those gates.
+- Choose how to integrate `codex/cross-volume-generated-documents`.
+- If desired after integration, separately build and replace the installed
+  `C:\DosFree\csindex\csindex.exe`; it was not modified during implementation or
+  verification.
 
 1. 検証済みfeature branchのintegration方法を選択
 2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
