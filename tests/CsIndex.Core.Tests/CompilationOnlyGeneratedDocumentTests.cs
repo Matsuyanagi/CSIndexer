@@ -184,39 +184,40 @@ public sealed class CompilationOnlyGeneratedDocumentTests
             namespace GeneratedApi;
             public static class Helper { public static int Value() => 43; }
             """;
+        var (firstExternalDrive, secondExternalDrive) = GetDifferentDriveRoots(Path.GetTempPath());
 
         var firstRelocatedFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "Helper.cs",
             indexedSource,
             generatedSource);
         var secondRelocatedFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Z',
+            secondExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "Helper.cs",
             indexedSource,
             generatedSource);
         var changedContentFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "Helper.cs",
             indexedSource,
             changedGeneratedSource);
         var changedDocumentNameFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "RenamedHelper.cs",
             indexedSource,
             generatedSource);
         var fileNameGenerationFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "Helper.cs",
             indexedSource,
             generatedSource);
         var generatedDirectoryFingerprint = await AnalyzeProjectFingerprintAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\Generated\Helper.cs",
             "Helper.cs",
             indexedSource,
@@ -228,7 +229,7 @@ public sealed class CompilationOnlyGeneratedDocumentTests
         Assert.NotEqual(fileNameGenerationFingerprint, generatedDirectoryFingerprint);
 
         var repeated = await AnalyzeProjectFingerprintTwiceAsync(
-            'Y',
+            firstExternalDrive,
             @"packages\generator\Helper.generated.cs",
             "Helper.cs",
             indexedSource,
@@ -275,9 +276,21 @@ public sealed class CompilationOnlyGeneratedDocumentTests
 
     private static string CreateDifferentDrivePath(string referencePath, string relativePath)
     {
-        var currentDrive = char.ToUpperInvariant(Path.GetPathRoot(referencePath)![0]);
-        var otherDrive = currentDrive == 'Z' ? 'Y' : 'Z';
+        var (otherDrive, _) = GetDifferentDriveRoots(referencePath);
         return $"{otherDrive}:\\{relativePath}";
+    }
+
+    private static (char First, char Second) GetDifferentDriveRoots(string referencePath)
+    {
+        var storageDrive = char.ToUpperInvariant(Path.GetPathRoot(Path.GetFullPath(referencePath))![0]);
+        var roots = Enumerable
+            .Range('A', 'Z' - 'A' + 1)
+            .Select(value => (char)value)
+            .Where(drive => drive != storageDrive)
+            .Take(2)
+            .ToArray();
+        Assert.Equal(2, roots.Length);
+        return (roots[0], roots[1]);
     }
 
     private static async Task<IndexSnapshot> AnalyzeWithCompilationOnlyDocumentAsync(

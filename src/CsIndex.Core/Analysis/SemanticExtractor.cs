@@ -124,6 +124,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     compilationOnlyDocumentIds.Contains(documentId))
                 {
                     _compilationOnlySourceTrees.Add(syntaxTree);
+                    _sourceTreeProjectKeys[syntaxTree] = mappings.GetProjectKey(project);
                 }
             }
 
@@ -1587,6 +1588,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             : null;
         var data = _canonicalizer.CreateMethod(normalized, sourceProjectKey) with
         {
+            ProjectKey = ResolvePersistedProjectKey(normalized, sourceProjectKey),
             ContainingSymbolKey = containingKey,
             AsyncRole = AsyncSymbolClassifier.Classify(
                 normalized,
@@ -1611,6 +1613,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             : null;
         var data = _canonicalizer.CreateType(normalized, sourceProjectKey) with
         {
+            ProjectKey = ResolvePersistedProjectKey(normalized, sourceProjectKey),
             ContainingSymbolKey = containingKey,
         };
 
@@ -1628,12 +1631,12 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private string? ResolveSourceProjectKey(ISymbol symbol)
     {
-        if (HasOnlyCompilationOnlySourceLocations(symbol))
+        var normalized = NormalizeSourceSymbol(symbol);
+        if (!HasSourceLocations(normalized))
         {
             return null;
         }
 
-        var normalized = NormalizeSourceSymbol(symbol);
         if (_currentProjectState is { } currentProjectState)
         {
             if (ReferenceEquals(normalized.ContainingAssembly, currentProjectState.Compilation.Assembly))
@@ -1659,6 +1662,16 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
         return TryGetSourceTreeProjectKey(normalized, out var projectKey) ? projectKey : null;
     }
+
+    private string? ResolvePersistedProjectKey(ISymbol symbol, string? sourceProjectKey) =>
+        sourceProjectKey is not null && !HasOnlyCompilationOnlySourceLocations(symbol)
+            ? sourceProjectKey
+            : null;
+
+    private static bool HasSourceLocations(ISymbol symbol) =>
+        EnumerateSourceDispositionSymbols(symbol)
+            .SelectMany(sourceSymbol => sourceSymbol.Locations)
+            .Any(location => location.IsInSource && location.SourceTree is not null);
 
     private bool HasOnlyCompilationOnlySourceLocations(ISymbol symbol)
     {
