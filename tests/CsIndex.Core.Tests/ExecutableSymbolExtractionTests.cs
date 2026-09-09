@@ -178,11 +178,18 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.Equal((int)IndexedAccessibility.NotApplicable, FindLambda(snapshot).Accessibility);
         Assert.True(FindLambda(snapshot).IsStatic);
         Assert.Equal("System::Int32", Find(snapshot, "get_Value").ReturnTypeKey);
-        Assert.NotNull(PreferredDeclaration(snapshot, Find(snapshot, "ExecuteAsync")).NormalizedSource);
-        Assert.NotNull(PreferredDeclaration(snapshot, FindLambda(snapshot)).NormalizedSourceHash);
-        Assert.NotNull(PreferredDeclaration(snapshot, Find(snapshot, "op_Addition")).NormalizedSource);
-        Assert.NotNull(PreferredDeclaration(snapshot, Find(snapshot, "op_Implicit")).NormalizedSource);
-        Assert.NotNull(PreferredDeclaration(snapshot, Find(snapshot, "Local")).NormalizedSource);
+        Assert.Equal(
+            "public async Task<int>ExecuteAsync(){await Task.Yield();return 1;}",
+            NormalizedText(snapshot, PreferredDeclaration(snapshot, Find(snapshot, "ExecuteAsync"))));
+        Assert.NotNull(NormalizedText(snapshot, PreferredDeclaration(snapshot, FindLambda(snapshot))));
+        Assert.NotNull(NormalizedText(snapshot, PreferredDeclaration(snapshot, Find(snapshot, "op_Addition"))));
+        Assert.NotNull(NormalizedText(snapshot, PreferredDeclaration(snapshot, Find(snapshot, "op_Implicit"))));
+        Assert.NotNull(NormalizedText(snapshot, PreferredDeclaration(snapshot, Find(snapshot, "Local"))));
+
+        Assert.Null(typeof(SymbolDeclarationData).GetProperty("NormalizedSource"));
+        Assert.Null(typeof(SymbolDeclarationData).GetProperty("NormalizedSourceHash"));
+        Assert.Null(typeof(SymbolData).GetProperty("NormalizedSource"));
+        Assert.Null(typeof(SymbolData).GetProperty("NormalizedSourceHash"));
 
         var local = Find(snapshot, "Local");
         Assert.Equal((int)Microsoft.CodeAnalysis.MethodKind.LocalFunction, local.MethodKind);
@@ -200,8 +207,8 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.Equal("System::Int32", getter.ReturnTypeKey);
         var getterDeclaration = PreferredDeclaration(snapshot, getter);
         var setterDeclaration = PreferredDeclaration(snapshot, setter);
-        Assert.Equal("get{return 7;}", getterDeclaration.NormalizedSource);
-        Assert.Equal("set{_=value;}", setterDeclaration.NormalizedSource);
+        Assert.Equal("get{return 7;}", NormalizedText(snapshot, getterDeclaration));
+        Assert.Equal("set{_=value;}", NormalizedText(snapshot, setterDeclaration));
         Assert.Equal("get { return 7; }", source.Substring(
             getterDeclaration.SourceStart,
             getterDeclaration.SourceLength));
@@ -223,7 +230,7 @@ public sealed class ExecutableSymbolExtractionTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_PersistsNormalizedArrayRankTextAndHash()
+    public async Task AnalyzeAsync_PersistsNormalizedArrayRankTextInDocumentRange()
     {
         const string source = """
             namespace Test;
@@ -238,10 +245,10 @@ public sealed class ExecutableSymbolExtractionTests
 
         var build = Find(snapshot, "Build");
         var declaration = PreferredDeclaration(snapshot, build);
-        var normalizedSource = declaration.NormalizedSource;
-        var normalizedSourceHash = declaration.NormalizedSourceHash;
+        var normalizedSource = NormalizedText(snapshot, declaration);
         Assert.Contains("string?[]Build(string?[]items)", normalizedSource, StringComparison.Ordinal);
-        Assert.Equal(HashUtilities.Sha256(normalizedSource), normalizedSourceHash);
+        var document = Assert.Single(snapshot.Documents, value => value.Key == declaration.DocumentKey);
+        Assert.Equal(HashUtilities.Sha256(document.NormalizedSource), document.NormalizedSourceHash);
     }
 
     [Fact]
@@ -308,6 +315,45 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.Single(snapshot.Calls, call =>
             call.CallerSymbolKey == nested.StableKey &&
             call.CalleeDefinitionKey == target.StableKey);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AssignsDocumentRangesToDeclarationsAndCalls()
+    {
+        const string source = """
+            namespace Test;
+
+            public sealed class Host
+            {
+                public void Run()
+                {
+                    var value = new Nested();
+                    Local();
+                    void Local() { Target(); }
+                }
+
+                private void Target() { }
+                private sealed class Nested { }
+            }
+            """;
+
+        var snapshot = await AnalyzeAsync(("Ranges.cs", source));
+        var run = Find(snapshot, "Run");
+        var local = Find(snapshot, "Local");
+        var target = Find(snapshot, "Target");
+        var runDeclaration = PreferredDeclaration(snapshot, run);
+        var localDeclaration = PreferredDeclaration(snapshot, local);
+
+        Assert.Equal("public void Run(){var value=new Nested();Local();void Local(){Target();}}", NormalizedText(snapshot, runDeclaration));
+        Assert.Equal("void Local(){Target();}", NormalizedText(snapshot, localDeclaration));
+        Assert.InRange(localDeclaration.NormalizedStart, runDeclaration.NormalizedStart + 1, runDeclaration.NormalizedStart + runDeclaration.NormalizedLength - localDeclaration.NormalizedLength);
+
+        var invocation = Assert.Single(snapshot.Calls, call =>
+            call.ReferenceKind == ReferenceKind.Invocation && call.CalleeDefinitionKey == target.StableKey);
+        Assert.Equal("Target()", NormalizedText(snapshot, invocation));
+
+        var objectCreation = Assert.Single(snapshot.Calls, call => call.ReferenceKind == ReferenceKind.ObjectCreation);
+        Assert.Equal("new Nested()", NormalizedText(snapshot, objectCreation));
     }
 
     [Fact]
@@ -462,8 +508,8 @@ public sealed class ExecutableSymbolExtractionTests
         Assert.Equal("System::Func<System::Int32>", indexerGetter.ReturnTypeKey);
         var factoryDeclaration = PreferredDeclaration(snapshot, factoryGetter);
         var indexerDeclaration = PreferredDeclaration(snapshot, indexerGetter);
-        Assert.Equal("public Func<int>Factory=>()=>Target();", factoryDeclaration.NormalizedSource);
-        Assert.Equal("public Func<int>this[int index]=>()=>Target();", indexerDeclaration.NormalizedSource);
+        Assert.Equal("public Func<int>Factory=>()=>Target();", NormalizedText(snapshot, factoryDeclaration));
+        Assert.Equal("public Func<int>this[int index]=>()=>Target();", NormalizedText(snapshot, indexerDeclaration));
         Assert.Equal(
             "public Func<int> Factory => () => Target();",
             source.Substring(factoryDeclaration.SourceStart, factoryDeclaration.SourceLength));
@@ -473,8 +519,8 @@ public sealed class ExecutableSymbolExtractionTests
 
         var factoryLambda = FindLambdaOwnedBy(snapshot, factoryGetter);
         var indexerLambda = FindLambdaOwnedBy(snapshot, indexerGetter);
-        Assert.Equal("()=>Target()", PreferredDeclaration(snapshot, factoryLambda).NormalizedSource);
-        Assert.Equal("()=>Target()", PreferredDeclaration(snapshot, indexerLambda).NormalizedSource);
+        Assert.Equal("()=>Target()", NormalizedText(snapshot, PreferredDeclaration(snapshot, factoryLambda)));
+        Assert.Equal("()=>Target()", NormalizedText(snapshot, PreferredDeclaration(snapshot, indexerLambda)));
         Assert.Equal("System::Int32", factoryLambda.ReturnTypeKey);
         Assert.Equal("System::Int32", indexerLambda.ReturnTypeKey);
         Assert.Equal("int", factoryLambda.ReturnTypeDisplay);
@@ -508,10 +554,30 @@ public sealed class ExecutableSymbolExtractionTests
     private static SymbolData FindLambdaWithNormalizedSource(IndexSnapshot snapshot, string normalizedSource) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>
             symbol.Kind == IndexedSymbolKind.Lambda &&
-            PreferredDeclaration(snapshot, symbol).NormalizedSource == normalizedSource);
+            NormalizedText(snapshot, PreferredDeclaration(snapshot, symbol)) == normalizedSource);
 
     private static SymbolDeclarationData PreferredDeclaration(IndexSnapshot snapshot, SymbolData symbol) =>
         snapshot.Declarations[symbol.PreferredDeclarationKey!];
+
+    private static string NormalizedText(IndexSnapshot snapshot, SymbolDeclarationData declaration)
+    {
+        var document = Assert.Single(snapshot.Documents, value => value.Key == declaration.DocumentKey);
+        Assert.True(declaration.NormalizedStart >= 0);
+        Assert.True(declaration.NormalizedLength > 0);
+        Assert.True(declaration.NormalizedStart <= document.NormalizedSource.Length - declaration.NormalizedLength);
+        return document.NormalizedSource.AsSpan(
+            declaration.NormalizedStart,
+            declaration.NormalizedLength).ToString();
+    }
+
+    private static string NormalizedText(IndexSnapshot snapshot, CallData call)
+    {
+        var document = Assert.Single(snapshot.Documents, value => value.Key == call.DocumentKey);
+        Assert.True(call.NormalizedStart >= 0);
+        Assert.True(call.NormalizedLength > 0);
+        Assert.True(call.NormalizedStart <= document.NormalizedSource.Length - call.NormalizedLength);
+        return document.NormalizedSource.AsSpan(call.NormalizedStart, call.NormalizedLength).ToString();
+    }
 
     private static SymbolData FindLambdaOwnedBy(IndexSnapshot snapshot, SymbolData owner) =>
         Assert.Single(snapshot.Symbols.Values, symbol =>

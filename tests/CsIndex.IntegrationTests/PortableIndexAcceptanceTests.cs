@@ -754,7 +754,7 @@ public sealed class PortableIndexAcceptanceTests(CSharpSymbolPathAcceptanceFixtu
             "method_parameters.type_key",
             "method_parameters.type_display",
             "symbol_declarations.declaration_key",
-            "symbol_declarations.normalized_source",
+            "normalized_sources.normalized_source",
             "calls.unresolved_name",
             "calls.receiver_type_key",
         ];
@@ -893,7 +893,7 @@ public sealed class PortableIndexAcceptanceTests(CSharpSymbolPathAcceptanceFixtu
             BuildSchemaFourArguments(command, databasePath, outputPath));
 
         const string expectedGuidance =
-            "Database error: Unsupported database schema version 4; this build supports version 5. " +
+            "Database error: Unsupported database schema version 4; this build supports version 6. " +
             "The database was not modified. Delete or rename the old database or choose a new --db path, " +
             "then run csindex index explicitly.";
         Assert.Equal(ExitCodes.DatabaseFailure, result.ExitCode);

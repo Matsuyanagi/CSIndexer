@@ -651,10 +651,8 @@ public sealed class CliCommandTests : IDisposable
             _fixture.PrimaryProfileName,
             cancellationToken);
         var normalizedSource = Assert.IsType<string>(stored.NormalizedSource);
-        var normalizedSourceHash = Assert.IsType<byte[]>(stored.NormalizedSourceHash);
         Assert.Contains('\t', normalizedSource);
         Assert.Contains('\n', normalizedSource);
-        Assert.Equal(HashUtilities.Sha256(normalizedSource), normalizedSourceHash);
 
         var searched = await _fixture.Query.SearchSourceAsync(
             new SymbolSelectionRequest(
@@ -671,7 +669,6 @@ public sealed class CliCommandTests : IDisposable
             cancellationToken: cancellationToken);
         var searchedSymbol = Assert.Single(searched.MatchedSymbols, symbol => symbol.Id == stored.Id);
         Assert.Equal(normalizedSource, searchedSymbol.NormalizedSource);
-        Assert.Equal(normalizedSourceHash, searchedSymbol.NormalizedSourceHash);
 
         var json = await RunAsync(
             "source", "show", displayName, "--output-format", "json", "--db", _fixture.DatabasePath);
@@ -735,22 +732,6 @@ public sealed class CliCommandTests : IDisposable
             currentRequestHash = Assert.IsType<byte[]>(await command.ExecuteScalarAsync(cancellationToken));
             Assert.NotEqual(previousRequestHash, currentRequestHash);
 
-            const string legacySource = "public string[  ]Echo(string[  ]args)=>args;";
-            command.CommandText = """
-                UPDATE symbol_declarations
-                SET normalized_source = $legacy_source,
-                    normalized_source_hash = $legacy_hash
-                WHERE symbol_id = (
-                    SELECT id
-                    FROM symbols
-                    WHERE namespace_name = 'Acceptance'
-                      AND type_display_path = 'ArrayHost'
-                      AND executable_display_path = 'Echo(string[])');
-                """;
-            command.Parameters.AddWithValue("$legacy_source", legacySource);
-            command.Parameters.Add("$legacy_hash", SqliteType.Blob).Value = HashUtilities.Sha256(legacySource);
-            Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
-
             command.Parameters.Clear();
             command.CommandText = "UPDATE index_runs SET request_hash = $previous_request_hash;";
             command.Parameters.Add("$previous_request_hash", SqliteType.Blob).Value = previousRequestHash;
@@ -776,10 +757,8 @@ public sealed class CliCommandTests : IDisposable
             includeSourceText: true,
             cancellationToken));
         var correctedSource = Assert.IsType<string>(echoDeclaration.NormalizedSource);
-        var correctedHash = Assert.IsType<byte[]>(echoDeclaration.NormalizedSourceHash);
         Assert.Contains("string[]Echo(string[]args)", correctedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("[  ]", correctedSource, StringComparison.Ordinal);
-        Assert.Equal(HashUtilities.Sha256(correctedSource), correctedHash);
 
         await using var verificationConnection = new SqliteConnection(connectionString);
         await verificationConnection.OpenAsync(cancellationToken);
@@ -2317,7 +2296,6 @@ public sealed class CliCommandTests : IDisposable
         {
             var declaration = Assert.IsType<StoredDeclaration>(symbol.PreferredDeclaration);
             Assert.Null(declaration.NormalizedSource);
-            Assert.Null(declaration.NormalizedSourceHash);
         });
 
         var result = await RunAsync(

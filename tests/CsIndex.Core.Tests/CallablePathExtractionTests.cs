@@ -866,7 +866,17 @@ public sealed class CallablePathExtractionTests
             symbol.Kind == IndexedSymbolKind.Lambda &&
             symbol.PreferredDeclarationKey is { } declarationKey &&
             snapshot.Declarations.TryGetValue(declarationKey, out var declaration) &&
-            declaration.NormalizedSource == normalizedSource);
+            SliceNormalizedSource(snapshot, declaration) == normalizedSource);
+
+    private static string SliceNormalizedSource(
+        IndexSnapshot snapshot,
+        SymbolDeclarationData declaration)
+    {
+        var document = snapshot.Documents.Single(value => value.Key == declaration.DocumentKey);
+        return document.NormalizedSource.AsSpan(
+            declaration.NormalizedStart,
+            declaration.NormalizedLength).ToString();
+    }
 
     private static SymbolDeclarationData PreferredDeclaration(IndexSnapshot snapshot, SymbolData symbol) =>
         snapshot.Declarations[symbol.PreferredDeclarationKey!];

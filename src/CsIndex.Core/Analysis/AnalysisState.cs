@@ -17,6 +17,7 @@ internal sealed class DocumentAnalysisState
 {
     public required Document Document { get; init; }
     public required DocumentData Data { get; init; }
+    public required NormalizedSourceDocument NormalizedSource { get; init; }
     public Dictionary<int, string> MethodOwners { get; } = [];
     public Dictionary<int, string> PrimaryConstructorBaseArgumentOwners { get; } = [];
     public Dictionary<int, string> AccessorOwners { get; } = [];

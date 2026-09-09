@@ -549,7 +549,6 @@ public sealed class RootSelectionOrchestrationTests(
         Assert.All(expandedRunner.MatchingDeclarations, declaration =>
         {
             Assert.Null(declaration.NormalizedSource);
-            Assert.Null(declaration.NormalizedSourceHash);
         });
 
         var fullDeclarations = await repository.GetDeclarationsAsync(

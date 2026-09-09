@@ -222,18 +222,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             var generated = GeneratedCodeDetector.Detect(path, text);
             var contentHash = HashUtilities.Sha256(text.ToString());
             var documentKey = $"{projectState.Data.Key}|document:{path}";
-            var documentData = new DocumentData
-            {
-                Key = documentKey,
-                ProjectKey = projectState.Data.Key,
-                NormalizedPath = path,
-                ContentHash = contentHash,
-                IsGenerated = generated.IsGenerated,
-                GenerationKind = generated.Kind,
-            };
-            _snapshot.Documents.Add(documentData);
-            var documentState = new DocumentAnalysisState { Document = document, Data = documentData };
-            projectState.Documents[document.Id] = documentState;
 
             var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -242,6 +230,27 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 _snapshot.Warnings.Add($"Syntax or semantic model could not be loaded: {path}");
                 continue;
             }
+
+            var normalizedDocument = SourceNormalizer.NormalizeDocument(root, cancellationToken);
+            var documentData = new DocumentData
+            {
+                Key = documentKey,
+                ProjectKey = projectState.Data.Key,
+                NormalizedPath = path,
+                ContentHash = contentHash,
+                NormalizedSource = normalizedDocument.Text,
+                NormalizedSourceHash = normalizedDocument.Hash,
+                IsGenerated = generated.IsGenerated,
+                GenerationKind = generated.Kind,
+            };
+            _snapshot.Documents.Add(documentData);
+            var documentState = new DocumentAnalysisState
+            {
+                Document = document,
+                Data = documentData,
+                NormalizedSource = normalizedDocument,
+            };
+            projectState.Documents[document.Id] = documentState;
 
             _sourceTreeProjectKeys[semanticModel.SyntaxTree] = projectState.Data.Key;
 
@@ -266,7 +275,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 }
 
                 var containingKey = EnsureType(method.ContainingType);
-                var normalizedSource = SourceNormalizer.Normalize(methodNode, cancellationToken);
+                var normalizedRange = documentState.NormalizedSource.GetRange(methodNode);
                 var data = _canonicalizer.CreateMethod(
                     method.OriginalDefinition,
                     projectState.Data.Key,
@@ -277,8 +286,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     containingKey) with
                 {
                     AsyncRole = AsyncSymbolClassifier.Classify(method.OriginalDefinition, projectState.Compilation),
-                    NormalizedSource = normalizedSource.Text,
-                    NormalizedSourceHash = normalizedSource.Hash,
                 };
                 UpsertSymbol(data);
                 AddDeclaration(
@@ -288,8 +295,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     GetDeclarationRole(method, methodNode),
                     methodNode.SpanStart,
                     methodNode.Span.Length,
-                    normalizedSource.Text,
-                    normalizedSource.Hash,
+                    normalizedRange,
                     generated.IsGenerated);
                 RegisterSourceSymbol(projectState.Data.Key, method.OriginalDefinition, data.StableKey);
                 documentState.MethodOwners[methodNode.SpanStart] = data.StableKey;
@@ -303,7 +309,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 }
 
                 var containingKey = EnsureType(method.ContainingType);
-                var normalizedSource = SourceNormalizer.Normalize(accessorNode, cancellationToken);
+                var normalizedRange = documentState.NormalizedSource.GetRange(accessorNode);
                 var data = _canonicalizer.CreateMethod(
                     method.OriginalDefinition,
                     projectState.Data.Key,
@@ -314,8 +320,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     containingKey) with
                 {
                     AsyncRole = AsyncSymbolClassifier.Classify(method.OriginalDefinition, projectState.Compilation),
-                    NormalizedSource = normalizedSource.Text,
-                    NormalizedSourceHash = normalizedSource.Hash,
                 };
                 UpsertSymbol(data);
                 AddDeclaration(
@@ -325,8 +329,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     DeclarationRole.Ordinary,
                     accessorNode.SpanStart,
                     accessorNode.Span.Length,
-                    normalizedSource.Text,
-                    normalizedSource.Hash,
+                    normalizedRange,
                     generated.IsGenerated);
                 RegisterSourceSymbol(projectState.Data.Key, method.OriginalDefinition, data.StableKey);
                 documentState.AccessorOwners[accessorNode.SpanStart] = data.StableKey;
@@ -485,17 +488,18 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     callerKey,
                     invocation.TargetMethod,
                     ReferenceKind.Invocation,
-                    invocationSyntax.SpanStart,
-                    invocationSyntax.Span.Length,
+                    invocationSyntax,
                     documentState.Data.Key,
                     invocationSyntax.Expression.ToString(),
                     invocation.Instance?.Type,
+                    documentState,
                     AsyncOperationClassifier.ClassifyInvocation(invocation, projectState.Compilation));
                 continue;
             }
 
             if (operation is IDynamicInvocationOperation dynamicInvocation)
             {
+                var normalizedRange = documentState.NormalizedSource.GetRange(invocationSyntax);
                 _snapshot.Calls.Add(new CallData
                 {
                     CallerSymbolKey = callerKey,
@@ -506,6 +510,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     DocumentKey = documentState.Data.Key,
                     SourceStart = invocationSyntax.SpanStart,
                     SourceLength = invocationSyntax.Span.Length,
+                    NormalizedStart = normalizedRange.Start,
+                    NormalizedLength = normalizedRange.Length,
                     UnresolvedName = invocationSyntax.Expression.ToString(),
                     ReceiverTypeKey = SymbolCanonicalizer.FormatType(dynamicInvocation.Operation.Type),
                 });
@@ -515,12 +521,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             AddUnresolvedCall(
                 callerKey,
                 invocationSyntax.Expression,
-                invocationSyntax.SpanStart,
-                invocationSyntax.Span.Length,
                 documentState.Data.Key,
                 model,
                 projectState,
-                cancellationToken);
+                cancellationToken,
+                documentState);
         }
     }
 
@@ -547,23 +552,22 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     callerKey,
                     constructor,
                     ReferenceKind.ObjectCreation,
-                    creationSyntax.SpanStart,
-                    creationSyntax.Span.Length,
+                    creationSyntax,
                     documentState.Data.Key,
                     creationSyntax.ToString(),
-                    creation.Type);
+                    creation.Type,
+                    documentState);
             }
             else
             {
                 AddUnresolvedCall(
                     callerKey,
                     creationSyntax,
-                    creationSyntax.SpanStart,
-                    creationSyntax.Span.Length,
                     documentState.Data.Key,
                     model,
                     projectState,
-                    cancellationToken);
+                    cancellationToken,
+                    documentState);
             }
         }
     }
@@ -610,6 +614,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
+            var normalizedRange = documentState.NormalizedSource.GetRange(expression);
             _snapshot.Calls.Add(new CallData
             {
                 CallerSymbolKey = callerKey,
@@ -622,6 +627,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 DocumentKey = documentState.Data.Key,
                 SourceStart = expression.SpanStart,
                 SourceLength = expression.Span.Length,
+                NormalizedStart = normalizedRange.Start,
+                NormalizedLength = normalizedRange.Length,
                 UnresolvedName = expression.ToString(),
             });
         }
@@ -815,7 +822,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             }
 
             var containingKey = EnsureType(type);
-            var normalizedSource = SourceNormalizer.Normalize(parameterList, cancellationToken);
+            var normalizedRange = documentState.NormalizedSource.GetRange(parameterList);
             var sourceStart = declaration.Identifier.SpanStart;
             var sourceLength = parameterList.Span.End - sourceStart;
             var data = _canonicalizer.CreateMethod(
@@ -828,8 +835,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 containingKey) with
             {
                 AsyncRole = AsyncSymbolClassifier.Classify(constructor.OriginalDefinition, compilation),
-                NormalizedSource = normalizedSource.Text,
-                NormalizedSourceHash = normalizedSource.Hash,
             };
             UpsertSymbol(data);
             AddDeclaration(
@@ -839,8 +844,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 DeclarationRole.Ordinary,
                 sourceStart,
                 sourceLength,
-                normalizedSource.Text,
-                normalizedSource.Hash,
+                normalizedRange,
                 documentState.Data.IsGenerated);
             RegisterSourceSymbol(projectKey, constructor.OriginalDefinition, data.StableKey);
             if (declaration.BaseList is { } baseList &&
@@ -911,7 +915,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 initializer.SpanStart,
                 initializer.Span.Length,
                 documentState.Data.ContentHash);
-            var normalizedSource = SourceNormalizer.Normalize(initializer, cancellationToken);
+            var normalizedRange = documentState.NormalizedSource.GetRange(initializer);
             var data = new SymbolData
             {
                 StableKey = stableKey,
@@ -929,8 +933,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 SourceDocumentKey = documentState.Data.Key,
                 SourceStart = initializer.SpanStart,
                 SourceLength = initializer.Span.Length,
-                NormalizedSource = normalizedSource.Text,
-                NormalizedSourceHash = normalizedSource.Hash,
                 IsStatic = isStatic,
                 IsGenerated = documentState.Data.IsGenerated,
             };
@@ -942,8 +944,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 DeclarationRole.Ordinary,
                 initializer.SpanStart,
                 initializer.Span.Length,
-                normalizedSource.Text,
-                normalizedSource.Hash,
+                normalizedRange,
                 documentState.Data.IsGenerated);
             documentState.InitializerOwners[initializer.SpanStart] = stableKey;
         }
@@ -975,7 +976,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             }
 
             var containingKey = EnsureType(getter.ContainingType);
-            var normalizedSource = SourceNormalizer.Normalize(member, cancellationToken);
+            var normalizedRange = documentState.NormalizedSource.GetRange(member);
             var data = _canonicalizer.CreateMethod(
                 getter.OriginalDefinition,
                 projectKey,
@@ -986,8 +987,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 containingKey) with
             {
                 AsyncRole = AsyncSymbolClassifier.Classify(getter.OriginalDefinition, compilation),
-                NormalizedSource = normalizedSource.Text,
-                NormalizedSourceHash = normalizedSource.Hash,
             };
             UpsertSymbol(data);
             AddDeclaration(
@@ -997,8 +996,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 DeclarationRole.Ordinary,
                 member.SpanStart,
                 member.Span.Length,
-                normalizedSource.Text,
-                normalizedSource.Hash,
+                normalizedRange,
                 documentState.Data.IsGenerated);
             RegisterSourceSymbol(projectKey, getter.OriginalDefinition, data.StableKey);
             documentState.ExpressionBodiedMemberOwners[member.SpanStart] = data.StableKey;
@@ -1032,7 +1030,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             start,
             end - start,
             documentState.Data.ContentHash);
-        var normalizedSource = SourceNormalizer.Normalize(root, cancellationToken);
+        var normalizedRange = documentState.NormalizedSource.GetRange(root);
         var data = new SymbolData
         {
             StableKey = stableKey,
@@ -1050,8 +1048,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             SourceDocumentKey = documentState.Data.Key,
             SourceStart = start,
             SourceLength = end - start,
-            NormalizedSource = normalizedSource.Text,
-            NormalizedSourceHash = normalizedSource.Hash,
             IsGenerated = documentState.Data.IsGenerated,
         };
         UpsertSymbol(data);
@@ -1062,8 +1058,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             DeclarationRole.Ordinary,
             start,
             end - start,
-            normalizedSource.Text,
-            normalizedSource.Hash,
+            normalizedRange,
             documentState.Data.IsGenerated);
         documentState.TopLevelOwner = stableKey;
     }
@@ -1128,7 +1123,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return;
         }
 
-        var normalizedSource = SourceNormalizer.Normalize(localFunction, cancellationToken);
+        var normalizedRange = documentState.NormalizedSource.GetRange(localFunction);
         var data = _canonicalizer.CreateMethod(
             method,
             projectKey,
@@ -1140,8 +1135,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             containingPath) with
         {
             AsyncRole = AsyncSymbolClassifier.Classify(method, compilation),
-            NormalizedSource = normalizedSource.Text,
-            NormalizedSourceHash = normalizedSource.Hash,
         };
         UpsertSymbol(data);
         AddDeclaration(
@@ -1151,8 +1144,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             DeclarationRole.Ordinary,
             localFunction.SpanStart,
             localFunction.Span.Length,
-            normalizedSource.Text,
-            normalizedSource.Hash,
+            normalizedRange,
             documentState.Data.IsGenerated);
         RegisterSourceSymbol(projectKey, method, data.StableKey);
         documentState.LocalFunctionOwners[localFunction.SpanStart] = data.StableKey;
@@ -1196,7 +1188,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             return;
         }
 
-        var normalizedSource = SourceNormalizer.Normalize(anonymousFunction, cancellationToken);
+        var normalizedRange = documentState.NormalizedSource.GetRange(anonymousFunction);
         var data = _canonicalizer.CreateAnonymousFunction(
             operation.Symbol,
             stableKey,
@@ -1210,8 +1202,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             anonymousFunction.Span.Length,
             documentState.Data.IsGenerated) with
         {
-            NormalizedSource = normalizedSource.Text,
-            NormalizedSourceHash = normalizedSource.Hash,
             AsyncRole = AsyncSymbolClassifier.Classify(operation.Symbol, semanticModel.Compilation),
         };
         UpsertSymbol(data);
@@ -1222,8 +1212,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             DeclarationRole.Ordinary,
             anonymousFunction.SpanStart,
             anonymousFunction.Span.Length,
-            normalizedSource.Text,
-            normalizedSource.Hash,
+            normalizedRange,
             documentState.Data.IsGenerated);
         documentState.LambdaOwners[anonymousFunction.SpanStart] = stableKey;
     }
@@ -1248,6 +1237,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 continue;
             }
 
+            var normalizedRange = documentState.NormalizedSource.GetRange(expression);
             foreach (var candidate in methods)
             {
                 _snapshot.Calls.Add(new CallData
@@ -1262,6 +1252,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     DocumentKey = documentState.Data.Key,
                     SourceStart = expression.SpanStart,
                     SourceLength = expression.Span.Length,
+                    NormalizedStart = normalizedRange.Start,
+                    NormalizedLength = normalizedRange.Length,
                     UnresolvedName = expression.ToString(),
                 });
             }
@@ -1274,13 +1266,14 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         string callerKey,
         IMethodSymbol target,
         ReferenceKind referenceKind,
-        int sourceStart,
-        int sourceLength,
+        SyntaxNode sourceNode,
         string documentKey,
         string sourceToken,
         ITypeSymbol? receiverType,
+        DocumentAnalysisState documentState,
         AsyncUsageKind asyncUsageKind = AsyncUsageKind.None)
     {
+        var normalizedRange = documentState.NormalizedSource.GetRange(sourceNode);
         _snapshot.Calls.Add(new CallData
         {
             CallerSymbolKey = callerKey,
@@ -1292,8 +1285,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             ResolutionReason = ResolutionReason.None,
             AsyncUsageKind = asyncUsageKind,
             DocumentKey = documentKey,
-            SourceStart = sourceStart,
-            SourceLength = sourceLength,
+            SourceStart = sourceNode.SpanStart,
+            SourceLength = sourceNode.Span.Length,
+            NormalizedStart = normalizedRange.Start,
+            NormalizedLength = normalizedRange.Length,
             UnresolvedName = sourceToken,
             ReceiverTypeKey = SymbolCanonicalizer.FormatType(receiverType),
         });
@@ -1302,12 +1297,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
     private void AddUnresolvedCall(
         string callerKey,
         ExpressionSyntax expression,
-        int sourceStart,
-        int sourceLength,
         string documentKey,
         SemanticModel model,
         ProjectAnalysisState projectState,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DocumentAnalysisState documentState)
     {
         var symbolInfo = model.GetSymbolInfo(expression, cancellationToken);
         var candidates = NormalizeCandidateKeys(
@@ -1315,6 +1309,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             _canonicalizer.NormalizeLogicalMethod,
             EnsureMethod);
         var ambiguous = candidates.Length > 0;
+        var normalizedRange = documentState.NormalizedSource.GetRange(expression);
         _snapshot.Calls.Add(new CallData
         {
             CallerSymbolKey = callerKey,
@@ -1327,8 +1322,10 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     ? ResolutionReason.MissingMetadataReference
                     : ResolutionReason.CompilationError,
             DocumentKey = documentKey,
-            SourceStart = sourceStart,
-            SourceLength = sourceLength,
+            SourceStart = expression.SpanStart,
+            SourceLength = expression.Span.Length,
+            NormalizedStart = normalizedRange.Start,
+            NormalizedLength = normalizedRange.Length,
             UnresolvedName = expression.ToString(),
             CandidateSymbolKeys = candidates,
         });
@@ -1397,8 +1394,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         DeclarationRole role,
         int sourceStart,
         int sourceLength,
-        string normalizedSource,
-        byte[] normalizedSourceHash,
+        NormalizedSourceRange normalizedRange,
         bool isGenerated)
     {
         var key = _canonicalizer.GetDeclarationKey(
@@ -1415,8 +1411,8 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             Role = role,
             SourceStart = sourceStart,
             SourceLength = sourceLength,
-            NormalizedSource = normalizedSource,
-            NormalizedSourceHash = normalizedSourceHash,
+            NormalizedStart = normalizedRange.Start,
+            NormalizedLength = normalizedRange.Length,
             IsGenerated = isGenerated,
         };
         _declarationProjectionData[key] = data;
@@ -1451,8 +1447,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     SourceDocumentKey = null,
                     SourceStart = null,
                     SourceLength = null,
-                    NormalizedSource = null,
-                    NormalizedSourceHash = null,
                 };
                 continue;
             }
@@ -1487,8 +1481,6 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                 SourceDocumentKey = null,
                 SourceStart = null,
                 SourceLength = null,
-                NormalizedSource = null,
-                NormalizedSourceHash = null,
                 IsGenerated = preferred.IsGenerated,
                 AsyncRole = directAsyncRole | bodyAsyncRole,
             };

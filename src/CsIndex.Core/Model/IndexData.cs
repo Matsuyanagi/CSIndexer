@@ -29,6 +29,8 @@ public sealed record DocumentData
     public required string ProjectKey { get; init; }
     public required string NormalizedPath { get; init; }
     public required byte[] ContentHash { get; init; }
+    public required string NormalizedSource { get; init; }
+    public required byte[] NormalizedSourceHash { get; init; }
     public byte[]? SemanticHash { get; init; }
     public required bool IsGenerated { get; init; }
     public required GenerationKind GenerationKind { get; init; }
@@ -62,8 +64,8 @@ public sealed record SymbolDeclarationData
     public required DeclarationRole Role { get; init; }
     public required int SourceStart { get; init; }
     public required int SourceLength { get; init; }
-    public required string NormalizedSource { get; init; }
-    public required byte[] NormalizedSourceHash { get; init; }
+    public required int NormalizedStart { get; init; }
+    public required int NormalizedLength { get; init; }
     public required bool IsGenerated { get; init; }
 }
 
@@ -100,8 +102,6 @@ public sealed record SymbolData
     public string? ReturnTypeDisplay { get; init; }
     public string? ConversionTypeKey { get; init; }
     public string? ConversionTypeDisplay { get; init; }
-    public string? NormalizedSource { get; init; }
-    public byte[]? NormalizedSourceHash { get; init; }
     public bool IsGenerated { get; init; }
     public IReadOnlyList<MethodParameterData> Parameters { get; init; } = [];
 }
@@ -119,6 +119,8 @@ public sealed record CallData
     public required string DocumentKey { get; init; }
     public required int SourceStart { get; init; }
     public required int SourceLength { get; init; }
+    public required int NormalizedStart { get; init; }
+    public required int NormalizedLength { get; init; }
     public string? UnresolvedName { get; init; }
     public string? ReceiverTypeKey { get; init; }
     public IReadOnlyList<string> CandidateSymbolKeys { get; init; } = [];

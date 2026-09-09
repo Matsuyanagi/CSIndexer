@@ -176,8 +176,6 @@ public sealed class PortableAnalysisPathTests
         Assert.Null(run.SourceDocumentKey);
         Assert.Null(run.SourceStart);
         Assert.Null(run.SourceLength);
-        Assert.Null(run.NormalizedSource);
-        Assert.Null(run.NormalizedSourceHash);
         Assert.Contains(snapshot.Symbols.Keys, key =>
             key.Contains("|document:src/Main.cs|", StringComparison.Ordinal));
 

@@ -208,7 +208,8 @@ public sealed class AsyncInvolvementPropagatorTests
         IndexSnapshot snapshot,
         string key,
         AsyncRole role,
-        bool sourceBacked = true) =>
+        bool sourceBacked = true)
+    {
         snapshot.Symbols[key] = new SymbolData
         {
             StableKey = key,
@@ -218,9 +219,25 @@ public sealed class AsyncInvolvementPropagatorTests
             FullyQualifiedName = key,
             DisplayName = key,
             AsyncRole = role,
-            SourceDocumentKey = sourceBacked ? "document" : null,
-            NormalizedSource = sourceBacked ? $"void {key}(){{}}" : null,
+            SourceDocumentKey = "document",
+            PreferredDeclarationKey = sourceBacked ? $"{key}-declaration" : null,
         };
+        if (sourceBacked)
+        {
+            snapshot.Declarations[$"{key}-declaration"] = new SymbolDeclarationData
+            {
+                Key = $"{key}-declaration",
+                SymbolKey = key,
+                DocumentKey = "document",
+                Role = DeclarationRole.Ordinary,
+                SourceStart = 0,
+                SourceLength = 1,
+                NormalizedStart = 0,
+                NormalizedLength = 1,
+                IsGenerated = false,
+            };
+        }
+    }
 
     private static void AddCall(IndexSnapshot snapshot, string caller, string callee) =>
         snapshot.Calls.Add(new CallData
@@ -235,6 +252,8 @@ public sealed class AsyncInvolvementPropagatorTests
             DocumentKey = "document",
             SourceStart = 0,
             SourceLength = 1,
+            NormalizedStart = 0,
+            NormalizedLength = 1,
         });
 
     private static IndexSnapshot CreateSnapshot() => new()

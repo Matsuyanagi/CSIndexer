@@ -2246,8 +2246,9 @@ public sealed class OutputFormatterTests : IDisposable
             Role: DeclarationRole.Ordinary,
             SourceStart: symbol.SourceStart ?? 0,
             SourceLength: symbol.SourceLength ?? symbol.NormalizedSource?.Length ?? 0,
+            NormalizedStart: 0,
+            NormalizedLength: symbol.NormalizedSource?.Length ?? 0,
             NormalizedSource: symbol.NormalizedSource,
-            NormalizedSourceHash: symbol.NormalizedSourceHash,
             IsGenerated: symbol.IsGenerated);
 
     private static StoredProfile CreateProfile() => new(
@@ -2288,8 +2289,9 @@ public sealed class OutputFormatterTests : IDisposable
                 Role: DeclarationRole.Ordinary,
                 SourceStart: sourceStart ?? 0,
                 SourceLength: normalizedSource?.Length ?? 0,
+                NormalizedStart: 0,
+                NormalizedLength: normalizedSource?.Length ?? 0,
                 NormalizedSource: normalizedSource,
-                NormalizedSourceHash: null,
                 IsGenerated: false)
             : null;
         return new StoredSymbol(
@@ -2312,8 +2314,6 @@ public sealed class OutputFormatterTests : IDisposable
             AsyncInvolvementDepth: asyncInvolvementDepth,
             AsyncNextSymbolId: null,
             ReturnTypeKey: returnTypeKey,
-            NormalizedSource: null,
-            NormalizedSourceHash: null,
             DocumentPath: documentPath,
             SourceStart: sourceStart,
             SourceLength: preferredDeclaration?.SourceLength,
@@ -2386,6 +2386,9 @@ public sealed class OutputFormatterTests : IDisposable
         DocumentPath: "missing.cs",
         SourceStart: 0,
         SourceLength: 1,
+        NormalizedStart: 0,
+        NormalizedLength: 1,
+        NormalizedSource: null,
         IsGenerated: false,
         UnresolvedName: null,
         ReceiverTypeKey: null);

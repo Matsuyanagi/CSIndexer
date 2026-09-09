@@ -12,7 +12,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
 
     private readonly string _databasePath = PathNormalizer.Normalize(databasePath);
 
-    internal Action? NormalizedSourceCellReadObserver { get; set; }
+    internal Action? NormalizedSourcePayloadReadObserver { get; set; }
     internal Action<TraversalOperation>? TraversalObserver { get; set; }
 
     public string DatabasePath => _databasePath;
@@ -217,14 +217,11 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
-        var sourceProjection = includeSourceText
-            ? "d.normalized_source, d.normalized_source_hash"
-            : "NULL, NULL";
         command.CommandText = $"""
             SELECT
                 d.id, d.declaration_key, d.symbol_id, d.document_id, doc.normalized_path,
                 d.declaration_role, d.source_start, d.source_length,
-                {sourceProjection}, d.is_generated
+                d.normalized_start, d.normalized_length, NULL, d.is_generated
             FROM symbol_declarations d
             JOIN symbols s ON s.id = d.symbol_id
             JOIN documents doc ON doc.id = d.document_id
@@ -240,7 +237,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                 doc.normalized_path, d.source_start, d.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
-        return await ReadDeclarationsAsync(command, includeSourceText, cancellationToken);
+        return await ReadDeclarationsAsync(connection, command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredDeclaration>> GetPreferredDeclarationsAsync(
@@ -258,14 +255,11 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         var placeholders = AddIdParameters(command, ids);
-        var sourceProjection = includeSourceText
-            ? "d.normalized_source, d.normalized_source_hash"
-            : "NULL, NULL";
         command.CommandText = $"""
             SELECT
                 d.id, d.declaration_key, d.symbol_id, d.document_id, doc.normalized_path,
                 d.declaration_role, d.source_start, d.source_length,
-                {sourceProjection}, d.is_generated
+                d.normalized_start, d.normalized_length, NULL, d.is_generated
             FROM symbols s
             JOIN symbol_declarations d ON d.id = s.preferred_declaration_id
             JOIN documents doc ON doc.id = d.document_id
@@ -274,7 +268,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             ORDER BY s.id;
             """;
         command.Parameters.AddWithValue("$profile_id", profileId);
-        return await ReadDeclarationsAsync(command, includeSourceText, cancellationToken);
+        return await ReadDeclarationsAsync(connection, command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredSymbol>> FindFunctionSymbolsAsync(
@@ -684,6 +678,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         IEnumerable<long> definitionIds,
         GeneratedFilter generatedFilter,
         IReadOnlySet<ReferenceKind>? referenceKinds = null,
+        bool includeSourceText = false,
         CancellationToken cancellationToken = default)
     {
         var ids = definitionIds.Distinct().ToArray();
@@ -713,7 +708,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$generated_filter", (int)generatedFilter);
-        return await ReadCallsAsync(command, cancellationToken);
+        return await ReadCallsAsync(connection, command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredCall>> GetCallsByCallerAsync(
@@ -721,6 +716,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         IEnumerable<long> callerIds,
         GeneratedFilter generatedFilter,
         IReadOnlySet<ReferenceKind>? referenceKinds = null,
+        bool includeSourceText = false,
         CancellationToken cancellationToken = default)
     {
         var ids = callerIds.Distinct().ToArray();
@@ -744,7 +740,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             """);
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$generated_filter", (int)generatedFilter);
-        return await ReadCallsAsync(command, cancellationToken);
+        return await ReadCallsAsync(connection, command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredCall>> GetCallsByCallerIncludingLambdaDescendantsAsync(
@@ -752,6 +748,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         IEnumerable<long> rootIds,
         GeneratedFilter generatedFilter,
         IReadOnlySet<ReferenceKind>? referenceKinds = null,
+        bool includeSourceText = false,
         CancellationToken cancellationToken = default)
     {
         var ids = rootIds.Distinct().ToArray();
@@ -797,7 +794,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$lambda_kind", (int)IndexedSymbolKind.Lambda);
         command.Parameters.AddWithValue("$generated_filter", (int)generatedFilter);
-        return await ReadCallsAsync(command, cancellationToken);
+        return await ReadCallsAsync(connection, command, includeSourceText, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoredRelation>> GetRelationsByTargetAsync(
@@ -923,7 +920,11 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         command.Parameters.AddWithValue("$profile_id", profileId);
         command.Parameters.AddWithValue("$document_id", documentId);
         command.Parameters.AddWithValue("$position", position);
-        return (await ReadCallsAsync(command, cancellationToken)).FirstOrDefault();
+        return (await ReadCallsAsync(
+            connection,
+            command,
+            includeSourceText: false,
+            cancellationToken: cancellationToken)).FirstOrDefault();
     }
 
     public async Task<IReadOnlyList<ConditionalSummary>> GetConditionalSymbolsAsync(
@@ -1069,8 +1070,6 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
                     reader.IsDBNull(26) ? null : reader.GetInt32(26),
                     reader.IsDBNull(27) ? null : reader.GetInt64(27),
                     reader.IsDBNull(28) ? null : reader.GetString(28),
-                    null,
-                    null,
                     preferredPath,
                     preferredStart,
                     preferredLength,
@@ -1144,66 +1143,118 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
     }
 
     private async Task<IReadOnlyList<StoredDeclaration>> ReadDeclarationsAsync(
+        SqliteConnection connection,
         SqliteCommand command,
         bool includeSourceText,
         CancellationToken cancellationToken)
     {
         var rows = new List<StoredDeclaration>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            string? normalizedSource = null;
-            if (includeSourceText && !reader.IsDBNull(8))
+            while (await reader.ReadAsync(cancellationToken))
             {
-                NormalizedSourceCellReadObserver?.Invoke();
-                normalizedSource = reader.GetString(8);
+                rows.Add(new StoredDeclaration(
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetInt64(2),
+                    reader.GetInt64(3),
+                    reader.GetString(4),
+                    (DeclarationRole)reader.GetInt32(5),
+                    reader.GetInt32(6),
+                    reader.GetInt32(7),
+                    reader.GetInt32(8),
+                    reader.GetInt32(9),
+                    null,
+                    reader.GetBoolean(11)));
             }
-
-            rows.Add(new StoredDeclaration(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetInt64(2),
-                reader.GetInt64(3),
-                reader.GetString(4),
-                (DeclarationRole)reader.GetInt32(5),
-                reader.GetInt32(6),
-                reader.GetInt32(7),
-                normalizedSource,
-                includeSourceText && !reader.IsDBNull(9) ? reader.GetFieldValue<byte[]>(9) : null,
-                reader.GetBoolean(10)));
         }
 
+        if (!includeSourceText || rows.Count == 0)
+        {
+            return rows;
+        }
+
+        var documents = await LoadNormalizedSourcesByDocumentAsync(
+            connection,
+            rows.Select(row => row.DocumentId),
+            cancellationToken);
+        for (var index = 0; index < rows.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = rows[index];
+            rows[index] = row with
+            {
+                NormalizedSource = SliceNormalizedSource(
+                    "declaration",
+                    row.Id,
+                    row.DocumentId,
+                    row.NormalizedStart,
+                    row.NormalizedLength,
+                    documents),
+            };
+        }
         return rows;
     }
 
-    private static async Task<IReadOnlyList<StoredCall>> ReadCallsAsync(
+    private async Task<IReadOnlyList<StoredCall>> ReadCallsAsync(
+        SqliteConnection connection,
         SqliteCommand command,
+        bool includeSourceText,
         CancellationToken cancellationToken)
     {
         var result = new List<StoredCall>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            result.Add(new StoredCall(
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.IsDBNull(2) ? null : reader.GetInt64(2),
-                reader.IsDBNull(3) ? null : reader.GetInt64(3),
-                reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                (ReferenceKind)reader.GetInt32(5),
-                (DispatchKind)reader.GetInt32(6),
-                (ResolutionStatus)reader.GetInt32(7),
-                (ResolutionReason)reader.GetInt32(8),
-                (AsyncUsageKind)reader.GetInt32(9),
-                reader.GetInt64(10),
-                reader.GetString(11),
-                reader.GetInt32(12),
-                reader.GetInt32(13),
-                reader.GetBoolean(14),
-                reader.IsDBNull(15) ? null : reader.GetString(15),
-                reader.IsDBNull(16) ? null : reader.GetString(16)));
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new StoredCall(
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    (ReferenceKind)reader.GetInt32(5),
+                    (DispatchKind)reader.GetInt32(6),
+                    (ResolutionStatus)reader.GetInt32(7),
+                    (ResolutionReason)reader.GetInt32(8),
+                    (AsyncUsageKind)reader.GetInt32(9),
+                    reader.GetInt64(10),
+                    reader.GetString(11),
+                    reader.GetInt32(12),
+                    reader.GetInt32(13),
+                    reader.GetInt32(14),
+                    reader.GetInt32(15),
+                    null,
+                    reader.GetBoolean(17),
+                    reader.IsDBNull(18) ? null : reader.GetString(18),
+                    reader.IsDBNull(19) ? null : reader.GetString(19)));
+            }
         }
 
+        if (!includeSourceText || result.Count == 0)
+        {
+            return result;
+        }
+
+        var documents = await LoadNormalizedSourcesByDocumentAsync(
+            connection,
+            result.Select(row => row.DocumentId),
+            cancellationToken);
+        for (var index = 0; index < result.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = result[index];
+            result[index] = row with
+            {
+                NormalizedSource = SliceNormalizedSource(
+                    "call",
+                    row.Id,
+                    row.DocumentId,
+                    row.NormalizedStart,
+                    row.NormalizedLength,
+                    documents),
+            };
+        }
         return result;
     }
 
@@ -1246,7 +1297,8 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             definition.id,
             c.reference_kind, c.dispatch_kind, c.resolution_status, c.resolution_reason,
             c.async_usage_kind,
-            d.id, d.normalized_path, c.source_start, c.source_length, d.is_generated,
+            d.id, d.normalized_path, c.source_start, c.source_length,
+            c.normalized_start, c.normalized_length, NULL, d.is_generated,
             c.unresolved_name, c.receiver_type_key
         FROM calls c
         JOIN symbols caller ON caller.id = c.caller_symbol_id
@@ -1255,6 +1307,99 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
         JOIN documents d ON d.id = c.document_id
         WHERE {whereClause}
         """;
+
+    private async Task<IReadOnlyDictionary<long, string>> LoadNormalizedSourcesByDocumentAsync(
+        SqliteConnection connection,
+        IEnumerable<long> documentIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = documentIds.Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<long, string>();
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT d.id, ns.id, ns.normalized_source
+            FROM documents d
+            JOIN normalized_sources ns ON ns.id = d.normalized_source_id
+            WHERE d.id IN (
+                SELECT CAST(value AS INTEGER) FROM json_each($document_ids)
+            )
+            ORDER BY d.id;
+            """;
+        command.Parameters.AddWithValue("$document_ids", JsonSerializer.Serialize(ids));
+        var result = new Dictionary<long, string>();
+        var payloadIds = new HashSet<long>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var documentId = reader.GetInt64(0);
+            var payloadId = reader.GetInt64(1);
+            var text = reader.GetString(2);
+            if (result.TryGetValue(documentId, out var existing))
+            {
+                if (!StringComparer.Ordinal.Equals(existing, text))
+                {
+                    throw new IndexDatabaseException(
+                        $"Document {documentId} returned duplicate normalized-source payloads with unequal text.");
+                }
+
+                continue;
+            }
+
+            result.Add(documentId, text);
+            if (payloadIds.Add(payloadId))
+            {
+                NormalizedSourcePayloadReadObserver?.Invoke();
+            }
+        }
+
+        return result;
+    }
+
+    private static string SliceNormalizedSource(
+        string rowKind,
+        long rowId,
+        long documentId,
+        int start,
+        int length,
+        IReadOnlyDictionary<long, string> documents)
+    {
+        if (!documents.TryGetValue(documentId, out var document))
+        {
+            throw new IndexDatabaseException(
+                $"The {rowKind} row {rowId} references missing normalized document {documentId}.");
+        }
+
+        if (start < 0 || length <= 0)
+        {
+            throw new IndexDatabaseException(
+                $"The {rowKind} row {rowId} has an invalid normalized range for document {documentId}.");
+        }
+
+        int end;
+        try
+        {
+            end = checked(start + length);
+        }
+        catch (OverflowException exception)
+        {
+            throw new IndexDatabaseException(
+                $"The {rowKind} row {rowId} has an overflowing normalized range for document {documentId}.",
+                exception);
+        }
+
+        if (end > document.Length)
+        {
+            throw new IndexDatabaseException(
+                $"The {rowKind} row {rowId} normalized range exceeds document {documentId}.");
+        }
+
+        return document.AsSpan(start, length).ToString();
+    }
 
     private static string AddIdParameters(SqliteCommand command, IReadOnlyList<long> ids)
     {

@@ -31,7 +31,7 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
-    public async Task Save_CreatesVersionFiveSchemaWithSemanticPathsAndAsyncNextForeignKey()
+    public async Task Save_CreatesVersionSixSchemaWithDocumentPayloadRangesAndAsyncNextForeignKey()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var temporary = new TempDirectory();
@@ -40,8 +40,8 @@ public sealed class SqliteIndexTests
 
         await index.SaveAsync(CreateSnapshot(temporary.Path), cancellationToken);
 
-        Assert.Equal(5, SchemaMigrator.CurrentVersion);
-        Assert.Equal(5, RequestHasher.SchemaVersion);
+        Assert.Equal(6, SchemaMigrator.CurrentVersion);
+        Assert.Equal(6, RequestHasher.SchemaVersion);
 
         var connectionString = new SqliteConnectionStringBuilder
         {
@@ -70,6 +70,31 @@ public sealed class SqliteIndexTests
         Assert.DoesNotContain("normalized_source", columns.Keys);
         Assert.DoesNotContain("normalized_source_hash", columns.Keys);
 
+        command.CommandText = "PRAGMA table_info(documents);";
+        var documentColumns = new Dictionary<string, (string Type, bool NotNull)>(StringComparer.Ordinal);
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                documentColumns.Add(reader.GetString(1), (reader.GetString(2), reader.GetInt32(3) != 0));
+            }
+        }
+
+        Assert.True(documentColumns["normalized_source_id"].NotNull);
+        Assert.Equal("INTEGER", documentColumns["normalized_source_id"].Type);
+
+        command.CommandText = "PRAGMA table_info(symbol_declarations);";
+        var declarationColumns = await ReadNameColumnAsync(command, cancellationToken);
+        Assert.Contains("normalized_start", declarationColumns);
+        Assert.Contains("normalized_length", declarationColumns);
+        Assert.DoesNotContain("normalized_source", declarationColumns);
+        Assert.DoesNotContain("normalized_source_hash", declarationColumns);
+
+        command.CommandText = "PRAGMA table_info(calls);";
+        var callColumns = await ReadNameColumnAsync(command, cancellationToken);
+        Assert.Contains("normalized_start", callColumns);
+        Assert.Contains("normalized_length", callColumns);
+
         command.CommandText = "PRAGMA foreign_key_list(symbols);";
         var hasAsyncNextForeignKey = false;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
@@ -84,6 +109,13 @@ public sealed class SqliteIndexTests
         }
 
         Assert.True(hasAsyncNextForeignKey);
+
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'normalized_sources';";
+        Assert.Equal("normalized_sources", await command.ExecuteScalarAsync(cancellationToken));
+        command.CommandText = "PRAGMA index_list(normalized_sources);";
+        Assert.Contains("sqlite_autoindex_normalized_sources_1", await ReadNameColumnAsync(command, cancellationToken, 1));
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ix_documents_normalized_source';";
+        Assert.Equal("ix_documents_normalized_source", await command.ExecuteScalarAsync(cancellationToken));
 
         var symbolIndexes = await ReadSymbolIndexesAsync(connection, cancellationToken);
         AssertSymbolIndex(
@@ -280,10 +312,15 @@ public sealed class SqliteIndexTests
             ReturnTypeKey = "System.Threading.Tasks.Task<System.Int32>",
         };
         var callerDeclarationKey = snapshot.Symbols["caller"].PreferredDeclarationKey!;
-        snapshot.Declarations[callerDeclarationKey] = snapshot.Declarations[callerDeclarationKey] with
+        snapshot.Documents[0] = snapshot.Documents[0] with
         {
             NormalizedSource = normalizedSource,
             NormalizedSourceHash = normalizedSourceHash,
+        };
+        snapshot.Declarations[callerDeclarationKey] = snapshot.Declarations[callerDeclarationKey] with
+        {
+            NormalizedStart = 0,
+            NormalizedLength = normalizedSource.Length,
         };
         snapshot.Symbols["callee"] = snapshot.Symbols["callee"] with
         {
@@ -331,7 +368,8 @@ public sealed class SqliteIndexTests
             includeSourceText: true,
             cancellationToken));
         Assert.Equal(normalizedSource, declaration.NormalizedSource);
-        Assert.Equal(normalizedSourceHash, declaration.NormalizedSourceHash);
+        Assert.Equal(0, declaration.NormalizedStart);
+        Assert.Equal(normalizedSource.Length, declaration.NormalizedLength);
     }
 
     [Fact]
@@ -393,8 +431,8 @@ public sealed class SqliteIndexTests
             GeneratedFilter.Include,
             cancellationToken: cancellationToken));
 
-        Assert.Equal(5, SchemaMigrator.CurrentVersion);
-        Assert.Equal(5, RequestHasher.SchemaVersion);
+        Assert.Equal(6, SchemaMigrator.CurrentVersion);
+        Assert.Equal(6, RequestHasher.SchemaVersion);
         Assert.Equal(AsyncRole.DeclaredAsync | AsyncRole.ReturnsAwaitable, caller.AsyncRole);
         Assert.Equal(0, caller.AsyncInvolvementDepth);
         Assert.Equal(AsyncUsageKind.Awaited, call.AsyncUsageKind);
@@ -427,8 +465,8 @@ public sealed class SqliteIndexTests
             [contract.Id],
             cancellationToken);
 
-        Assert.Equal(5, SchemaMigrator.CurrentVersion);
-        Assert.Equal(5, RequestHasher.SchemaVersion);
+        Assert.Equal(6, SchemaMigrator.CurrentVersion);
+        Assert.Equal(6, RequestHasher.SchemaVersion);
         Assert.Equal((int)IndexedTypeKind.Interface, interfaceType.TypeKind);
         Assert.Equal((int)IndexedAccessibility.Public, interfaceType.Accessibility);
         Assert.Equal(5, bindings.Count);
@@ -1166,25 +1204,29 @@ public sealed class SqliteIndexTests
             [root.Id],
             GeneratedFilter.Include,
             referenceKinds: null,
-            cancellationToken);
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
         var invocationCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
             profile.Id,
             [root.Id],
             GeneratedFilter.Include,
             new HashSet<ReferenceKind> { ReferenceKind.Invocation },
-            cancellationToken);
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
         var nonGeneratedCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
             profile.Id,
             [root.Id],
             GeneratedFilter.Exclude,
             referenceKinds: null,
-            cancellationToken);
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
         var generatedCalls = await repository.GetCallsByCallerIncludingLambdaDescendantsAsync(
             profile.Id,
             [root.Id],
             GeneratedFilter.Only,
             referenceKinds: null,
-            cancellationToken);
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
         var symbolsById = (await repository.GetSymbolsByIdsAsync(
                 profile.Id,
                 allCalls.Select(call => call.CallerSymbolId),
@@ -1222,6 +1264,8 @@ public sealed class SqliteIndexTests
             DocumentKey = "project|document:Source.cs",
             SourceStart = 0,
             SourceLength = 1,
+            NormalizedStart = 0,
+            NormalizedLength = 1,
         });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => index.SaveAsync(invalid, cancellationToken));
@@ -1624,7 +1668,6 @@ public sealed class SqliteIndexTests
         Assert.Equal(0, symbol.MethodKind);
         Assert.Equal("System.Threading.Tasks.Task<System.Int32>", symbol.ReturnTypeKey);
         Assert.Null(symbol.NormalizedSource);
-        Assert.Null(symbol.NormalizedSourceHash);
     }
 
     private sealed record SymbolIndexInfo(string[] Columns, bool IsPartial);
@@ -1669,6 +1712,21 @@ public sealed class SqliteIndexTests
         }
 
         return plan;
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadNameColumnAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken,
+        int ordinal = 1)
+    {
+        var values = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            values.Add(reader.GetString(ordinal));
+        }
+
+        return values;
     }
 
     private static async Task<IReadOnlyDictionary<string, SymbolIndexInfo>> ReadSymbolIndexesAsync(
@@ -1753,6 +1811,8 @@ public sealed class SqliteIndexTests
             ProjectKey = "project",
             NormalizedPath = "Source.cs",
             ContentHash = HashUtilities.Sha256("source"),
+            NormalizedSource = "Sample{void Caller(){Callee();}}",
+            NormalizedSourceHash = HashUtilities.Sha256("Sample{void Caller(){Callee();}}"),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
         });
@@ -1816,6 +1876,8 @@ public sealed class SqliteIndexTests
             DocumentKey = "project|document:Source.cs",
             SourceStart = 21,
             SourceLength = 6,
+            NormalizedStart = 23,
+            NormalizedLength = 7,
         });
         return FinalizeSnapshotForSchemaFive(snapshot);
     }
@@ -1943,6 +2005,8 @@ public sealed class SqliteIndexTests
             ProjectKey = "external-project",
             NormalizedPath = "ExternalSource.cs",
             ContentHash = HashUtilities.Sha256("external-source"),
+            NormalizedSource = new string(' ', 200),
+            NormalizedSourceHash = HashUtilities.Sha256(new string(' ', 200)),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
         });
@@ -2201,6 +2265,8 @@ public sealed class SqliteIndexTests
             ProjectKey = "project",
             NormalizedPath = "Generated.cs",
             ContentHash = HashUtilities.Sha256("generated"),
+            NormalizedSource = new string(' ', 200),
+            NormalizedSourceHash = HashUtilities.Sha256(new string(' ', 200)),
             IsGenerated = true,
             GenerationKind = GenerationKind.FileName,
         });
@@ -2267,6 +2333,9 @@ public sealed class SqliteIndexTests
 
         void AddCall(string callerSymbolKey, ReferenceKind referenceKind, string documentKey, int sourceStart)
         {
+            var document = snapshot.Documents.Single(value =>
+                value.Key.Equals(documentKey, StringComparison.Ordinal));
+            var normalizedStart = Math.Clamp(sourceStart, 0, document.NormalizedSource.Length - 1);
             snapshot.Calls.Add(new CallData
             {
                 CallerSymbolKey = callerSymbolKey,
@@ -2277,6 +2346,8 @@ public sealed class SqliteIndexTests
                 DocumentKey = documentKey,
                 SourceStart = sourceStart,
                 SourceLength = 1,
+                NormalizedStart = normalizedStart,
+                NormalizedLength = 1,
                 UnresolvedName = "Target",
             });
         }
@@ -2299,7 +2370,10 @@ public sealed class SqliteIndexTests
                     value.Key.Equals(documentKey, StringComparison.Ordinal));
                 var sourceStart = symbol.SourceStart ?? 0;
                 var sourceLength = symbol.SourceLength ?? Math.Max(1, symbol.Name.Length);
-                var normalizedSource = symbol.NormalizedSource ?? symbol.Name;
+                var normalizedStart = Math.Clamp(symbol.SourceStart ?? 0, 0, document.NormalizedSource.Length - 1);
+                var normalizedLength = Math.Min(
+                    Math.Max(1, symbol.SourceLength ?? symbol.Name.Length),
+                    document.NormalizedSource.Length - normalizedStart);
                 var declarationKey =
                     $"{symbol.StableKey}|declaration:{document.NormalizedPath}:{sourceStart}:{sourceLength}:{(int)DeclarationRole.Ordinary}";
                 snapshot.Declarations[declarationKey] = new SymbolDeclarationData
@@ -2310,8 +2384,8 @@ public sealed class SqliteIndexTests
                     Role = DeclarationRole.Ordinary,
                     SourceStart = sourceStart,
                     SourceLength = sourceLength,
-                    NormalizedSource = normalizedSource,
-                    NormalizedSourceHash = symbol.NormalizedSourceHash ?? HashUtilities.Sha256(normalizedSource),
+                    NormalizedStart = normalizedStart,
+                    NormalizedLength = normalizedLength,
                     IsGenerated = symbol.IsGenerated,
                 };
                 preferredDeclarationKey = declarationKey;
@@ -2330,8 +2404,6 @@ public sealed class SqliteIndexTests
                 SourceDocumentKey = null,
                 SourceStart = null,
                 SourceLength = null,
-                NormalizedSource = null,
-                NormalizedSourceHash = null,
             };
         }
 

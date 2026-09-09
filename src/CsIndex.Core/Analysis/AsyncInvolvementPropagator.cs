@@ -207,15 +207,9 @@ public static class AsyncInvolvementPropagator
 
     private static bool HasSourceDeclaration(IndexSnapshot snapshot, SymbolData symbol)
     {
-        if (symbol.PreferredDeclarationKey is { } declarationKey &&
-            snapshot.Declarations.TryGetValue(declarationKey, out var declaration))
-        {
-            return declaration.SymbolKey == symbol.StableKey;
-        }
-
-        // Preserve compatibility for snapshots constructed by callers before
-        // declaration rows were introduced.
-        return symbol.SourceDocumentKey is not null && symbol.NormalizedSource is not null;
+        return symbol.PreferredDeclarationKey is { } declarationKey &&
+               snapshot.Declarations.TryGetValue(declarationKey, out var declaration) &&
+               declaration.SymbolKey == symbol.StableKey;
     }
 
     private static int CompareCalls(CallData left, CallData right, int leftSequence, int rightSequence)

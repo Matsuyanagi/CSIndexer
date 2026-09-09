@@ -817,17 +817,20 @@ public sealed class SemanticIndexFixture : IDisposable
             INSERT INTO calls(
                 analysis_profile_id, caller_symbol_id, callee_symbol_id, callee_definition_id,
                 reference_kind, dispatch_kind, resolution_status, resolution_reason, async_usage_kind,
-                document_id, source_start, source_length, unresolved_name, receiver_type_key)
+                document_id, source_start, source_length, normalized_start, normalized_length,
+                unresolved_name, receiver_type_key)
             VALUES(
                 $profile_id, $caller_id, $callee_id, $callee_id,
                 $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason, $async_usage_kind,
-                $document_id, $source_start, 1, NULL, NULL);
+                $document_id, $source_start, 1, $normalized_start, $normalized_length, NULL, NULL);
             """;
         command.Parameters.AddWithValue("$profile_id", profile.Id);
         command.Parameters.AddWithValue("$caller_id", caller.Id);
         command.Parameters.AddWithValue("$callee_id", callee.Id);
         command.Parameters.AddWithValue("$document_id", calleeDeclaration.DocumentId);
         command.Parameters.AddWithValue("$source_start", calleeDeclaration.SourceStart);
+        command.Parameters.AddWithValue("$normalized_start", calleeDeclaration.NormalizedStart);
+        command.Parameters.AddWithValue("$normalized_length", calleeDeclaration.NormalizedLength);
         command.Parameters.AddWithValue("$reference_kind", (int)ReferenceKind.Invocation);
         command.Parameters.AddWithValue("$dispatch_kind", (int)DispatchKind.Static);
         command.Parameters.AddWithValue("$resolution_status", (int)ResolutionStatus.Resolved);

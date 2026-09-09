@@ -49,8 +49,9 @@ public sealed record StoredDeclaration(
     DeclarationRole Role,
     int SourceStart,
     int SourceLength,
+    int NormalizedStart,
+    int NormalizedLength,
     string? NormalizedSource,
-    byte[]? NormalizedSourceHash,
     bool IsGenerated);
 
 public sealed record LogicalSymbolCandidateHints(
@@ -79,8 +80,6 @@ public sealed record StoredSymbol
         int? AsyncInvolvementDepth,
         long? AsyncNextSymbolId,
         string? ReturnTypeKey,
-        string? NormalizedSource,
-        byte[]? NormalizedSourceHash,
         string? DocumentPath,
         int? SourceStart,
         int? SourceLength,
@@ -116,24 +115,6 @@ public sealed record StoredSymbol
         this.Parameters = Parameters;
         this.TypeKind = TypeKind;
         this.Accessibility = Accessibility;
-        if ((NormalizedSource is not null || NormalizedSourceHash is not null) &&
-            DocumentPath is not null &&
-            SourceStart is int preferredStart &&
-            SourceLength is int preferredLength)
-        {
-            PreferredDeclaration = new StoredDeclaration(
-                0,
-                string.Empty,
-                Id,
-                0,
-                DocumentPath,
-                DeclarationRole.Ordinary,
-                preferredStart,
-                preferredLength,
-                NormalizedSource,
-                NormalizedSourceHash,
-                IsGenerated);
-        }
     }
 
     public long Id { get; init; }
@@ -173,7 +154,6 @@ public sealed record StoredSymbol
     public int? TypeKind { get; init; }
     public int? Accessibility { get; init; }
     public string? NormalizedSource => PreferredDeclaration?.NormalizedSource;
-    public byte[]? NormalizedSourceHash => PreferredDeclaration?.NormalizedSourceHash;
 }
 
 public sealed record StoredInterfaceMethodBinding(
@@ -202,6 +182,9 @@ public sealed record StoredCall(
     string DocumentPath,
     int SourceStart,
     int SourceLength,
+    int NormalizedStart,
+    int NormalizedLength,
+    string? NormalizedSource,
     bool IsGenerated,
     string? UnresolvedName,
     string? ReceiverTypeKey);

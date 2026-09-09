@@ -60,8 +60,6 @@ public sealed class CallerTreeBuilderTests
         AsyncInvolvementDepth: null,
         AsyncNextSymbolId: null,
         ReturnTypeKey: null,
-        NormalizedSource: null,
-        NormalizedSourceHash: null,
         DocumentPath: "callers.cs",
         SourceStart: 0,
         SourceLength: 1,

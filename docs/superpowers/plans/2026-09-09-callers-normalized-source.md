@@ -301,15 +301,40 @@ Record the GREEN commands, commit SHA, task report, and review verdict in the le
 - Modify: `src/CsIndex.Storage/SqliteIndex.cs`
 - Modify: `src/CsIndex.Storage/QueryModels.cs`
 - Modify: `src/CsIndex.Storage/QueryRepository.cs`
+- Modify: `src/CsIndex.Query/CallerTreeBuilder.cs`
+- Modify: `src/CsIndex.Query/SemanticQueryService.cs`
 - Modify: `tests/CsIndex.Core.Tests/RequestHasherTests.cs`
 - Modify: `tests/CsIndex.Core.Tests/ExecutableSymbolExtractionTests.cs`
 - Modify: `tests/CsIndex.Core.Tests/LogicalDeclarationExtractionTests.cs`
 - Modify: `tests/CsIndex.Core.Tests/AsyncInvolvementPropagatorTests.cs`
+- Modify: `tests/CsIndex.Core.Tests/CallablePathExtractionTests.cs`
+- Modify: `tests/CsIndex.Core.Tests/PortableAnalysisPathTests.cs`
+- Modify: `tests/CsIndex.Core.Tests/ProjectScopedSourceSymbolIdentityTests.cs`
 - Modify: `tests/CsIndex.Storage.Tests/SqliteIndexTests.cs`
 - Modify: `tests/CsIndex.Storage.Tests/SchemaFiveLogicalSymbolTests.cs`
+- Modify: `tests/CsIndex.Storage.Tests/PortablePathPersistenceTests.cs`
+- Modify: `tests/CsIndex.Query.Tests/CallerTreeBuilderTests.cs`
+- Modify: `tests/CsIndex.Query.Tests/StructuralGlobMatcherTests.cs`
+- Modify: `tests/CsIndex.Query.Tests/SymbolCanonicalComparerTests.cs`
+- Modify: `tests/CsIndex.Query.Tests/TypedConditionCompilerTests.cs`
 - Modify: `tests/CsIndex.IntegrationTests/SymbolPathResolverTests.cs`
 - Modify: `tests/CsIndex.IntegrationTests/SymbolSourceQueryTests.cs`
 - Modify: `tests/CsIndex.IntegrationTests/PhaseOneAcceptanceTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/CompilationOnlyGeneratedDocumentPersistenceTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/CliCommandTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/RootSelectionOrchestrationTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/OutputFormatterTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/PortableIndexAcceptanceTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/SemanticIndexFixture.cs`
+
+The fourteen additional fixture files above are compatibility call sites of the
+Task 2 DTO replacement, not compatibility behavior. Update them only as needed
+to construct or assert the exact Schema 6 document/range shape; do not restore
+removed per-symbol or per-declaration normalized-source payload fields. If a
+fresh project compile or layer test exposes another direct test-fixture/schema
+assertion call site of the same removed DTO members, changed constructors, or
+new required range columns, it is also in Task 2 scope under the same
+mechanical-only constraint and must be recorded in the task report.
 
 **Interfaces:**
 - Consumes: Task 1 `NormalizedSourceDocument`, `NormalizedSourceRange`, and `SourceNormalizer.NormalizeDocument`.

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CsIndex.Core.Caching;
 using CsIndex.Core.Input;
 using CsIndex.Core.Model;
 using CsIndex.Storage.Schema;
@@ -66,10 +67,16 @@ public sealed class SqliteIndex(string databasePath)
             var documentIds = new Dictionary<string, long>(StringComparer.Ordinal);
             foreach (var document in snapshot.Documents)
             {
+                var normalizedSourceId = await UpsertNormalizedSourceAsync(
+                    connection,
+                    transaction,
+                    document,
+                    cancellationToken);
                 documentIds[document.Key] = await InsertDocumentAsync(
                     connection,
                     transaction,
                     projectIds[document.ProjectKey],
+                    normalizedSourceId,
                     document,
                     cancellationToken);
             }
@@ -150,6 +157,7 @@ public sealed class SqliteIndex(string databasePath)
                 snapshot.ConditionalSymbols,
                 documentIds,
                 cancellationToken);
+            await DeleteUnreferencedNormalizedSourcesAsync(connection, transaction, cancellationToken);
             await VerifyIntegrityAsync(connection, transaction, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
@@ -265,6 +273,20 @@ public sealed class SqliteIndex(string databasePath)
         }
     }
 
+    private static async Task DeleteUnreferencedNormalizedSourcesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(connection, transaction, """
+            DELETE FROM normalized_sources
+            WHERE NOT EXISTS (
+                SELECT 1 FROM documents d WHERE d.normalized_source_id = normalized_sources.id
+            );
+            """);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static async Task<long> InsertRunAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -314,18 +336,61 @@ public sealed class SqliteIndex(string databasePath)
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
     }
 
+    private static async Task<long> UpsertNormalizedSourceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        DocumentData document,
+        CancellationToken cancellationToken)
+    {
+        await using (var insert = CreateCommand(connection, transaction, """
+            INSERT OR IGNORE INTO normalized_sources(normalized_source_hash, normalized_source)
+            VALUES($hash, $source);
+            """))
+        {
+            insert.Parameters.Add("$hash", SqliteType.Blob).Value = document.NormalizedSourceHash;
+            insert.Parameters.AddWithValue("$source", document.NormalizedSource);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var select = CreateCommand(connection, transaction, """
+            SELECT id, normalized_source
+            FROM normalized_sources
+            WHERE normalized_source_hash = $hash;
+            """);
+        select.Parameters.Add("$hash", SqliteType.Blob).Value = document.NormalizedSourceHash;
+        await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"Normalized-source hash '{Convert.ToHexString(document.NormalizedSourceHash)}' was not persisted.");
+        }
+
+        var id = reader.GetInt64(0);
+        var storedText = reader.GetString(1);
+        if (!StringComparer.Ordinal.Equals(storedText, document.NormalizedSource))
+        {
+            throw new InvalidOperationException(
+                $"Normalized-source hash collision for '{Convert.ToHexString(document.NormalizedSourceHash)}'.");
+        }
+
+        return id;
+    }
+
     private static async Task<long> InsertDocumentAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         long projectId,
+        long normalizedSourceId,
         DocumentData document,
         CancellationToken cancellationToken)
     {
         await using var command = CreateCommand(connection, transaction, """
             INSERT INTO documents(
-                project_id, normalized_path, content_hash, semantic_hash, is_generated, generation_kind)
+                project_id, normalized_path, content_hash, semantic_hash, normalized_source_id,
+                is_generated, generation_kind)
             VALUES(
-                $project_id, $path, $content_hash, $semantic_hash, $is_generated, $generation_kind);
+                $project_id, $path, $content_hash, $semantic_hash, $normalized_source_id,
+                $is_generated, $generation_kind);
             SELECT last_insert_rowid();
             """);
         command.Parameters.AddWithValue("$project_id", projectId);
@@ -333,6 +398,7 @@ public sealed class SqliteIndex(string databasePath)
         command.Parameters.Add("$content_hash", SqliteType.Blob).Value = document.ContentHash;
         command.Parameters.Add("$semantic_hash", SqliteType.Blob).Value =
             (object?)document.SemanticHash ?? DBNull.Value;
+        command.Parameters.AddWithValue("$normalized_source_id", normalizedSourceId);
         command.Parameters.AddWithValue("$is_generated", document.IsGenerated);
         command.Parameters.AddWithValue("$generation_kind", (int)document.GenerationKind);
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
@@ -500,10 +566,10 @@ public sealed class SqliteIndex(string databasePath)
         await using var command = CreateCommand(connection, transaction, """
             INSERT INTO symbol_declarations(
                 declaration_key, symbol_id, document_id, declaration_role,
-                source_start, source_length, normalized_source, normalized_source_hash, is_generated)
+                source_start, source_length, normalized_start, normalized_length, is_generated)
             VALUES(
                 $declaration_key, $symbol_id, $document_id, $declaration_role,
-                $source_start, $source_length, $normalized_source, $normalized_source_hash, $is_generated);
+                $source_start, $source_length, $normalized_start, $normalized_length, $is_generated);
             SELECT last_insert_rowid();
             """);
         var declarationIds = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -528,8 +594,8 @@ public sealed class SqliteIndex(string databasePath)
             command.Parameters.AddWithValue("$declaration_role", (int)declaration.Role);
             command.Parameters.AddWithValue("$source_start", declaration.SourceStart);
             command.Parameters.AddWithValue("$source_length", declaration.SourceLength);
-            command.Parameters.AddWithValue("$normalized_source", declaration.NormalizedSource);
-            command.Parameters.Add("$normalized_source_hash", SqliteType.Blob).Value = declaration.NormalizedSourceHash;
+            command.Parameters.AddWithValue("$normalized_start", declaration.NormalizedStart);
+            command.Parameters.AddWithValue("$normalized_length", declaration.NormalizedLength);
             command.Parameters.AddWithValue("$is_generated", declaration.IsGenerated);
             declarationIds[declaration.Key] = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
         }
@@ -596,11 +662,13 @@ public sealed class SqliteIndex(string databasePath)
             INSERT INTO calls(
                 analysis_profile_id, caller_symbol_id, callee_symbol_id, callee_definition_id,
                 reference_kind, dispatch_kind, resolution_status, resolution_reason, async_usage_kind,
-                document_id, source_start, source_length, unresolved_name, receiver_type_key)
+                document_id, source_start, source_length, normalized_start, normalized_length,
+                unresolved_name, receiver_type_key)
             VALUES(
                 $profile_id, $caller_id, $callee_id, $definition_id,
                 $reference_kind, $dispatch_kind, $resolution_status, $resolution_reason, $async_usage_kind,
-                $document_id, $source_start, $source_length, $unresolved_name, $receiver_type_key);
+                $document_id, $source_start, $source_length, $normalized_start, $normalized_length,
+                $unresolved_name, $receiver_type_key);
             SELECT last_insert_rowid();
             """);
         await using var candidateCommand = CreateCommand(connection, transaction, """
@@ -636,6 +704,8 @@ public sealed class SqliteIndex(string databasePath)
             command.Parameters.AddWithValue("$document_id", documentIds[call.DocumentKey]);
             command.Parameters.AddWithValue("$source_start", call.SourceStart);
             command.Parameters.AddWithValue("$source_length", call.SourceLength);
+            command.Parameters.AddWithValue("$normalized_start", call.NormalizedStart);
+            command.Parameters.AddWithValue("$normalized_length", call.NormalizedLength);
             command.Parameters.AddWithValue("$unresolved_name", (object?)unresolvedName ?? DBNull.Value);
             command.Parameters.AddWithValue("$receiver_type_key", (object?)call.ReceiverTypeKey ?? DBNull.Value);
             var callId = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
@@ -788,6 +858,13 @@ public sealed class SqliteIndex(string databasePath)
                 throw new InvalidOperationException(
                     $"Document key '{document.Key}' does not match stored path '{document.NormalizedPath}'.");
             }
+
+            var expectedNormalizedHash = HashUtilities.Sha256(document.NormalizedSource);
+            if (!expectedNormalizedHash.AsSpan().SequenceEqual(document.NormalizedSourceHash))
+            {
+                throw new InvalidOperationException(
+                    $"Document '{document.Key}' has a normalized-source hash that does not match its text.");
+            }
         }
 
         var symbolKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -823,6 +900,12 @@ public sealed class SqliteIndex(string databasePath)
             }
 
             var document = documentsByKey[declaration.DocumentKey];
+            ValidateNormalizedRange(
+                "Declaration",
+                declaration.Key,
+                declaration.NormalizedStart,
+                declaration.NormalizedLength,
+                document);
             var expectedKey = $"{declaration.SymbolKey}|declaration:{document.NormalizedPath}:{declaration.SourceStart}:{declaration.SourceLength}:{(int)declaration.Role}";
             if (!declaration.Key.Equals(expectedKey, StringComparison.Ordinal))
             {
@@ -852,9 +935,7 @@ public sealed class SqliteIndex(string databasePath)
 
             if (symbol.SourceDocumentKey is not null ||
                 symbol.SourceStart is not null ||
-                symbol.SourceLength is not null ||
-                symbol.NormalizedSource is not null ||
-                symbol.NormalizedSourceHash is not null)
+                symbol.SourceLength is not null)
             {
                 throw new InvalidOperationException(
                     $"Logical symbol '{symbol.StableKey}' contains source payload that belongs to a declaration.");
@@ -961,6 +1042,13 @@ public sealed class SqliteIndex(string databasePath)
             {
                 throw new InvalidOperationException($"Call references unknown document '{call.DocumentKey}'.");
             }
+
+            ValidateNormalizedRange(
+                "Call",
+                $"{call.CallerSymbolKey}:{call.SourceStart}:{call.SourceLength}",
+                call.NormalizedStart,
+                call.NormalizedLength,
+                documentsByKey[call.DocumentKey]);
         }
 
         foreach (var relation in snapshot.Relations)
@@ -1037,6 +1125,38 @@ public sealed class SqliteIndex(string databasePath)
         {
             throw new InvalidOperationException(
                 $"{field} must be a canonical non-rooted forward-slash path: '{path}'.");
+        }
+    }
+
+    private static void ValidateNormalizedRange(
+        string rowKind,
+        string rowKey,
+        int start,
+        int length,
+        DocumentData document)
+    {
+        if (start < 0 || length <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{rowKind} '{rowKey}' has an invalid normalized range.");
+        }
+
+        int end;
+        try
+        {
+            end = checked(start + length);
+        }
+        catch (OverflowException exception)
+        {
+            throw new InvalidOperationException(
+                $"{rowKind} '{rowKey}' has an overflowing normalized range.",
+                exception);
+        }
+
+        if (end > document.NormalizedSource.Length)
+        {
+            throw new InvalidOperationException(
+                $"{rowKind} '{rowKey}' normalized range exceeds document '{document.Key}'.");
         }
     }
 

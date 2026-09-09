@@ -341,8 +341,6 @@ public sealed class StructuralGlobMatcherTests
             AsyncInvolvementDepth: null,
             AsyncNextSymbolId: null,
             ReturnTypeKey: null,
-            NormalizedSource: null,
-            NormalizedSourceHash: null,
             DocumentPath: null,
             SourceStart: null,
             SourceLength: null,

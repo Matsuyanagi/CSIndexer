@@ -469,8 +469,6 @@ public sealed class SymbolCanonicalComparerTests
         AsyncInvolvementDepth: null,
         AsyncNextSymbolId: null,
         ReturnTypeKey: null,
-        NormalizedSource: null,
-        NormalizedSourceHash: null,
         DocumentPath: preferredDocumentPath,
         SourceStart: preferredSourceStart,
         SourceLength: 1,
@@ -494,7 +492,7 @@ public sealed class SymbolCanonicalComparerTests
         };
 
     private static StoredDeclaration CreateDeclaration(long id, DeclarationRole role, string path, int start) =>
-        new(id, $"decl-{id}", 1, 1, path, role, start, 1, null, null, false);
+        new(id, $"decl-{id}", 1, 1, path, role, start, 1, 0, 1, null, false);
 
     private static StoredCall CreateCall(
         long id,
@@ -525,6 +523,9 @@ public sealed class SymbolCanonicalComparerTests
             documentPath,
             sourceStart,
             sourceLength,
+            0,
+            1,
+            null,
             false,
             unresolvedName,
             null);

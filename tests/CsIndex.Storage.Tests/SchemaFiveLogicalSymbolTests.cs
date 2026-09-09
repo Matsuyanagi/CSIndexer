@@ -1,3 +1,4 @@
+using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
 using CsIndex.Core.Symbols;
 using Microsoft.Data.Sqlite;
@@ -10,9 +11,8 @@ public sealed class SchemaFiveLogicalSymbolTests
     private static readonly SymbolPathFormatter PathFormatter = new();
 
     [Fact]
-    public void StoredSymbol_SourceBridgeForwardsOnlyFromAttachedPreferredDeclaration()
+    public void StoredSymbol_DoesNotSynthesizePreferredDeclarationFromLegacyPayload()
     {
-        var hash = new byte[] { 7, 8, 9 };
         var declaration = new StoredDeclaration(
             Id: 11,
             DeclarationKey: "logical|declaration:src/Game.cs:4:12:1",
@@ -22,18 +22,19 @@ public sealed class SchemaFiveLogicalSymbolTests
             Role: DeclarationRole.Ordinary,
             SourceStart: 4,
             SourceLength: 12,
+            NormalizedStart: 4,
+            NormalizedLength: 12,
             NormalizedSource: "void Run(){}",
-            NormalizedSourceHash: hash,
             IsGenerated: false);
-        var symbol = CreateStoredSymbol() with { PreferredDeclaration = declaration };
+        var symbol = CreateStoredSymbol();
 
-        Assert.Equal(declaration.NormalizedSource, symbol.NormalizedSource);
-        Assert.Same(hash, symbol.NormalizedSourceHash);
-        Assert.Equal(declaration.SourceLength, symbol.SourceLength);
+        Assert.Null(symbol.PreferredDeclaration);
+        Assert.Null(symbol.NormalizedSource);
+        Assert.Equal(declaration.SourceLength, declaration.NormalizedLength);
     }
 
     [Fact]
-    public async Task Save_CreatesSchemaFiveWithoutLegacySymbolPresentationOrSourceColumns()
+    public async Task Save_CreatesSchemaSixWithoutLegacySymbolPresentationOrSourceColumns()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var temporary = new TempDirectory();
@@ -49,7 +50,7 @@ public sealed class SchemaFiveLogicalSymbolTests
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT version FROM schema_info;";
-        Assert.Equal(5L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+        Assert.Equal(6L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
 
         command.CommandText = "PRAGMA table_info(symbols);";
         var columns = new HashSet<string>(StringComparer.Ordinal);
@@ -99,8 +100,8 @@ public sealed class SchemaFiveLogicalSymbolTests
                 "declaration_role",
                 "source_start",
                 "source_length",
-                "normalized_source",
-                "normalized_source_hash",
+                "normalized_start",
+                "normalized_length",
                 "is_generated",
             ],
             await ReadNameColumnAsync(command, cancellationToken));
@@ -154,7 +155,6 @@ public sealed class SchemaFiveLogicalSymbolTests
         Assert.Equal(10, ordinary.PreferredSourceStart);
         Assert.Null(ordinary.PreferredDeclaration);
         Assert.Null(ordinary.NormalizedSource);
-        Assert.Null(ordinary.NormalizedSourceHash);
         var parameter = Assert.Single(ordinary.Parameters);
         Assert.Equal("System::Guid", parameter.TypeKey);
         Assert.Equal("System.Guid", parameter.TypeDisplay);
@@ -177,7 +177,7 @@ public sealed class SchemaFiveLogicalSymbolTests
         Assert.All(partialDeclarations, declaration =>
         {
             Assert.Null(declaration.NormalizedSource);
-            Assert.Null(declaration.NormalizedSourceHash);
+            Assert.Null(declaration.NormalizedSource);
         });
 
         var loadedPartialDeclarations = await repository.GetDeclarationsAsync(
@@ -187,8 +187,8 @@ public sealed class SchemaFiveLogicalSymbolTests
             cancellationToken);
         Assert.Equal("partial void Save();", loadedPartialDeclarations[0].NormalizedSource);
         Assert.Equal("partial void Save(){}", loadedPartialDeclarations[1].NormalizedSource);
-        Assert.Equal(new byte[] { 20 }, loadedPartialDeclarations[0].NormalizedSourceHash);
-        Assert.Equal(new byte[] { 40 }, loadedPartialDeclarations[1].NormalizedSourceHash);
+        Assert.Equal(20, loadedPartialDeclarations[0].NormalizedStart);
+        Assert.Equal(40, loadedPartialDeclarations[1].NormalizedStart);
 
         var preferred = await repository.GetPreferredDeclarationsAsync(
             profile.Id,
@@ -225,8 +225,10 @@ public sealed class SchemaFiveLogicalSymbolTests
     [InlineData("logical-source-document-payload")]
     [InlineData("logical-source-start-payload")]
     [InlineData("logical-source-length-payload")]
-    [InlineData("logical-source-text-payload")]
-    [InlineData("logical-source-hash-payload")]
+    [InlineData("normalized-range-start-payload")]
+    [InlineData("normalized-range-length-payload")]
+    [InlineData("normalized-range-overflow-payload")]
+    [InlineData("normalized-range-out-of-bounds-payload")]
     [InlineData("type-source-payload")]
     [InlineData("call-declaration-endpoint")]
     [InlineData("candidate-declaration-endpoint")]
@@ -366,6 +368,8 @@ public sealed class SchemaFiveLogicalSymbolTests
             ProjectKey = projectKey,
             NormalizedPath = "src/Game.cs",
             ContentHash = [5],
+            NormalizedSource = string.Empty,
+            NormalizedSourceHash = HashUtilities.Sha256(string.Empty),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
         });
@@ -404,14 +408,35 @@ public sealed class SchemaFiveLogicalSymbolTests
             conversionTypeDisplay: "System.Guid");
         AddPartial(snapshot, documentKey);
         AddDefinitionOnly(snapshot, documentKey);
-        AddOrdinary(snapshot, documentKey, "lambda", IndexedSymbolKind.Lambda, "<lambda#1>", 70,
+        AddOrdinary(snapshot, documentKey, "lambda", IndexedSymbolKind.Lambda, "<lambda#1>", 100,
             "x => x", CreatePath("Run(System.Guid).<lambda#1>", "Run(System::Guid).<lambda#1>", CallablePathSegmentKind.Lambda),
             containingSymbolKey: "ordinary", isGenerated: true);
-        AddOrdinary(snapshot, documentKey, "initializer", IndexedSymbolKind.Initializer, "<initializer:Factory>", 80,
+        AddOrdinary(snapshot, documentKey, "initializer", IndexedSymbolKind.Initializer, "<initializer:Factory>", 130,
             "Factory = Make();", CreatePath("<initializer:Factory>", "<initializer:Factory>", CallablePathSegmentKind.Initializer));
-        AddOrdinary(snapshot, documentKey, "top", IndexedSymbolKind.TopLevelStatements, "<top-level-statements>", 100,
+        AddOrdinary(snapshot, documentKey, "top", IndexedSymbolKind.TopLevelStatements, "<top-level-statements>", 160,
             "Run();", CreatePath("<top-level-statements>", "<top-level-statements>", CallablePathSegmentKind.TopLevelStatements));
+        var normalizedSource = BuildNormalizedSource();
+        snapshot.Documents[0] = snapshot.Documents[0] with
+        {
+            NormalizedSource = normalizedSource,
+            NormalizedSourceHash = HashUtilities.Sha256(normalizedSource),
+        };
         return snapshot;
+    }
+
+    private static string BuildNormalizedSource()
+    {
+        var text = Enumerable.Repeat(' ', 180).ToArray();
+        Copy(10, "void Run(){}");
+        Copy(20, "partial void Save();");
+        Copy(40, "partial void Save(){}");
+        Copy(65, "partial void Validate();");
+        Copy(100, "x => x");
+        Copy(130, "Factory = Make();");
+        Copy(160, "Run();");
+        return new string(text);
+
+        void Copy(int start, string value) => value.AsSpan().CopyTo(text.AsSpan(start));
     }
 
     private static SymbolData CreateSymbol(
@@ -529,7 +554,7 @@ public sealed class SchemaFiveLogicalSymbolTests
     private static void AddDefinitionOnly(IndexSnapshot snapshot, string documentKey)
     {
         const string source = "partial void Validate();";
-        var declarationKey = DeclarationKey("definition-only", 60, source.Length, DeclarationRole.PartialDefinition);
+        var declarationKey = DeclarationKey("definition-only", 65, source.Length, DeclarationRole.PartialDefinition);
         snapshot.Symbols.Add("definition-only", CreateSymbol(
             "definition-only",
             IndexedSymbolKind.Method,
@@ -541,7 +566,7 @@ public sealed class SchemaFiveLogicalSymbolTests
             "definition-only",
             documentKey,
             DeclarationRole.PartialDefinition,
-            60,
+            65,
             source));
     }
 
@@ -560,8 +585,8 @@ public sealed class SchemaFiveLogicalSymbolTests
             Role = role,
             SourceStart = start,
             SourceLength = source.Length,
-            NormalizedSource = source,
-            NormalizedSourceHash = [(byte)start],
+            NormalizedStart = start,
+            NormalizedLength = source.Length,
             IsGenerated = isGenerated,
         };
 
@@ -639,18 +664,38 @@ public sealed class SchemaFiveLogicalSymbolTests
             case "logical-source-length-payload":
                 snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with { SourceLength = 12 };
                 break;
-            case "logical-source-text-payload":
-                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+            case "normalized-range-start-payload":
                 {
-                    NormalizedSource = "void Run(){}",
-                };
-                break;
-            case "logical-source-hash-payload":
-                snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with
+                    var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");
+                    snapshot.Declarations[declaration.Key] = declaration with { NormalizedStart = -1 };
+                    break;
+                }
+            case "normalized-range-length-payload":
                 {
-                    NormalizedSourceHash = [99],
-                };
-                break;
+                    var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");
+                    snapshot.Declarations[declaration.Key] = declaration with { NormalizedLength = 0 };
+                    break;
+                }
+            case "normalized-range-overflow-payload":
+                {
+                    var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");
+                    snapshot.Declarations[declaration.Key] = declaration with
+                    {
+                        NormalizedStart = int.MaxValue,
+                        NormalizedLength = 1,
+                    };
+                    break;
+                }
+            case "normalized-range-out-of-bounds-payload":
+                {
+                    var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");
+                    snapshot.Declarations[declaration.Key] = declaration with
+                    {
+                        NormalizedStart = 179,
+                        NormalizedLength = 2,
+                    };
+                    break;
+                }
             case "type-source-payload":
                 snapshot.Symbols["type"] = snapshot.Symbols["type"] with
                 {
@@ -762,6 +807,8 @@ public sealed class SchemaFiveLogicalSymbolTests
             DocumentKey = "project-path:src/Game.csproj|document:src/Game.cs",
             SourceStart = 120,
             SourceLength = 3,
+            NormalizedStart = 120,
+            NormalizedLength = 3,
             UnresolvedName = calleeKey,
             CandidateSymbolKeys = candidates,
         };
@@ -843,8 +890,6 @@ public sealed class SchemaFiveLogicalSymbolTests
         AsyncInvolvementDepth: null,
         AsyncNextSymbolId: null,
         ReturnTypeKey: null,
-        NormalizedSource: null,
-        NormalizedSourceHash: null,
         DocumentPath: "src/Game.cs",
         SourceStart: 4,
         SourceLength: null,

@@ -1,3 +1,4 @@
+using CsIndex.Core.Caching;
 using CsIndex.Core.Model;
 using CsIndex.Core.Input;
 using Microsoft.Data.Sqlite;
@@ -50,6 +51,8 @@ public sealed class PortablePathPersistenceTests
             ProjectKey = "project-path:src/Game.csproj",
             NormalizedPath = "src/Game.cs",
             ContentHash = [5],
+            NormalizedSource = string.Empty,
+            NormalizedSourceHash = HashUtilities.Sha256(string.Empty),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
         });
@@ -247,6 +250,8 @@ public sealed class PortablePathPersistenceTests
             ProjectKey = projectKey,
             NormalizedPath = documentPath,
             ContentHash = [5],
+            NormalizedSource = source,
+            NormalizedSourceHash = HashUtilities.Sha256(source),
             IsGenerated = false,
             GenerationKind = GenerationKind.None,
         });
@@ -281,8 +286,8 @@ public sealed class PortablePathPersistenceTests
             Role = DeclarationRole.Ordinary,
             SourceStart = 0,
             SourceLength = source.Length,
-            NormalizedSource = source,
-            NormalizedSourceHash = [6],
+            NormalizedStart = 0,
+            NormalizedLength = source.Length,
             IsGenerated = false,
         });
         return snapshot;

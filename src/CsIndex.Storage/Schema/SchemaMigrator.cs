@@ -38,7 +38,7 @@ public sealed class SchemaMigrator
                 }
 
                 await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
-                await CreateVersionFiveAsync(connection, cancellationToken);
+                await CreateVersionSixAsync(connection, cancellationToken);
                 return;
             }
 
@@ -84,7 +84,7 @@ public sealed class SchemaMigrator
         new($"Unsupported database schema version {version}; this build supports version {CurrentVersion}. " +
             IncompatibleDatabaseGuidance);
 
-    private static async Task CreateVersionFiveAsync(
+    private static async Task CreateVersionSixAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -96,7 +96,7 @@ public sealed class SchemaMigrator
                 version INTEGER NOT NULL
             );
 
-            INSERT INTO schema_info(version) VALUES (5);
+            INSERT INTO schema_info(version) VALUES (6);
 
             CREATE TABLE analysis_profiles (
                 id                    INTEGER PRIMARY KEY,
@@ -141,19 +141,29 @@ public sealed class SchemaMigrator
                   REFERENCES analysis_profiles(id)
             );
 
+            CREATE TABLE normalized_sources (
+                id                    INTEGER PRIMARY KEY,
+                normalized_source_hash BLOB NOT NULL UNIQUE,
+                normalized_source     TEXT NOT NULL
+            );
+
             CREATE TABLE documents (
                 id                    INTEGER PRIMARY KEY,
                 project_id            INTEGER NOT NULL,
                 normalized_path       TEXT NOT NULL,
                 content_hash          BLOB NOT NULL,
                 semantic_hash         BLOB,
+                normalized_source_id  INTEGER NOT NULL,
                 is_generated          INTEGER NOT NULL DEFAULT 0,
                 generation_kind       INTEGER NOT NULL DEFAULT 0,
 
                 UNIQUE(project_id, normalized_path),
 
                 FOREIGN KEY(project_id)
-                  REFERENCES projects(id) ON DELETE CASCADE
+                  REFERENCES projects(id) ON DELETE CASCADE,
+
+                FOREIGN KEY(normalized_source_id)
+                  REFERENCES normalized_sources(id)
             );
 
             CREATE TABLE symbols (
@@ -234,8 +244,8 @@ public sealed class SchemaMigrator
                 declaration_role      INTEGER NOT NULL CHECK (declaration_role IN (1, 2, 3)),
                 source_start           INTEGER NOT NULL,
                 source_length         INTEGER NOT NULL,
-                normalized_source     TEXT NOT NULL,
-                normalized_source_hash BLOB NOT NULL,
+                normalized_start      INTEGER NOT NULL,
+                normalized_length     INTEGER NOT NULL,
                 is_generated          INTEGER NOT NULL,
 
                 UNIQUE(symbol_id, document_id, source_start, source_length, declaration_role),
@@ -261,6 +271,8 @@ public sealed class SchemaMigrator
                 document_id            INTEGER NOT NULL,
                 source_start           INTEGER NOT NULL,
                 source_length          INTEGER NOT NULL,
+                normalized_start      INTEGER NOT NULL,
+                normalized_length     INTEGER NOT NULL,
                 unresolved_name        TEXT,
                 receiver_type_key      TEXT,
 
@@ -394,6 +406,9 @@ public sealed class SchemaMigrator
 
             CREATE INDEX ix_symbol_declarations_document_location_role
             ON symbol_declarations(document_id, source_start, source_length, declaration_role);
+
+            CREATE INDEX ix_documents_normalized_source
+            ON documents(normalized_source_id);
 
             CREATE INDEX ix_calls_callee
             ON calls(callee_definition_id);

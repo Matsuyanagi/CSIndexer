@@ -840,8 +840,6 @@ public sealed class TypedConditionCompilerTests
             AsyncInvolvementDepth: null,
             AsyncNextSymbolId: null,
             ReturnTypeKey: null,
-            NormalizedSource: null,
-            NormalizedSourceHash: null,
             DocumentPath: null,
             SourceStart: null,
             SourceLength: null,
@@ -870,7 +868,7 @@ public sealed class TypedConditionCompilerTests
             CallablePathSegmentKind.Named);
 
     private static StoredDeclaration Declaration(string path, string? source) =>
-        new(1, "declaration", 1, 1, path, DeclarationRole.Ordinary, 0, 0, source, null, false);
+        new(1, "declaration", 1, 1, path, DeclarationRole.Ordinary, 0, 0, 0, source?.Length ?? 1, source, false);
 
     private static StoredSymbol TestSymbol(SymbolPathData? path)
     {
@@ -894,8 +892,6 @@ public sealed class TypedConditionCompilerTests
             AsyncInvolvementDepth: null,
             AsyncNextSymbolId: null,
             ReturnTypeKey: null,
-            NormalizedSource: null,
-            NormalizedSourceHash: null,
             DocumentPath: null,
             SourceStart: null,
             SourceLength: null,

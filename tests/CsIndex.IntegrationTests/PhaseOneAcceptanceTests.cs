@@ -605,7 +605,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
         var sourceCellReads = 0;
         var repository = fixture.Repository;
-        repository.NormalizedSourceCellReadObserver = () => sourceCellReads++;
+        repository.NormalizedSourcePayloadReadObserver = () => sourceCellReads++;
         var query = new SemanticQueryService(repository);
 
         async Task InvokeAsync()
@@ -714,6 +714,8 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 ProjectKey = key,
                 NormalizedPath = fileName,
                 ContentHash = HashUtilities.Sha256(fileName),
+                NormalizedSource = new string(' ', 2048),
+                NormalizedSourceHash = HashUtilities.Sha256(new string(' ', 2048)),
                 IsGenerated = false,
                 GenerationKind = GenerationKind.None,
             });
@@ -758,6 +760,10 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
             var source = $"{methodName}()";
             var sourceStart = snapshot.Declarations.Count * 10;
             var document = snapshot.Documents.Single(value => value.ProjectKey == projectKey);
+            var normalizedStart = Math.Clamp(sourceStart, 0, document.NormalizedSource.Length - 1);
+            var normalizedLength = Math.Min(
+                source.Length,
+                document.NormalizedSource.Length - normalizedStart);
             var declarationKey =
                 $"{stableKey}|declaration:{document.NormalizedPath}:{sourceStart}:{source.Length}:{(int)DeclarationRole.Ordinary}";
             snapshot.Symbols[stableKey] = new SymbolData
@@ -793,8 +799,8 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
                 Role = DeclarationRole.Ordinary,
                 SourceStart = sourceStart,
                 SourceLength = source.Length,
-                NormalizedSource = source,
-                NormalizedSourceHash = HashUtilities.Sha256(source),
+                NormalizedStart = normalizedStart,
+                NormalizedLength = Math.Max(1, normalizedLength),
                 IsGenerated = false,
             };
         }

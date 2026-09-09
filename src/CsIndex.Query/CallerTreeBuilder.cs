@@ -43,7 +43,8 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                     [calleeNode.Symbol.Id],
                     GeneratedFilter.Include,
                     CallKinds,
-                    cancellationToken);
+                    includeSourceText: false,
+                    cancellationToken: cancellationToken);
                 foreach (var call in calls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();

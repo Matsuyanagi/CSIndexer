@@ -112,8 +112,6 @@ public sealed class CompilationOnlyGeneratedDocumentPersistenceTests
                 Assert.Null(endpoint.SourceDocumentKey);
                 Assert.Null(endpoint.SourceStart);
                 Assert.Null(endpoint.SourceLength);
-                Assert.Null(endpoint.NormalizedSource);
-                Assert.Null(endpoint.NormalizedSourceHash);
                 Assert.Contains(endpoint.ContainingSymbolKey!, snapshot.Symbols.Keys);
                 Assert.Contains(
                     "|project:",

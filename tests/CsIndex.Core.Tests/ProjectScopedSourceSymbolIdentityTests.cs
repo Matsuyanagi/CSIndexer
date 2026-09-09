@@ -29,8 +29,6 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             Assert.Null(symbol.SourceDocumentKey);
             Assert.Null(symbol.SourceStart);
             Assert.Null(symbol.SourceLength);
-            Assert.Null(symbol.NormalizedSource);
-            Assert.Null(symbol.NormalizedSourceHash);
         });
     }
 
@@ -59,10 +57,12 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             [firstProjectKey, secondProjectKey],
             runs.Select(symbol => symbol.ProjectKey).OrderBy(key => key, StringComparer.Ordinal));
         Assert.Equal(2, runs.Select(symbol => symbol.StableKey).Distinct(StringComparer.Ordinal).Count());
-        Assert.Contains(runs, symbol => snapshot.Declarations[symbol.PreferredDeclarationKey!]
-            .NormalizedSource.Contains("LocalFirst", StringComparison.Ordinal));
-        Assert.Contains(runs, symbol => snapshot.Declarations[symbol.PreferredDeclarationKey!]
-            .NormalizedSource.Contains("LocalSecond", StringComparison.Ordinal));
+        Assert.Contains(runs, symbol => NormalizedSource(snapshot, symbol).Contains(
+            "LocalFirst",
+            StringComparison.Ordinal));
+        Assert.Contains(runs, symbol => NormalizedSource(snapshot, symbol).Contains(
+            "LocalSecond",
+            StringComparison.Ordinal));
 
         foreach (var run in runs)
         {
@@ -74,11 +74,8 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             Assert.Null(run.SourceDocumentKey);
             Assert.Null(run.SourceStart);
             Assert.Null(run.SourceLength);
-            Assert.Null(run.NormalizedSource);
-            Assert.Null(run.NormalizedSourceHash);
             Assert.Equal(run.IsGenerated, declaration.IsGenerated);
-            Assert.NotNull(declaration.NormalizedSource);
-            Assert.NotNull(declaration.NormalizedSourceHash);
+            Assert.NotEmpty(NormalizedSource(snapshot, run));
 
             var localCall = Assert.Single(snapshot.Calls, call =>
                 call.CallerSymbolKey == run.StableKey &&
@@ -121,6 +118,15 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
             symbol.TypeMetadataName == "Object");
         Assert.Null(objectToString.ProjectKey);
         Assert.DoesNotContain("|project:", objectToString.StableKey, StringComparison.Ordinal);
+    }
+
+    private static string NormalizedSource(IndexSnapshot snapshot, SymbolData symbol)
+    {
+        var declaration = snapshot.Declarations[symbol.PreferredDeclarationKey!];
+        var document = snapshot.Documents.Single(value => value.Key == declaration.DocumentKey);
+        return document.NormalizedSource.AsSpan(
+            declaration.NormalizedStart,
+            declaration.NormalizedLength).ToString();
     }
 
     private static IReadOnlyList<Project> CreateProjects(AdhocWorkspace workspace, TempDirectory temporary)

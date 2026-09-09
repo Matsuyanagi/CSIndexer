@@ -206,6 +206,7 @@ public sealed class SemanticQueryService
             selection.Profile.Id,
             selection.Roots.Select(root => root.Symbol.Id),
             generatedFilter,
+            includeSourceText: false,
             cancellationToken: cancellationToken);
         var hydration = await HydrateCallResultAsync(
             selection.Profile.Id,
@@ -235,7 +236,8 @@ public sealed class SemanticQueryService
             rootIds,
             generatedFilter,
             CallKinds,
-            cancellationToken);
+            includeSourceText: false,
+            cancellationToken: cancellationToken);
         IReadOnlyList<StoredRelation> possibleTargets = [];
         if (dispatchMode != DispatchSearchMode.Static)
         {
@@ -291,13 +293,15 @@ public sealed class SemanticQueryService
                 rootIds,
                 generatedFilter,
                 CallKinds,
-                cancellationToken)
+                includeSourceText: false,
+                cancellationToken: cancellationToken)
             : await repository.GetCallsByCallerAsync(
                 selection.Profile.Id,
                 rootIds,
                 generatedFilter,
                 CallKinds,
-                cancellationToken);
+                includeSourceText: false,
+                cancellationToken: cancellationToken);
         var hydration = await HydrateCallResultAsync(
             selection.Profile.Id,
             calls,

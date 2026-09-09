@@ -495,7 +495,7 @@ public sealed class SymbolPathResolverTests(SymbolResolutionFixture fixture)
         var profile = await fixture.GetProfileAsync(cancellationToken: cancellationToken);
         var sourceCellReads = 0;
         var repository = fixture.Repository;
-        repository.NormalizedSourceCellReadObserver = () => sourceCellReads++;
+        repository.NormalizedSourcePayloadReadObserver = () => sourceCellReads++;
         var resolver = new SymbolPathResolver(repository);
 
         await resolver.ResolveLogicalRootsAsync(

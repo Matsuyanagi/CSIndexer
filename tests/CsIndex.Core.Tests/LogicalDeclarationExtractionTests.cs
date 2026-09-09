@@ -72,13 +72,13 @@ public sealed class LogicalDeclarationExtractionTests
             DeclarationRole.PartialImplementation,
             DeclarationByKey(snapshot, load.PreferredDeclarationKey!).Role);
         var preferredDeclaration = DeclarationByKey(snapshot, load.PreferredDeclarationKey!);
-        Assert.Contains("await", preferredDeclaration.NormalizedSource);
+        Assert.Contains("await", NormalizedText(snapshot, preferredDeclaration), StringComparison.Ordinal);
         Assert.Equal(load.StableKey, preferredDeclaration.SymbolKey);
         Assert.Null(load.SourceDocumentKey);
         Assert.Null(load.SourceStart);
         Assert.Null(load.SourceLength);
-        Assert.Null(load.NormalizedSource);
-        Assert.Null(load.NormalizedSourceHash);
+        Assert.Null(typeof(SymbolData).GetProperty("NormalizedSource"));
+        Assert.Null(typeof(SymbolData).GetProperty("NormalizedSourceHash"));
         var testCancellationToken = TestContext.Current.CancellationToken;
         var implementationTree = CSharpSyntaxTree.ParseText(
             implementation,
@@ -86,11 +86,13 @@ public sealed class LogicalDeclarationExtractionTests
         var implementationMethod = Assert.Single(
             implementationTree.GetRoot(testCancellationToken).DescendantNodes().OfType<MethodDeclarationSyntax>(),
             method => method.Identifier.ValueText == "LoadAsync");
-        var expectedDeclaration = SourceNormalizer.Normalize(implementationMethod, testCancellationToken);
         Assert.Equal(implementationMethod.SpanStart, preferredDeclaration.SourceStart);
         Assert.Equal(implementationMethod.Span.Length, preferredDeclaration.SourceLength);
-        Assert.Equal(expectedDeclaration.Text, preferredDeclaration.NormalizedSource);
-        Assert.Equal(expectedDeclaration.Hash, preferredDeclaration.NormalizedSourceHash);
+        Assert.Equal(
+            "public partial async Task LoadAsync(){await Task.Yield();void Local()=>Target();Local();Action nested=()=>Target();}",
+            NormalizedText(snapshot, preferredDeclaration));
+        Assert.True(preferredDeclaration.NormalizedStart >= 0);
+        Assert.True(preferredDeclaration.NormalizedLength > 0);
         Assert.True(load.AsyncRole.HasFlag(AsyncRole.DeclaredAsync));
 
         var validate = Assert.Single(snapshot.Symbols.Values, symbol =>
@@ -336,7 +338,7 @@ public sealed class LogicalDeclarationExtractionTests
             symbol.Kind == IndexedSymbolKind.Method && symbol.Name == "LoadAsync");
         var declaration = DeclarationByKey(snapshot, load.PreferredDeclarationKey!);
         Assert.Equal(DeclarationRole.PartialImplementation, declaration.Role);
-        Assert.Contains("await", declaration.NormalizedSource, StringComparison.Ordinal);
+        Assert.Contains("await", NormalizedText(snapshot, declaration), StringComparison.Ordinal);
         var document = Assert.Single(snapshot.Documents, candidate => candidate.Key == declaration.DocumentKey);
         Assert.Equal(expectedFileName, Path.GetFileName(document.NormalizedPath));
     }
@@ -350,6 +352,16 @@ public sealed class LogicalDeclarationExtractionTests
 
     private static SymbolDeclarationData DeclarationByKey(IndexSnapshot snapshot, string key) =>
         snapshot.Declarations[key];
+
+    private static string NormalizedText(IndexSnapshot snapshot, SymbolDeclarationData declaration)
+    {
+        var document = Assert.Single(snapshot.Documents, candidate => candidate.Key == declaration.DocumentKey);
+        Assert.InRange(declaration.NormalizedStart, 0, document.NormalizedSource.Length - declaration.NormalizedLength);
+        Assert.InRange(declaration.NormalizedLength, 1, document.NormalizedSource.Length);
+        return document.NormalizedSource.AsSpan(
+            declaration.NormalizedStart,
+            declaration.NormalizedLength).ToString();
+    }
 
     private static async Task<IndexSnapshot> AnalyzeAsync(params (string Path, string Source)[] documents)
     {

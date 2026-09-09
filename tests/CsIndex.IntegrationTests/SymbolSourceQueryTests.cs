@@ -197,6 +197,29 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
     }
 
     [Fact]
+    public async Task SearchSource_UsesOnePhysicalDeclarationAndOnePayloadForSharedDocument()
+    {
+        await fixture.BuildTask;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var payloadReads = 0;
+        var repository = fixture.Repository;
+        repository.NormalizedSourcePayloadReadObserver = () => payloadReads++;
+        var query = new SemanticQueryService(repository);
+
+        var result = await query.SearchSourceAsync(
+            Request(
+                null,
+                typePattern: "SourceBodies",
+                includes: ["\"required\""],
+                excludes: ["BlockedMarker("]),
+            profileName: fixture.PrimaryProfileName,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(["Tokyo.SourceBodies::Match()"], result.MatchedSymbols.Select(FormatPath));
+        Assert.Equal(1, payloadReads);
+    }
+
+    [Fact]
     public async Task SearchSource_PreservesLiteralTextButDoesNotSearchRemovedComments()
     {
         await fixture.BuildTask;
