@@ -364,11 +364,23 @@ public sealed class SqliteIndexTests
             "Cancel.cs",
             "Sample{void Caller(){Other();}}");
         using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
+        var reachedBeforeCommit = false;
+        index.BeforeCommitObserver = () =>
+        {
+            reachedBeforeCommit = true;
+            cancellation.Cancel();
+        };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             index.SaveAsync(replacement, cancellation.Token));
+        Assert.True(reachedBeforeCommit);
         Assert.Equal(before, await ReadPayloadStateAsync(databasePath, cancellationToken));
+        Assert.Equal(
+            0,
+            await CountPayloadHashAsync(
+                databasePath,
+                replacement.Documents[0].NormalizedSourceHash,
+                cancellationToken));
     }
 
     [Fact]
@@ -2148,19 +2160,25 @@ public sealed class SqliteIndexTests
         command.CommandText = """
             SELECT
                 COALESCE((
-                    SELECT group_concat(hex(normalized_source_hash) || ':' || hex(normalized_source), '|')
-                    FROM (SELECT normalized_source_hash, normalized_source FROM normalized_sources ORDER BY id)),
+                    SELECT group_concat(id || ':' || hex(normalized_source_hash) || ':' || hex(normalized_source), '|')
+                    FROM (SELECT id, normalized_source_hash, normalized_source FROM normalized_sources ORDER BY id)),
                     '')
                 || '|'
                 || COALESCE((
-                    SELECT group_concat(normalized_path, '|')
-                    FROM (SELECT normalized_path FROM documents ORDER BY id)),
+                    SELECT group_concat(id || ':' || project_id || ':' || normalized_path || ':' || normalized_source_id, '|')
+                    FROM (SELECT id, project_id, normalized_path, normalized_source_id FROM documents ORDER BY id)),
                     '')
                 || '|'
                 || COALESCE((
-                    SELECT group_concat(hex(request_hash), '|')
-                    FROM (SELECT request_hash FROM index_runs ORDER BY id)),
-                    '');
+                    SELECT group_concat(id || ':' || name || ':' || hex(profile_hash), '|')
+                    FROM (SELECT id, name, profile_hash FROM analysis_profiles ORDER BY id)),
+                    '')
+                || '|'
+                || COALESCE((
+                    SELECT group_concat(id || ':' || analysis_profile_id || ':' || hex(request_hash), '|')
+                    FROM (SELECT id, analysis_profile_id, request_hash FROM index_runs ORDER BY id)),
+                    '')
+                ;
             """;
         return (string)(await command.ExecuteScalarAsync(cancellationToken))!;
     }

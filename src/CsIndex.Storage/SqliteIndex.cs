@@ -12,6 +12,8 @@ public sealed class SqliteIndex(string databasePath)
     private readonly string _databasePath = PathNormalizer.Normalize(databasePath);
     private readonly SchemaMigrator _migrator = new();
 
+    internal Action? BeforeCommitObserver { get; set; }
+
     public string DatabasePath => _databasePath;
 
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken = default)
@@ -158,6 +160,8 @@ public sealed class SqliteIndex(string databasePath)
                 documentIds,
                 cancellationToken);
             await DeleteUnreferencedNormalizedSourcesAsync(connection, transaction, cancellationToken);
+            BeforeCommitObserver?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
             await VerifyIntegrityAsync(connection, transaction, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
