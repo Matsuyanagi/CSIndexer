@@ -924,7 +924,7 @@ internal static class Program
         string[] allowedOptions =
         [
             .. QueryOptions, "exclude-generated", "only-generated", "require-single", "dispatch", "caller-scope",
-            "include-overrides",
+            "include-overrides", "show-source",
         ];
         var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
@@ -949,6 +949,9 @@ internal static class Program
                 new HelpOption(
                     "--include-overrides",
                     "Include descendant overrides and interface implementations (method queries only)"),
+                new HelpOption(
+                    "--show-source",
+                    "Include the normalized invocation or object-creation expression"),
                 HelpHelpOption);
             return ExitCodes.Success;
         }
@@ -996,7 +999,8 @@ internal static class Program
             generatedFilter,
             dispatch,
             callerScope,
-            cancellationToken);
+            showSource: parsed.HasFlag("show-source"),
+            cancellationToken: cancellationToken);
         var formatterSettings = MaterializeOutputFormatterSettings(
             parsed,
             parsedFormatterSettings,
@@ -1795,7 +1799,8 @@ internal static class Program
                 "References scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "References scope also accepts --exclude-generated, --only-generated, --require-single, and --include-overrides.",
                 "Callers scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Callers scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, --dispatch, and --caller-scope.",
+                "Callers scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, --dispatch, --caller-scope, and --show-source.",
+                "callers --show-source: include the normalized invocation or object-creation expression",
                 "Callees scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Callees scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, and --exclude-lambda-calls.",
                 "Overrides scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",

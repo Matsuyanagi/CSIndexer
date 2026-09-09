@@ -201,6 +201,67 @@ internal sealed class OutputFormatter
         cancellationToken.ThrowIfCancellationRequested();
         if (_format == "json")
         {
+            if (result.ShowSource)
+            {
+                WriteJsonPayload(new
+                {
+                    profile = result.Selection.Profile.Name,
+                    matched = SelectWithCancellation(
+                        result.Selection.Roots.Select(root => root.Symbol),
+                        symbol => ToSymbolObject(
+                            symbol,
+                            _symbolPathOptions,
+                            _pathResolver,
+                            _pathStyle,
+                            includeSource: false),
+                        cancellationToken),
+                    calls = SelectWithCancellation(
+                        result.Calls,
+                        call => new
+                        {
+                            call.Id,
+                            caller = FormatCallEndpoint(result, call.CallerSymbolId),
+                            callee = FormatCallTarget(result, call),
+                            referenceKind = call.ReferenceKind.ToString(),
+                            dispatchKind = call.DispatchKind.ToString(),
+                            resolutionStatus = call.ResolutionStatus.ToString(),
+                            resolutionReason = call.ResolutionReason.ToString(),
+                            asyncUsageKind = call.AsyncUsageKind.ToString(),
+                            location = ToLocationObject(
+                                call.DocumentPath,
+                                call.SourceStart,
+                                _pathResolver,
+                                _pathStyle),
+                            call.IsGenerated,
+                            unresolvedName = call.CalleeSymbolId is null && call.CalleeDefinitionId is null
+                                ? call.UnresolvedName
+                                : null,
+                            call.ReceiverTypeKey,
+                            normalizedSource = RequireNormalizedSource(call),
+                        },
+                        cancellationToken),
+                    callers = SelectWithCancellation(
+                        result.EffectiveCallers,
+                        symbol => ToSymbolObject(
+                            symbol,
+                            _symbolPathOptions,
+                            _pathResolver,
+                            _pathStyle,
+                            includeSource: false),
+                        cancellationToken),
+                    possibleRuntimeTargets = SelectWithCancellation(
+                        result.PossibleRuntimeTargets,
+                        relation => new
+                        {
+                            source = FormatRelationEndpoint(result, relation.SourceSymbolId),
+                            target = FormatRelationEndpoint(result, relation.TargetSymbolId),
+                            kind = relation.Kind.ToString(),
+                        },
+                        cancellationToken),
+                });
+                return;
+            }
+
             WriteJsonPayload(new
             {
                 profile = result.Selection.Profile.Name,
@@ -265,9 +326,16 @@ internal sealed class OutputFormatter
             cancellationToken.ThrowIfCancellationRequested();
             var point = ResolveLocation(call.DocumentPath, call.SourceStart, _pathResolver, _pathStyle);
             var target = FormatCallTarget(result, call);
-            _writer.WriteLine(
+            var line =
                 $"  {point.Path}:{point.Line}:{point.Column}  {FormatCallEndpoint(result, call.CallerSymbolId)} -> {target} " +
-                $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]");
+                $"[{call.ReferenceKind}, {call.ResolutionStatus}] [{call.AsyncUsageKind}]";
+            if (!result.ShowSource)
+            {
+                _writer.WriteLine(line);
+                continue;
+            }
+
+            _writer.WriteLine($"{line}\t{TableTextSanitizer.Sanitize(RequireNormalizedSource(call))}");
         }
 
         if (result.EffectiveCallers.Count > 0)
@@ -634,6 +702,17 @@ internal sealed class OutputFormatter
 
         throw new InvalidOperationException(
             $"Call ID {call.Id} has no resolved callee endpoint or unresolved name.");
+    }
+
+    private static string RequireNormalizedSource(StoredCall call)
+    {
+        if (call.NormalizedSource is null)
+        {
+            throw new IndexDatabaseException(
+                $"call ID {call.Id} in document ID {call.DocumentId} has no hydrated normalized source.");
+        }
+
+        return call.NormalizedSource;
     }
 
     private string FormatRelationEndpoint(RelationResult result, long symbolId) =>

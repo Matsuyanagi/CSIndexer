@@ -40,7 +40,8 @@ public sealed record CallResult(
     IReadOnlyList<StoredCall> Calls,
     IReadOnlyList<StoredSymbol> EffectiveCallers,
     IReadOnlyList<StoredRelation> PossibleRuntimeTargets,
-    IReadOnlyDictionary<long, StoredSymbol> SymbolsById);
+    IReadOnlyDictionary<long, StoredSymbol> SymbolsById,
+    bool ShowSource = false);
 
 public sealed record RelationResult(
     RootSelection Selection,

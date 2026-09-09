@@ -96,6 +96,54 @@ public sealed class CliCommandTests : IDisposable
             symbol => symbol.GetProperty("displayName").GetString() == "Alpha.AClass::Play()");
     }
 
+    [Fact]
+    public async Task CallersShowSourceAddsOnlyFlaggedTableAndJsonFieldsAndRejectsValueSpelling()
+    {
+        await _fixture.BuildTask;
+        var baseArguments = new[] { "callers", "Alpha.AClass::Play()", "--db", _fixture.DatabasePath };
+
+        var tableBaseline = await RunAsync(baseArguments);
+        var tableRepeat = await RunAsync(baseArguments);
+        var flaggedTable = await RunAsync([.. baseArguments, "--show-source"]);
+        var jsonBaseline = await RunAsync([.. baseArguments, "--output-format", "json"]);
+        var jsonRepeat = await RunAsync([.. baseArguments, "--output-format", "json"]);
+        var flaggedJson = await RunAsync([.. baseArguments, "--output-format", "json", "--show-source"]);
+        var invalidValue = await RunAsync([.. baseArguments, "--show-source=true"]);
+
+        Assert.Equal(ExitCodes.Success, tableBaseline.ExitCode);
+        Assert.Equal(tableBaseline.StandardOutput, tableRepeat.StandardOutput);
+        Assert.Equal(tableBaseline.StandardError, tableRepeat.StandardError);
+        Assert.Equal(ExitCodes.Success, flaggedTable.ExitCode);
+        var flaggedTableLines = flaggedTable.StandardOutput
+            .ReplaceLineEndings("\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var flaggedCallLines = flaggedTableLines
+            .Where(line => line.Contains(" -> ", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(
+            ["Play()", "a.Play()"],
+            flaggedCallLines
+                .Select(line => line[(line.LastIndexOf('\t') + 1)..])
+                .Order(StringComparer.Ordinal));
+        Assert.NotEqual(tableBaseline.StandardOutput, flaggedTable.StandardOutput);
+
+        Assert.Equal(ExitCodes.Success, jsonBaseline.ExitCode);
+        Assert.Equal(jsonBaseline.StandardOutput, jsonRepeat.StandardOutput);
+        Assert.DoesNotContain("normalizedSource", jsonBaseline.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.Success, flaggedJson.ExitCode);
+        using var flaggedDocument = JsonDocument.Parse(flaggedJson.StandardOutput);
+        var flaggedCalls = flaggedDocument.RootElement.GetProperty("calls").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["Play()", "a.Play()"],
+            flaggedCalls
+                .Select(call => call.GetProperty("normalizedSource").GetString())
+                .Order(StringComparer.Ordinal));
+        Assert.NotEqual(jsonBaseline.StandardOutput, flaggedJson.StandardOutput);
+
+        Assert.Equal(ExitCodes.InvalidArguments, invalidValue.ExitCode);
+        Assert.Contains("--show-source", invalidValue.StandardError, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("--regex")]
     [InlineData("--ignore-case")]

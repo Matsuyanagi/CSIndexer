@@ -218,7 +218,13 @@ public sealed class SemanticQueryService
             calls,
             hydration.SymbolsById,
             cancellationToken);
-        return new CallResult(selection, orderedCalls, hydration.EffectiveCallers, [], hydration.SymbolsById);
+        return new CallResult(
+            selection,
+            orderedCalls,
+            hydration.EffectiveCallers,
+            [],
+            hydration.SymbolsById,
+            ShowSource: false);
     }
 
     public async Task<CallResult> FindCallersAsync(
@@ -226,6 +232,7 @@ public sealed class SemanticQueryService
         GeneratedFilter generatedFilter,
         DispatchSearchMode dispatchMode,
         CallerScope callerScope,
+        bool showSource = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
@@ -236,7 +243,7 @@ public sealed class SemanticQueryService
             rootIds,
             generatedFilter,
             CallKinds,
-            includeSourceText: false,
+            includeSourceText: showSource,
             cancellationToken: cancellationToken);
         IReadOnlyList<StoredRelation> possibleTargets = [];
         if (dispatchMode != DispatchSearchMode.Static)
@@ -275,7 +282,8 @@ public sealed class SemanticQueryService
             orderedCalls,
             hydration.EffectiveCallers,
             orderedTargets,
-            hydration.SymbolsById);
+            hydration.SymbolsById,
+            ShowSource: showSource);
     }
 
     public async Task<CallResult> FindCalleesAsync(
@@ -312,7 +320,13 @@ public sealed class SemanticQueryService
             calls,
             hydration.SymbolsById,
             cancellationToken);
-        return new CallResult(selection, orderedCalls, [], [], hydration.SymbolsById);
+        return new CallResult(
+            selection,
+            orderedCalls,
+            [],
+            [],
+            hydration.SymbolsById,
+            ShowSource: false);
     }
 
     public async Task<RelationResult> FindOverridesAsync(
@@ -707,6 +721,7 @@ public sealed class SemanticQueryService
         CallerScope callerScope,
         string? profileName = null,
         bool includeOverrides = false,
+        bool showSource = false,
         CancellationToken cancellationToken = default) =>
         FindCallersAsync(
             queryText,
@@ -716,7 +731,8 @@ public sealed class SemanticQueryService
             filter: default,
             profileName,
             includeOverrides,
-            cancellationToken);
+            showSource: showSource,
+            cancellationToken: cancellationToken);
 
     public async Task<CallResult> FindCallersAsync(
         string queryText,
@@ -726,6 +742,7 @@ public sealed class SemanticQueryService
         FunctionTargetFilter filter,
         string? profileName = null,
         bool includeOverrides = false,
+        bool showSource = false,
         CancellationToken cancellationToken = default)
     {
         var selection = await ResolveTargetSelectionAsync(
@@ -740,7 +757,8 @@ public sealed class SemanticQueryService
             generatedFilter,
             dispatchMode,
             callerScope,
-            cancellationToken);
+            showSource: showSource,
+            cancellationToken: cancellationToken);
     }
 
     public Task<CallResult> FindCalleesAsync(

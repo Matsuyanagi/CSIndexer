@@ -81,7 +81,8 @@ public sealed class VerboseHelpTests
             ["callers"],
             [
                 "Callers scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Callers scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, --dispatch, and --caller-scope.",
+                "Callers scope also accepts --exclude-generated, --only-generated, --require-single, --include-overrides, --dispatch, --caller-scope, and --show-source.",
+                "callers --show-source: include the normalized invocation or object-creation expression",
             ]),
         (
             ["callees"],

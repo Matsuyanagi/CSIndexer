@@ -50,7 +50,7 @@ public sealed class RootSelectionOrchestrationTests(
             GeneratedFilter.Include,
             DispatchSearchMode.Static,
             CallerScope.Direct,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         Assert.Contains(
             callers.EffectiveCallers,
             caller => FormatPath(caller) == "GeneratedCode.GeneratedCaller::Execute(GameNS.Player)");
@@ -686,7 +686,7 @@ public sealed class RootSelectionOrchestrationTests(
             GeneratedFilter.Include,
             DispatchSearchMode.Virtual,
             CallerScope.Both,
-            cancellationToken);
+            cancellationToken: cancellationToken);
 
         var expectedIds = result.Calls
             .SelectMany(call => new long?[]

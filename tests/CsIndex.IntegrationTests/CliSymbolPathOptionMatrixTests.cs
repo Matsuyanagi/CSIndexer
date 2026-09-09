@@ -98,7 +98,7 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
             [
                 "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
                 .. QueryOptionFamilies, "require-single", "include-overrides", "exclude-generated", "only-generated",
-                "dispatch", "caller-scope",
+                "dispatch", "caller-scope", "show-source",
             ]),
         new(
             "callees",
