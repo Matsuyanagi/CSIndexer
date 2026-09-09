@@ -59,7 +59,7 @@ public sealed class RootSelectionOrchestrationTests(
             selection,
             depth: 1,
             maxNodes: 20,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         Assert.Contains(
             callerTree.Nodes,
             node => node.Symbol.DocumentPath == "GeneratedCaller.g.cs" &&
@@ -89,7 +89,7 @@ public sealed class RootSelectionOrchestrationTests(
             ambiguous,
             depth: 2,
             maxNodes: 20,
-            cancellationToken));
+            cancellationToken: cancellationToken));
         Assert.Equal(0, traversalEvents);
 
         var missing = await query.SelectRootsAsync(
@@ -361,7 +361,7 @@ public sealed class RootSelectionOrchestrationTests(
             originSelection,
             depth: 1,
             maxNodes: 20,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         Assert.Contains(initializerCallerTree.Nodes, node =>
             node.Symbol.Kind == IndexedSymbolKind.Initializer &&
             FormatPath(node.Symbol) == "Catalog.AsyncInitializerHost::<initializer:AsyncFactory>");
@@ -376,7 +376,7 @@ public sealed class RootSelectionOrchestrationTests(
             topLocalSelection,
             depth: 1,
             maxNodes: 20,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         Assert.Contains(
             topLevelCallerTree.Nodes,
             node => node.Symbol.Kind == IndexedSymbolKind.TopLevelStatements);

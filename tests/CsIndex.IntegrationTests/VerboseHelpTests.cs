@@ -106,7 +106,8 @@ public sealed class VerboseHelpTests
             ["callers", "tree"],
             [
                 "Callers tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Callers tree scope also accepts --depth, --max-nodes, and graph output options.",
+                "Callers tree scope also accepts --depth, --max-nodes, --show-source, and graph output options.",
+                "callers tree --show-source: include normalized source for every physical call site",
             ]),
         (
             ["definition", "--at", "Source.cs:1:1"],
@@ -263,14 +264,23 @@ public sealed class VerboseHelpTests
     public async Task CallersHelpDescribesShowSourceExactly()
     {
         var result = await RunAsync("callers", "--help");
+        var treeResult = await RunAsync("callers", "tree", "--help");
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Equal(ExitCodes.Success, treeResult.ExitCode);
         var helpLines = result.StandardOutput
             .ReplaceLineEndings("\n")
             .Split('\n', StringSplitOptions.None);
         Assert.Contains(
             "  --show-source               Include the normalized invocation or object-creation expression",
             helpLines);
+
+        var treeHelpLines = treeResult.StandardOutput
+            .ReplaceLineEndings("\n")
+            .Split('\n', StringSplitOptions.None);
+        Assert.Contains(
+            "  --show-source               Include normalized source for every physical call site",
+            treeHelpLines);
     }
 
     [Fact]

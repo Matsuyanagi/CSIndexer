@@ -67,7 +67,7 @@ public sealed class PortableIndexAcceptanceTests(CSharpSymbolPathAcceptanceFixtu
         new("callers", ["callers"],
             [
                 .. QueryOptions, "exclude-generated", "only-generated", "require-single", "include-overrides",
-                "dispatch", "caller-scope",
+                "dispatch", "caller-scope", "show-source",
             ]),
         new("callees", ["callees"],
             [
@@ -79,7 +79,7 @@ public sealed class PortableIndexAcceptanceTests(CSharpSymbolPathAcceptanceFixtu
         new("async tree", ["async", "tree"],
             [.. QueryOptions, "max-nodes"]),
         new("callers tree", ["callers", "tree"],
-            [.. QueryOptions, "depth", "max-nodes"]),
+            [.. QueryOptions, "depth", "max-nodes", "show-source"]),
         new("conditions", ["conditions"],
             ["db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose", "base-dir", "path-style"]),
     ];

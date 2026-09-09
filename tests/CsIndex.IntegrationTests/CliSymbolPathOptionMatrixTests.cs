@@ -128,7 +128,7 @@ public sealed class CliSymbolPathOptionMatrixTests : IDisposable
             ["callers", "tree"],
             [
                 "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
-                .. QueryOptionFamilies, "depth", "max-nodes",
+                .. QueryOptionFamilies, "depth", "max-nodes", "show-source",
             ]),
         new(
             "definition --at",

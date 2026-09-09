@@ -201,6 +201,9 @@ public sealed class CliCommandTests : IDisposable
             ("caller-tree", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()"]),
             ("caller-mermaid", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output-format", "mermaid"]),
             ("caller-json", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--output-format", "json"]),
+            ("caller-tree-show-source", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source"]),
+            ("caller-mermaid-show-source", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source", "--output-format", "mermaid"]),
+            ("caller-json-show-source", ["callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source", "--output-format", "json"]),
             ("conditions-table", ["conditions"]),
             ("conditions-json", ["conditions", "--output-format", "json"]),
         };
@@ -1823,6 +1826,17 @@ public sealed class CliCommandTests : IDisposable
         var right = await _fixture.GetStoredSymbolAsync(
             "Alpha.CallerGraph::RecursiveRight()",
             cancellationToken: TestContext.Current.CancellationToken);
+        var directExpected = await _fixture.Query.FindCallerTreeAsync(
+            "Alpha.CallerGraph::DirectTarget()",
+            depth: 0,
+            maxNodes: 100,
+            profileName: _fixture.PrimaryProfileName,
+            showSource: true,
+            cancellationToken: TestContext.Current.CancellationToken);
+        var directCaller = Assert.Single(directExpected.Nodes, node => node.Depth == 1).Symbol;
+        var directSite = Assert.Single(directExpected.CallSites);
+        var directPoint = SourcePositionResolver.ResolveOffset(_fixture.MainSourcePath, directSite.Call.SourceStart);
+        var directLocation = $"{_fixture.MainSourcePath}:{directPoint.Line}:{directPoint.Column}";
 
         var table = await RunAsync(
             "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--short-names", "--db", _fixture.DatabasePath);
@@ -1837,6 +1851,16 @@ public sealed class CliCommandTests : IDisposable
         var metadata = await RunAsync(
             "callers", "tree", "Alpha.CallerGraph::MetadataTarget()", "--depth", "0", "--output-format", "json", "--db",
             _fixture.DatabasePath);
+        var flaggedTree = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source", "--db", _fixture.DatabasePath);
+        var flaggedMermaid = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source", "--output-format", "mermaid", "--db",
+            _fixture.DatabasePath);
+        var flaggedJson = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source", "--output-format", "json", "--db",
+            _fixture.DatabasePath);
+        var invalidFlagValue = await RunAsync(
+            "callers", "tree", "Alpha.CallerGraph::DirectTarget()", "--show-source=true", "--db", _fixture.DatabasePath);
 
         Assert.Equal(ExitCodes.Success, table.ExitCode);
         Assert.Contains("CallerGraph::DirectTarget()", table.StandardOutput);
@@ -1867,6 +1891,46 @@ public sealed class CliCommandTests : IDisposable
         Assert.All(metadataDocument.RootElement.GetProperty("nodes").EnumerateArray(), node =>
             Assert.False(node.GetProperty("symbol").GetProperty("namespaceName").GetString()!
                 .StartsWith("System", StringComparison.Ordinal)));
+
+        Assert.Equal(ExitCodes.Success, flaggedTree.ExitCode);
+        Assert.Equal(
+            "Alpha.CallerGraph::DirectTarget()" + Environment.NewLine +
+            "└─ Alpha.CallerGraph::DirectCaller()" + Environment.NewLine +
+            $"   @ {directLocation}\tDirectTarget()" + Environment.NewLine,
+            flaggedTree.StandardOutput);
+        Assert.Equal(ExitCodes.Success, flaggedMermaid.ExitCode);
+        Assert.Equal(
+            "flowchart TD" + Environment.NewLine +
+            $"    n{directExpected.Root.Id}[\"Alpha.CallerGraph::DirectTarget()\"]" + Environment.NewLine +
+            $"    n{directCaller.Id}[\"Alpha.CallerGraph::DirectCaller()\"]" + Environment.NewLine +
+            $"    n{directCaller.Id} -->|\"{directLocation} DirectTarget()\"| n{directExpected.Root.Id}" + Environment.NewLine,
+            flaggedMermaid.StandardOutput);
+        Assert.Equal(ExitCodes.Success, flaggedJson.ExitCode);
+        using var flaggedJsonDocument = JsonDocument.Parse(flaggedJson.StandardOutput);
+        Assert.Equal(
+            ["profile", "truncated", "root", "nodes", "edges"],
+            flaggedJsonDocument.RootElement.EnumerateObject().Select(property => property.Name));
+        var flaggedEdges = flaggedJsonDocument.RootElement.GetProperty("edges").EnumerateArray().ToArray();
+        var flaggedEdge = Assert.Single(flaggedEdges);
+        Assert.Equal(["callerSymbolId", "calleeSymbolId", "callSites"],
+            flaggedEdge.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(directCaller.Id, flaggedEdge.GetProperty("callerSymbolId").GetInt64());
+        Assert.Equal(directExpected.Root.Id, flaggedEdge.GetProperty("calleeSymbolId").GetInt64());
+        var flaggedSites = flaggedEdge.GetProperty("callSites").EnumerateArray().ToArray();
+        var flaggedSite = Assert.Single(flaggedSites);
+        Assert.Equal(["id", "location", "normalizedSource"],
+            flaggedSite.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(directSite.Call.Id, flaggedSite.GetProperty("id").GetInt64());
+        Assert.Equal("DirectTarget()", flaggedSite.GetProperty("normalizedSource").GetString());
+        var flaggedLocation = flaggedSite.GetProperty("location");
+        Assert.Equal(["path", "line", "column", "offset"],
+            flaggedLocation.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(_fixture.MainSourcePath, flaggedLocation.GetProperty("path").GetString());
+        Assert.Equal(directPoint.Line, flaggedLocation.GetProperty("line").GetInt32());
+        Assert.Equal(directPoint.Column, flaggedLocation.GetProperty("column").GetInt32());
+        Assert.Equal(directSite.Call.SourceStart, flaggedLocation.GetProperty("offset").GetInt32());
+        Assert.Equal(ExitCodes.InvalidArguments, invalidFlagValue.ExitCode);
+        Assert.Contains("--show-source", invalidFlagValue.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2036,6 +2100,7 @@ public sealed class CliCommandTests : IDisposable
               -o <path> | --output-file <path>  Write the result payload to a file
               --depth <count>  Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>  Maximum graph nodes (default: 500)
+              --show-source  Include normalized source for every physical call site
               --short-names  Shorten namespaces in displayed symbol names
               --help  Show this help text
               --help-verbose  Show the full symbol-path and query grammar reference

@@ -424,6 +424,66 @@ public sealed class SymbolCanonicalComparer : IComparer<StoredSymbol>
             afterOrderingComparison);
     }
 
+    internal static IReadOnlyList<CallerTreeCallSite> OrderCallerTreeCallSites(
+        IEnumerable<CallerTreeCallSite> callSites,
+        IReadOnlyList<CallerTreeEdge> orderedEdges,
+        CancellationToken cancellationToken,
+        Action? afterOrderingComparison = null)
+    {
+        ArgumentNullException.ThrowIfNull(callSites);
+        ArgumentNullException.ThrowIfNull(orderedEdges);
+
+        var edgeIndexes = new Dictionary<CallerTreeEdge, int>();
+        for (var index = 0; index < orderedEdges.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            edgeIndexes.TryAdd(orderedEdges[index], index);
+        }
+
+        var materialized = Materialize(callSites, cancellationToken);
+        foreach (var callSite in materialized)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!edgeIndexes.ContainsKey(new CallerTreeEdge(
+                    callSite.CallerSymbolId,
+                    callSite.CalleeSymbolId)))
+            {
+                throw new IndexDatabaseException(
+                    $"Caller tree call-site association ({callSite.CallerSymbolId}, {callSite.CalleeSymbolId}) " +
+                    "is not present in the ordered edge set.");
+            }
+        }
+
+        return SortMaterialized(
+            materialized,
+            (left, right) =>
+            {
+                var result = edgeIndexes[new CallerTreeEdge(left.CallerSymbolId, left.CalleeSymbolId)]
+                    .CompareTo(edgeIndexes[new CallerTreeEdge(right.CallerSymbolId, right.CalleeSymbolId)]);
+                if (result != 0)
+                {
+                    return result;
+                }
+
+                result = StringComparer.Ordinal.Compare(left.Call.DocumentPath, right.Call.DocumentPath);
+                if (result != 0)
+                {
+                    return result;
+                }
+
+                result = left.Call.SourceStart.CompareTo(right.Call.SourceStart);
+                if (result != 0)
+                {
+                    return result;
+                }
+
+                result = left.Call.SourceLength.CompareTo(right.Call.SourceLength);
+                return result != 0 ? result : left.Call.Id.CompareTo(right.Call.Id);
+            },
+            cancellationToken,
+            afterOrderingComparison);
+    }
+
     internal static int CompareCallerTreeEdges(
         CallerTreeEdge? left,
         CallerTreeEdge? right,

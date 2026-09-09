@@ -504,7 +504,7 @@ internal static class Program
         CancellationToken cancellationToken,
         ProgramDependencies dependencies)
     {
-        string[] allowedOptions = [.. QueryOptions, "depth", "max-nodes"];
+        string[] allowedOptions = [.. QueryOptions, "depth", "max-nodes", "show-source"];
         var parsed = ParseQueryArguments(args, allowedOptions);
         if (parsed.HasFlag("help") || parsed.HasFlag("help-verbose"))
         {
@@ -521,6 +521,7 @@ internal static class Program
                 OutputFileHelpOption,
                 new HelpOption("--depth <count>", "Maximum caller depth; 0 is unlimited (default: 3)"),
                 new HelpOption("--max-nodes <count>", "Maximum graph nodes (default: 500)"),
+                new HelpOption("--show-source", "Include normalized source for every physical call site"),
                 ShortNamesHelpOption,
                 HelpHelpOption);
             return ExitCodes.Success;
@@ -532,6 +533,7 @@ internal static class Program
         var request = CreateSelectionRequest(parsed, query);
         var depth = ParseNonNegativeInteger(parsed.GetSingle("depth"), "Depth", defaultValue: 3);
         var maxNodes = ParsePositiveInteger(parsed.GetSingle("max-nodes"), "Maximum node count", defaultValue: 500);
+        var showSource = parsed.HasFlag("show-source");
         var service = CreateQueryService(parsed, dependencies);
         var selection = await service.SelectRootsAsync(
             request,
@@ -547,7 +549,12 @@ internal static class Program
             presentationSettings.PathStyle,
             "Graph",
             query);
-        var result = await service.FindCallerTreeAsync(selection, depth, maxNodes, cancellationToken);
+        var result = await service.FindCallerTreeAsync(
+            selection,
+            depth,
+            maxNodes,
+            showSource: showSource,
+            cancellationToken: cancellationToken);
         using var destination = CreateOutputDestination(parsed, dependencies.OutputDestinationFactory);
         destination.WritePayload(
             writer => new GraphOutputFormatter(
@@ -1808,7 +1815,8 @@ internal static class Program
                 "Async tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
                 "Async tree scope also accepts --max-nodes and graph output options.",
                 "Callers tree scope: required selector; all typed namespace/type/method/file/include/exclude conditions and their case options, --kind, and --async-status.",
-                "Callers tree scope also accepts --depth, --max-nodes, and graph output options.",
+                "Callers tree scope also accepts --depth, --max-nodes, --show-source, and graph output options.",
+                "callers tree --show-source: include normalized source for every physical call site",
                 "Definition --at scope: no selector or root conditions; presentation/path options only.",
                 "Conditions scope: no selector or root conditions; --base-dir and --path-style only among query path options.")),
         new HelpSection(
@@ -1933,6 +1941,7 @@ internal static class Program
             Callers tree options:
               --depth <count>              Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>          Maximum graph nodes (default: 500)
+              --show-source                Include normalized source for every physical call site
               --output-format tree|mermaid|json
                                           Output format (default: tree)
 

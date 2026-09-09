@@ -370,12 +370,19 @@ public sealed class SemanticQueryService
         RootSelection selection,
         int depth,
         int maxNodes,
+        bool showSource = false,
         CancellationToken cancellationToken = default)
     {
         ValidateDepth(depth);
         ValidateMaxNodes(maxNodes);
         var root = RequireSingleGraphRoot(selection, "caller tree");
-        return await _callerTreeBuilder.BuildAsync(selection, root, depth, maxNodes, cancellationToken);
+        return await _callerTreeBuilder.BuildAsync(
+            selection,
+            root,
+            depth,
+            maxNodes,
+            showSource: showSource,
+            cancellationToken: cancellationToken);
     }
 
     public Task<QueryContext> FindSymbolsAsync(
@@ -538,8 +545,16 @@ public sealed class SemanticQueryService
         int depth = 3,
         int maxNodes = 500,
         string? profileName = null,
+        bool showSource = false,
         CancellationToken cancellationToken = default) =>
-        FindCallerTreeAsync(queryText, filter: default, depth, maxNodes, profileName, cancellationToken);
+        FindCallerTreeAsync(
+            queryText,
+            filter: default,
+            depth: depth,
+            maxNodes: maxNodes,
+            profileName: profileName,
+            showSource: showSource,
+            cancellationToken: cancellationToken);
 
     public async Task<CallerTreeResult> FindCallerTreeAsync(
         string queryText,
@@ -547,6 +562,7 @@ public sealed class SemanticQueryService
         int depth = 3,
         int maxNodes = 500,
         string? profileName = null,
+        bool showSource = false,
         CancellationToken cancellationToken = default)
     {
         ValidateDepth(depth);
@@ -556,7 +572,12 @@ public sealed class SemanticQueryService
             profileName,
             filter,
             cancellationToken);
-        return await FindCallerTreeAsync(selection, depth, maxNodes, cancellationToken);
+        return await FindCallerTreeAsync(
+            selection,
+            depth: depth,
+            maxNodes: maxNodes,
+            showSource: showSource,
+            cancellationToken: cancellationToken);
     }
 
     public Task<QueryContext> ListSymbolsAsync(

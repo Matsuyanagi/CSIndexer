@@ -63,9 +63,16 @@ public sealed record CallerTreeNode(StoredSymbol Symbol, int Depth);
 
 public sealed record CallerTreeEdge(long CallerSymbolId, long CalleeSymbolId);
 
+public sealed record CallerTreeCallSite(
+    long CallerSymbolId,
+    long CalleeSymbolId,
+    StoredCall Call);
+
 public sealed record CallerTreeResult(
     RootSelection Selection,
     StoredSymbol Root,
     IReadOnlyList<CallerTreeNode> Nodes,
     IReadOnlyList<CallerTreeEdge> Edges,
+    IReadOnlyList<CallerTreeCallSite> CallSites,
+    bool ShowSource,
     bool Truncated);

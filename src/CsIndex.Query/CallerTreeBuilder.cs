@@ -17,6 +17,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         StoredSymbol root,
         int depth,
         int maxNodes,
+        bool showSource,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -25,6 +26,8 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
         var nodesById = new Dictionary<long, CallerTreeNode> { [root.Id] = rootNode };
         var edges = new List<CallerTreeEdge>();
         var edgeSet = new HashSet<CallerTreeEdge>();
+        var callSites = new List<CallerTreeCallSite>();
+        var callSiteIdentities = new HashSet<(long CallerSymbolId, long CalleeSymbolId, long CallId)>();
         var currentFrontier = new List<CallerTreeNode> { rootNode };
         var truncated = false;
 
@@ -35,6 +38,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
 
             var candidateEdges = new List<CallerTreeEdge>();
             var candidateEdgeSet = new HashSet<CallerTreeEdge>();
+            var candidateCallSitesByEdge = new Dictionary<CallerTreeEdge, List<CallerTreeCallSite>>();
             foreach (var calleeNode in currentFrontier)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -43,7 +47,7 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                     [calleeNode.Symbol.Id],
                     GeneratedFilter.Include,
                     CallKinds,
-                    includeSourceText: false,
+                    includeSourceText: showSource,
                     cancellationToken: cancellationToken);
                 foreach (var call in calls)
                 {
@@ -54,6 +58,16 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                     }
 
                     var candidateEdge = new CallerTreeEdge(call.CallerSymbolId, calleeNode.Symbol.Id);
+                    if (!candidateCallSitesByEdge.TryGetValue(candidateEdge, out var candidateCallSites))
+                    {
+                        candidateCallSites = [];
+                        candidateCallSitesByEdge.Add(candidateEdge, candidateCallSites);
+                    }
+
+                    candidateCallSites.Add(new CallerTreeCallSite(
+                        candidateEdge.CallerSymbolId,
+                        candidateEdge.CalleeSymbolId,
+                        call));
                     if (candidateEdgeSet.Add(candidateEdge))
                     {
                         candidateEdges.Add(candidateEdge);
@@ -71,12 +85,15 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                 foreach (var candidateEdge in candidateEdges)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (nodesById.ContainsKey(candidateEdge.CallerSymbolId) &&
-                        nodesById.ContainsKey(candidateEdge.CalleeSymbolId) &&
-                        edgeSet.Add(candidateEdge))
-                    {
-                        edges.Add(candidateEdge);
-                    }
+                    RetainCandidateEdge(
+                        candidateEdge,
+                        candidateCallSitesByEdge,
+                        nodesById,
+                        edgeSet,
+                        edges,
+                        callSites,
+                        callSiteIdentities,
+                        cancellationToken);
                 }
 
                 break;
@@ -149,12 +166,15 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                 foreach (var candidateEdge in callerEdges)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (nodesById.ContainsKey(candidateEdge.CallerSymbolId) &&
-                        nodesById.ContainsKey(candidateEdge.CalleeSymbolId) &&
-                        edgeSet.Add(candidateEdge))
-                    {
-                        edges.Add(candidateEdge);
-                    }
+                    RetainCandidateEdge(
+                        candidateEdge,
+                        candidateCallSitesByEdge,
+                        nodesById,
+                        edgeSet,
+                        edges,
+                        callSites,
+                        callSiteIdentities,
+                        cancellationToken);
                 }
             }
 
@@ -165,7 +185,59 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
             edges,
             nodesById,
             cancellationToken);
-        return new CallerTreeResult(selection, root, nodes, orderedEdges, truncated);
+        var orderedCallSites = SymbolCanonicalComparer.OrderCallerTreeCallSites(
+            callSites,
+            orderedEdges,
+            cancellationToken);
+        return new CallerTreeResult(
+            selection,
+            root,
+            nodes,
+            orderedEdges,
+            orderedCallSites,
+            showSource,
+            truncated);
+    }
+
+    private static void RetainCandidateEdge(
+        CallerTreeEdge candidateEdge,
+        IReadOnlyDictionary<CallerTreeEdge, List<CallerTreeCallSite>> candidateCallSitesByEdge,
+        IReadOnlyDictionary<long, CallerTreeNode> nodesById,
+        ISet<CallerTreeEdge> edgeSet,
+        ICollection<CallerTreeEdge> edges,
+        ICollection<CallerTreeCallSite> callSites,
+        ISet<(long CallerSymbolId, long CalleeSymbolId, long CallId)> callSiteIdentities,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!nodesById.ContainsKey(candidateEdge.CallerSymbolId) ||
+            !nodesById.ContainsKey(candidateEdge.CalleeSymbolId))
+        {
+            return;
+        }
+
+        if (edgeSet.Add(candidateEdge))
+        {
+            edges.Add(candidateEdge);
+        }
+
+        if (!candidateCallSitesByEdge.TryGetValue(candidateEdge, out var candidateCallSites))
+        {
+            return;
+        }
+
+        foreach (var candidateCallSite in candidateCallSites)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var identity = (
+                candidateCallSite.CallerSymbolId,
+                candidateCallSite.CalleeSymbolId,
+                candidateCallSite.Call.Id);
+            if (callSiteIdentities.Add(identity))
+            {
+                callSites.Add(candidateCallSite);
+            }
+        }
     }
 
     internal static IReadOnlyList<StoredSymbol> OrderCallers(

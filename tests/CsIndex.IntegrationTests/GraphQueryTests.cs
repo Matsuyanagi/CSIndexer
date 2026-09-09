@@ -833,18 +833,30 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         var invocation = await fixture.Query.FindCallerTreeAsync(
             "Alpha.CallerGraph::DirectTarget()",
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: cancellationToken);
         var objectCreation = await fixture.Query.FindCallerTreeAsync(
             "Alpha.GraphCreated::[constructor]()",
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: cancellationToken);
         var directCaller = Assert.Single(invocation.Nodes, node => node.Depth == 1).Symbol;
         var objectCreator = Assert.Single(objectCreation.Nodes, node => node.Depth == 1).Symbol;
 
         Assert.Equal("Alpha.CallerGraph::DirectCaller()", FormatPath(directCaller));
         Assert.Contains(new CallerTreeEdge(directCaller.Id, invocation.Root.Id), invocation.Edges);
+        var invocationSite = Assert.Single(invocation.CallSites);
+        Assert.Equal(directCaller.Id, invocationSite.CallerSymbolId);
+        Assert.Equal(invocation.Root.Id, invocationSite.CalleeSymbolId);
+        Assert.Equal("DirectTarget()", invocationSite.Call.NormalizedSource);
+        Assert.NotNull(invocationSite.Call.NormalizedSource);
         Assert.Equal("Alpha.CallerGraph::ObjectCreator()", FormatPath(objectCreator));
         Assert.Contains(new CallerTreeEdge(objectCreator.Id, objectCreation.Root.Id), objectCreation.Edges);
+        var objectCreationSite = Assert.Single(objectCreation.CallSites);
+        Assert.Equal(objectCreator.Id, objectCreationSite.CallerSymbolId);
+        Assert.Equal(objectCreation.Root.Id, objectCreationSite.CalleeSymbolId);
+        Assert.Equal("new GraphCreated()", objectCreationSite.Call.NormalizedSource);
+        Assert.NotNull(objectCreationSite.Call.NormalizedSource);
     }
 
     [Fact]
@@ -856,15 +868,32 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             "Alpha.CallerGraph::RecursiveTarget()",
             depth: 0,
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: TestContext.Current.CancellationToken);
         var right = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::RecursiveRight()").Symbol;
         var left = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::RecursiveLeft()").Symbol;
 
         Assert.Equal(result.Nodes.Count, result.Nodes.Select(node => node.Symbol.Id).Distinct().Count());
         Assert.Equal(result.Edges.Count, result.Edges.Distinct().Count());
-        Assert.Contains(new CallerTreeEdge(right.Id, result.Root.Id), result.Edges);
-        Assert.Contains(new CallerTreeEdge(left.Id, right.Id), result.Edges);
-        Assert.Contains(new CallerTreeEdge(right.Id, left.Id), result.Edges);
+        var expectedEdges = new[]
+        {
+            new CallerTreeEdge(right.Id, result.Root.Id),
+            new CallerTreeEdge(left.Id, right.Id),
+            new CallerTreeEdge(right.Id, left.Id),
+        };
+        Assert.Equal(expectedEdges, result.Edges);
+        var expectedCalls = new[]
+        {
+            (right.Id, result.Root.Id, "RecursiveTarget()"),
+            (left.Id, right.Id, "RecursiveRight()"),
+            (right.Id, left.Id, "RecursiveLeft()"),
+        };
+        Assert.Equal(
+            expectedCalls,
+            result.CallSites.Select(site => (site.CallerSymbolId, site.CalleeSymbolId, site.Call.NormalizedSource!)));
+        Assert.Equal(result.CallSites.Count, result.CallSites.Select(site => site.Call.Id).Distinct().Count());
+        Assert.Equal(result.CallSites.Count, result.CallSites.Select(site =>
+            (site.CallerSymbolId, site.CalleeSymbolId, site.Call.Id)).Distinct().Count());
     }
 
     [Fact]
@@ -876,6 +905,7 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             "Alpha.CallerGraph::BoundaryTarget()",
             depth: 1,
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: cancellationToken);
         var root = result.Root;
         var left = Assert.Single(result.Nodes, node => FormatPath(node.Symbol) == "Alpha.CallerGraph::BoundaryLeft()").Symbol;
@@ -901,6 +931,19 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             Console.Out).WriteCallerTree(result, output, cancellationToken));
 
         Assert.Equal(expected, result.Edges);
+        var expectedCalls = new[]
+        {
+            (left.Id, root.Id, "BoundaryTarget()"),
+            (right.Id, root.Id, "BoundaryTarget()"),
+            (right.Id, left.Id, "BoundaryLeft()"),
+            (left.Id, right.Id, "BoundaryRight()"),
+        };
+        Assert.Equal(
+            expectedCalls,
+            result.CallSites.Select(site => (site.CallerSymbolId, site.CalleeSymbolId, site.Call.NormalizedSource!)));
+        Assert.Equal(result.CallSites.Count, result.CallSites.Select(site => site.Call.Id).Distinct().Count());
+        Assert.Equal(result.CallSites.Count, result.CallSites.Select(site =>
+            (site.CallerSymbolId, site.CalleeSymbolId, site.Call.Id)).Distinct().Count());
 
         var tree = Format("tree");
         Assert.Equal(expected.OrderBy(EdgeKey), ParseTreeEdges(tree, symbolIds).OrderBy(EdgeKey));
@@ -1008,7 +1051,26 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             "Alpha.CallerGraph::FilterTarget()",
             depth: 1,
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: cancellationToken);
+        var systemCaller = await fixture.GetStoredSymbolAsync(
+            "System.SourceFilterCaller::Call()",
+            fixture.PrimaryProfileName,
+            cancellationToken);
+        var allowedCaller = Assert.Single(
+            result.Nodes,
+            node => FormatPath(node.Symbol) == "Alpha.CallerGraph::AllowedFilterCaller()").Symbol;
+        var profile = await fixture.Repository.GetProfileAsync(fixture.PrimaryProfileName, cancellationToken);
+        var persistedSystemCall = Assert.Single(
+            await fixture.Repository.GetCallsByCallerAsync(
+                profile.Id,
+                [systemCaller.Id],
+                GeneratedFilter.Include,
+                new HashSet<ReferenceKind> { ReferenceKind.Invocation },
+                includeSourceText: true,
+                cancellationToken: cancellationToken),
+            call => call.CalleeDefinitionId == result.Root.Id || call.CalleeSymbolId == result.Root.Id);
+        Assert.NotNull(persistedSystemCall.NormalizedSource);
 
         Assert.Equal(
             [
@@ -1020,8 +1082,20 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
         {
             Assert.NotNull(node.Symbol.DocumentPath);
             Assert.False(node.Symbol.NamespaceName == "System" ||
-                         node.Symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal));
+                node.Symbol.NamespaceName.StartsWith("System.", StringComparison.Ordinal));
         });
+        var legitimate = Assert.Single(result.CallSites);
+        Assert.Equal(allowedCaller.Id, legitimate.CallerSymbolId);
+        Assert.Equal(result.Root.Id, legitimate.CalleeSymbolId);
+        Assert.Equal("FilterTarget()", legitimate.Call.NormalizedSource);
+        Assert.Equal(new CallerTreeEdge(allowedCaller.Id, result.Root.Id), Assert.Single(result.Edges));
+        Assert.DoesNotContain(result.Edges, edge =>
+            edge.CallerSymbolId == systemCaller.Id && edge.CalleeSymbolId == result.Root.Id);
+        Assert.DoesNotContain(result.CallSites, site =>
+            site.CallerSymbolId == systemCaller.Id &&
+            site.CalleeSymbolId == result.Root.Id &&
+            site.Call.NormalizedSource == "Alpha.CallerGraph.FilterTarget()");
+        Assert.DoesNotContain(result.CallSites, site => site.Call.Id == persistedSystemCall.Id);
     }
 
     [Fact]
@@ -1075,12 +1149,14 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
             depth: 0,
             maxNodes: 1,
             profileName: fixture.PrimaryProfileName,
+            showSource: true,
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(result.Truncated);
         var root = Assert.Single(result.Nodes);
         Assert.Equal(result.Root.Id, root.Symbol.Id);
         Assert.Empty(result.Edges);
+        Assert.Empty(result.CallSites);
     }
 
     [Fact]
@@ -1143,6 +1219,11 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
                 continue;
             }
 
+            if (line.TrimStart().StartsWith("@ ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             if (additionalEdges)
             {
                 var parts = line.Trim().Split(" -> ", StringSplitOptions.None);
@@ -1168,11 +1249,15 @@ public sealed class GraphQueryTests(SemanticIndexFixture fixture)
 
     private static IReadOnlyList<CallerTreeEdge> ParseMermaidEdges(string text) => text
         .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
-        .Where(line => line.Contains(" --> ", StringComparison.Ordinal))
-        .Select(line => line.Trim().Split(" --> ", StringSplitOptions.None))
-        .Select(parts => new CallerTreeEdge(
-            long.Parse(parts[0][1..], System.Globalization.CultureInfo.InvariantCulture),
-            long.Parse(parts[1][1..], System.Globalization.CultureInfo.InvariantCulture)))
+        .Where(line => line.Contains("-->", StringComparison.Ordinal))
+        .Select(line =>
+        {
+            var parts = line.Trim().Split(" -->", 2, StringSplitOptions.None);
+            var callee = parts[1].Split('|').Last().Trim();
+            return new CallerTreeEdge(
+                long.Parse(parts[0][1..], System.Globalization.CultureInfo.InvariantCulture),
+                long.Parse(callee[1..], System.Globalization.CultureInfo.InvariantCulture));
+        })
         .ToArray();
 
     private static IReadOnlyList<CallerTreeEdge> ParseJsonEdges(JsonDocument document) => document.RootElement

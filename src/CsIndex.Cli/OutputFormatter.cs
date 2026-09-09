@@ -567,7 +567,7 @@ internal sealed class OutputFormatter
         return $" [async: {symbol.AsyncRole}; depth: {symbol.AsyncInvolvementDepth?.ToString() ?? "null"}]";
     }
 
-    private static SourcePoint ResolveLocation(
+    internal static SourcePoint ResolveLocation(
         string storedPath,
         int offset,
         IndexPathResolver pathResolver,

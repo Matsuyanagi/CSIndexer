@@ -154,6 +154,74 @@ internal sealed class GraphOutputFormatter
     private void WriteCallerTextTree(CallerTreeResult result, CancellationToken cancellationToken)
     {
         var presentation = CreateCallerTreePresentation(result, cancellationToken);
+        if (!result.ShowSource)
+        {
+            WriteCallerTextTreeWithoutSources(result, presentation, cancellationToken);
+            return;
+        }
+
+        foreach (var node in presentation.Nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var indent = presentation.IndentById[node.Symbol.Id];
+            var prefix = indent == 0
+                ? string.Empty
+                : string.Concat(Enumerable.Repeat("   ", indent - 1)) + "└─ ";
+            Writer.WriteLine(prefix + DisplayName(node.Symbol));
+
+            if (indent == 0 ||
+                !presentation.SpanningEdgeByCallerId.TryGetValue(node.Symbol.Id, out var spanningEdge) ||
+                !presentation.CallSitesByEdge.TryGetValue(spanningEdge, out var callSites))
+            {
+                continue;
+            }
+
+            var sitePrefix = string.Concat(Enumerable.Repeat("   ", indent));
+            foreach (var callSite in callSites)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Writer.WriteLine(FormatTreeCallSite(callSite, sitePrefix, cancellationToken));
+            }
+        }
+
+        if (result.Truncated)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Writer.WriteLine("└─ <truncated>");
+        }
+
+        if (presentation.AdditionalEdges.Count == 0)
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Writer.WriteLine("Additional edges:");
+        foreach (var edge in presentation.AdditionalEdges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Writer.WriteLine(
+                $"  {GetEdgeDisplayName(edge.CallerSymbolId, presentation.NodesById)} -> " +
+                $"{GetEdgeDisplayName(edge.CalleeSymbolId, presentation.NodesById)}");
+
+            if (!presentation.CallSitesByEdge.TryGetValue(edge, out var callSites))
+            {
+                continue;
+            }
+
+            foreach (var callSite in callSites)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Writer.WriteLine(FormatTreeCallSite(callSite, "    ", cancellationToken));
+            }
+        }
+    }
+
+    private void WriteCallerTextTreeWithoutSources(
+        CallerTreeResult result,
+        CallerTreePresentation presentation,
+        CancellationToken cancellationToken)
+    {
         foreach (var node in presentation.Nodes)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -187,6 +255,44 @@ internal sealed class GraphOutputFormatter
     private void WriteMermaid(CallerTreeResult result, CancellationToken cancellationToken)
     {
         var presentation = CreateCallerTreePresentation(result, cancellationToken);
+        if (!result.ShowSource)
+        {
+            WriteMermaidWithoutSources(result, presentation, cancellationToken);
+            return;
+        }
+
+        Writer.WriteLine("flowchart TD");
+        foreach (var node in presentation.Nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Writer.WriteLine($"    n{node.Symbol.Id}[\"{EscapeMermaidLabel(RawDisplayName(node.Symbol))}\"]");
+        }
+
+        foreach (var edge in presentation.Edges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!presentation.CallSitesByEdge.TryGetValue(edge, out var callSites) || callSites.Count == 0)
+            {
+                Writer.WriteLine($"    n{edge.CallerSymbolId} --> n{edge.CalleeSymbolId}");
+                continue;
+            }
+
+            var label = FormatMermaidCallSiteLabel(callSites, cancellationToken);
+            Writer.WriteLine($"    n{edge.CallerSymbolId} -->|\"{label}\"| n{edge.CalleeSymbolId}");
+        }
+
+        if (result.Truncated)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Writer.WriteLine("    %% truncated");
+        }
+    }
+
+    private void WriteMermaidWithoutSources(
+        CallerTreeResult result,
+        CallerTreePresentation presentation,
+        CancellationToken cancellationToken)
+    {
         Writer.WriteLine("flowchart TD");
         foreach (var node in presentation.Nodes)
         {
@@ -209,6 +315,90 @@ internal sealed class GraphOutputFormatter
     private void WriteCallerJson(CallerTreeResult result, CancellationToken cancellationToken)
     {
         var presentation = CreateCallerTreePresentation(result, cancellationToken);
+        if (!result.ShowSource)
+        {
+            WriteCallerJsonWithoutSources(result, presentation, cancellationToken);
+            return;
+        }
+
+        var nodes = new List<object>();
+        foreach (var node in presentation.Nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            nodes.Add(new
+            {
+                symbol = OutputFormatter.ToSymbolObject(
+                    node.Symbol,
+                    _symbolPathOptions,
+                    _pathResolver,
+                    _pathStyle,
+                    includeSource: false),
+                node.Depth,
+            });
+        }
+
+        var edges = new List<object>();
+        foreach (var edge in presentation.Edges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var callSites = new List<object>();
+            if (presentation.CallSitesByEdge.TryGetValue(edge, out var edgeCallSites))
+            {
+                foreach (var callSite in edgeCallSites)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var source = RequireCallSiteSource(callSite.Call);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var point = OutputFormatter.ResolveLocation(
+                        callSite.Call.DocumentPath,
+                        callSite.Call.SourceStart,
+                        _pathResolver,
+                        _pathStyle);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    callSites.Add(new
+                    {
+                        id = callSite.Call.Id,
+                        location = new
+                        {
+                            path = point.Path,
+                            line = point.Line,
+                            column = point.Column,
+                            offset = point.Offset,
+                        },
+                        normalizedSource = source,
+                    });
+                }
+            }
+
+            edges.Add(new
+            {
+                callerSymbolId = edge.CallerSymbolId,
+                calleeSymbolId = edge.CalleeSymbolId,
+                callSites,
+            });
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        OutputFormatter.WriteJson(new
+        {
+            profile = result.Selection.Profile.Name,
+            truncated = result.Truncated,
+            root = OutputFormatter.ToSymbolObject(
+                result.Root,
+                _symbolPathOptions,
+                _pathResolver,
+                _pathStyle,
+                includeSource: false),
+            nodes,
+            edges,
+        }, Writer);
+    }
+
+    private void WriteCallerJsonWithoutSources(
+        CallerTreeResult result,
+        CallerTreePresentation presentation,
+        CancellationToken cancellationToken)
+    {
         var nodes = new List<object>();
         foreach (var node in presentation.Nodes)
         {
@@ -346,12 +536,63 @@ internal sealed class GraphOutputFormatter
         var edges = OrderEdges(uniqueEdges, presentationOrder, cancellationToken);
         var spanningEdgeSet = new HashSet<CallerTreeEdge>(spanningEdges);
         var additionalEdges = edges.Where(edge => !spanningEdgeSet.Contains(edge)).ToArray();
+        var spanningEdgeByCallerId = new Dictionary<long, CallerTreeEdge>();
+        foreach (var edge in spanningEdges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            spanningEdgeByCallerId.TryAdd(edge.CallerSymbolId, edge);
+        }
+
+        IReadOnlyDictionary<CallerTreeEdge, IReadOnlyList<CallerTreeCallSite>> callSitesByEdge =
+            result.ShowSource
+                ? GroupCallSites(result.CallSites, uniqueEdges, cancellationToken)
+                : new Dictionary<CallerTreeEdge, IReadOnlyList<CallerTreeCallSite>>();
         return new CallerTreePresentation(
             nodes,
             edges,
             additionalEdges,
             nodesById,
-            indentById);
+            indentById,
+            spanningEdges,
+            spanningEdgeByCallerId,
+            callSitesByEdge);
+    }
+
+    private static IReadOnlyDictionary<CallerTreeEdge, IReadOnlyList<CallerTreeCallSite>> GroupCallSites(
+        IEnumerable<CallerTreeCallSite> callSites,
+        IReadOnlyList<CallerTreeEdge> edges,
+        CancellationToken cancellationToken)
+    {
+        var grouped = new Dictionary<CallerTreeEdge, List<CallerTreeCallSite>>();
+        foreach (var edge in edges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            grouped.TryAdd(edge, []);
+        }
+
+        foreach (var callSite in callSites)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var edge = new CallerTreeEdge(callSite.CallerSymbolId, callSite.CalleeSymbolId);
+            if (!grouped.TryGetValue(edge, out var edgeCallSites))
+            {
+                throw new IndexDatabaseException(
+                    $"Caller tree call-site association ({callSite.CallerSymbolId}, {callSite.CalleeSymbolId}) " +
+                    "is not present in the structural edge set.");
+            }
+
+            edgeCallSites.Add(callSite);
+        }
+
+        var result = new Dictionary<CallerTreeEdge, IReadOnlyList<CallerTreeCallSite>>(grouped.Count);
+        foreach (var pair in grouped)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(pair.Key, pair.Value);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
     }
 
     private static IReadOnlyDictionary<long, int> CreateNodeOrder(
@@ -433,6 +674,57 @@ internal sealed class GraphOutputFormatter
         nodesById.TryGetValue(symbolId, out var node)
             ? DisplayName(node.Symbol)
             : $"<unknown:{symbolId}>";
+
+    private string FormatTreeCallSite(
+        CallerTreeCallSite callSite,
+        string prefix,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var source = RequireCallSiteSource(callSite.Call);
+        cancellationToken.ThrowIfCancellationRequested();
+        var point = OutputFormatter.ResolveLocation(
+            callSite.Call.DocumentPath,
+            callSite.Call.SourceStart,
+            _pathResolver,
+            _pathStyle);
+        cancellationToken.ThrowIfCancellationRequested();
+        return $"{prefix}@ {point.Path}:{point.Line}:{point.Column}\t{TableTextSanitizer.Sanitize(source)}";
+    }
+
+    private string FormatMermaidCallSiteLabel(
+        IReadOnlyList<CallerTreeCallSite> callSites,
+        CancellationToken cancellationToken)
+    {
+        var labels = new List<string>(callSites.Count);
+        foreach (var callSite in callSites)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = RequireCallSiteSource(callSite.Call);
+            cancellationToken.ThrowIfCancellationRequested();
+            var point = OutputFormatter.ResolveLocation(
+                callSite.Call.DocumentPath,
+                callSite.Call.SourceStart,
+                _pathResolver,
+                _pathStyle);
+            cancellationToken.ThrowIfCancellationRequested();
+            labels.Add(EscapeMermaidLabel($"{point.Path}:{point.Line}:{point.Column} {source}"));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return string.Join("<br/>", labels);
+    }
+
+    private static string RequireCallSiteSource(StoredCall call)
+    {
+        if (call.NormalizedSource is null)
+        {
+            throw new IndexDatabaseException(
+                $"call ID {call.Id} in document ID {call.DocumentId} has no hydrated normalized source.");
+        }
+
+        return call.NormalizedSource;
+    }
 
     internal static IReadOnlyList<CallerTreeNode> OrderNodes(
         IEnumerable<CallerTreeNode> nodes,
@@ -538,6 +830,7 @@ internal sealed class GraphOutputFormatter
 
     private static string EscapeMermaidLabel(string value) => value
         .Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("|", "&#124;", StringComparison.Ordinal)
         .Replace("\"", "&quot;", StringComparison.Ordinal)
         .Replace("[", "&#91;", StringComparison.Ordinal)
         .Replace("]", "&#93;", StringComparison.Ordinal)
@@ -557,5 +850,8 @@ internal sealed class GraphOutputFormatter
         IReadOnlyList<CallerTreeEdge> Edges,
         IReadOnlyList<CallerTreeEdge> AdditionalEdges,
         IReadOnlyDictionary<long, CallerTreeNode> NodesById,
-        IReadOnlyDictionary<long, int> IndentById);
+        IReadOnlyDictionary<long, int> IndentById,
+        IReadOnlyList<CallerTreeEdge> SpanningEdges,
+        IReadOnlyDictionary<long, CallerTreeEdge> SpanningEdgeByCallerId,
+        IReadOnlyDictionary<CallerTreeEdge, IReadOnlyList<CallerTreeCallSite>> CallSitesByEdge);
 }

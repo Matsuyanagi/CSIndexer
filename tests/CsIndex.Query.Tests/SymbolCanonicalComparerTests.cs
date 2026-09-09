@@ -1,4 +1,5 @@
 using CsIndex.Core.Model;
+using CsIndex.Query;
 using CsIndex.Query.Symbols;
 using CsIndex.Storage;
 
@@ -393,6 +394,89 @@ public sealed class SymbolCanonicalComparerTests
                 .Select(symbol => symbol.StableKey));
     }
 
+    [Fact]
+    public void OrderCallerTreeCallSitesUsesStructuralPathStartLengthAndIdTieBreakers()
+    {
+        var orderedEdges = new[]
+        {
+            new CallerTreeEdge(10, 1),
+            new CallerTreeEdge(20, 1),
+        };
+        var callSites = new[]
+        {
+            new CallerTreeCallSite(20, 1, CreateCall(4, 20, 1, documentPath: "a.cs", sourceStart: 0, sourceLength: 1)),
+            new CallerTreeCallSite(10, 1, CreateCall(1, 10, 1, documentPath: "b.cs", sourceStart: 10, sourceLength: 4)),
+            new CallerTreeCallSite(10, 1, CreateCall(2, 10, 1, documentPath: "a.cs", sourceStart: 10, sourceLength: 4)),
+            new CallerTreeCallSite(10, 1, CreateCall(3, 10, 1, documentPath: "a.cs", sourceStart: 5, sourceLength: 4)),
+            new CallerTreeCallSite(10, 1, CreateCall(6, 10, 1, documentPath: "a.cs", sourceStart: 5, sourceLength: 2)),
+            new CallerTreeCallSite(10, 1, CreateCall(5, 10, 1, documentPath: "a.cs", sourceStart: 5, sourceLength: 2)),
+        };
+
+        var ordered = SymbolCanonicalComparer.OrderCallerTreeCallSites(
+            callSites,
+            orderedEdges,
+            CancellationToken.None);
+
+        Assert.Equal([5L, 6L, 3L, 2L, 1L, 4L], ordered.Select(site => site.Call.Id));
+        Assert.Equal(
+            [
+                (10L, 1L, "a.cs", 5, 2),
+                (10L, 1L, "a.cs", 5, 2),
+                (10L, 1L, "a.cs", 5, 4),
+                (10L, 1L, "a.cs", 10, 4),
+                (10L, 1L, "b.cs", 10, 4),
+                (20L, 1L, "a.cs", 0, 1),
+            ],
+            ordered.Select(site => (
+                site.CallerSymbolId,
+                site.CalleeSymbolId,
+                site.Call.DocumentPath,
+                site.Call.SourceStart,
+                site.Call.SourceLength)));
+    }
+
+    [Fact]
+    public void OrderCallerTreeCallSitesRejectsAssociationForMissingStructuralEdge()
+    {
+        var exception = Assert.Throws<IndexDatabaseException>(() => SymbolCanonicalComparer.OrderCallerTreeCallSites(
+            [new CallerTreeCallSite(
+                99,
+                77,
+                CreateCall(91, 99, 77, documentPath: "orphan.cs"))],
+            [new CallerTreeEdge(10, 1)],
+            CancellationToken.None));
+
+        Assert.Contains("99", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("77", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrderCallerTreeCallSitesObservesCancellationDuringMaterializationAndComparison()
+    {
+        using var duringMaterialization = new CancellationTokenSource();
+        Assert.Throws<OperationCanceledException>(() => SymbolCanonicalComparer.OrderCallerTreeCallSites(
+            CancelBeforeYieldingCallSite(duringMaterialization),
+            [new CallerTreeEdge(10, 1)],
+            duringMaterialization.Token));
+
+        using var duringComparison = new CancellationTokenSource();
+        var comparisons = 0;
+        Assert.Throws<OperationCanceledException>(() => SymbolCanonicalComparer.OrderCallerTreeCallSites(
+            [
+                new CallerTreeCallSite(10, 1, CreateCall(2, 10, 1, documentPath: "b.cs")),
+                new CallerTreeCallSite(10, 1, CreateCall(1, 10, 1, documentPath: "a.cs")),
+            ],
+            [new CallerTreeEdge(10, 1)],
+            duringComparison.Token,
+            () =>
+            {
+                comparisons++;
+                duringComparison.Cancel();
+            }));
+
+        Assert.True(comparisons > 0);
+    }
+
     private static void AssertSymbolBefore(StoredSymbol before, StoredSymbol after) =>
         Assert.True(
             SymbolCanonicalComparer.Instance.Compare(before, after) < 0,
@@ -440,6 +524,16 @@ public sealed class SymbolCanonicalComparerTests
     {
         cancellation.Cancel();
         yield return CreateSymbol(1, "cancelled", "A", "T", "E", "a.cs", 1);
+    }
+
+    private static IEnumerable<CallerTreeCallSite> CancelBeforeYieldingCallSite(
+        CancellationTokenSource cancellation)
+    {
+        cancellation.Cancel();
+        yield return new CallerTreeCallSite(
+            10,
+            1,
+            CreateCall(1, 10, 1));
     }
 
     private static StoredSymbol CreateSymbol(

@@ -1594,6 +1594,8 @@ public sealed class OutputFormatterTests : IDisposable
             root,
             [new CallerTreeNode(root, 0), new CallerTreeNode(caller, 1)],
             [new CallerTreeEdge(caller.Id, root.Id), new CallerTreeEdge(caller.Id, root.Id)],
+            CallSites: [],
+            ShowSource: false,
             Truncated: true);
 
         var tree = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "tree"));
@@ -1605,11 +1607,13 @@ public sealed class OutputFormatterTests : IDisposable
             "└─ Example.Caller(\"quoted\") [bracket]" + Environment.NewLine +
             "└─ <truncated>" + Environment.NewLine,
             tree);
-        Assert.StartsWith("flowchart TD" + Environment.NewLine, mermaid, StringComparison.Ordinal);
-        Assert.Contains("n101[\"Example.Target()\"]", mermaid);
-        Assert.Contains("n202[\"Example.Caller(&quot;quoted&quot;)<br/>&#91;bracket&#93;\"]", mermaid);
-        Assert.Equal(1, mermaid.Split("n202 --> n101", StringSplitOptions.None).Length - 1);
-        Assert.Contains("%% truncated", mermaid);
+        Assert.Equal(
+            "flowchart TD" + Environment.NewLine +
+            "    n101[\"Example.Target()\"]" + Environment.NewLine +
+            "    n202[\"Example.Caller(&quot;quoted&quot;)<br/>&#91;bracket&#93;\"]" + Environment.NewLine +
+            "    n202 --> n101" + Environment.NewLine +
+            "    %% truncated" + Environment.NewLine,
+            mermaid);
         var callerNode = Assert.Single(json.RootElement.GetProperty("nodes").EnumerateArray(), node =>
             node.GetProperty("symbol").GetProperty("id").GetInt64() == caller.Id);
         Assert.Equal(1, callerNode.GetProperty("depth").GetInt32());
@@ -1617,6 +1621,11 @@ public sealed class OutputFormatterTests : IDisposable
         Assert.Equal(caller.Id, edge.GetProperty("callerSymbolId").GetInt64());
         Assert.Equal(root.Id, edge.GetProperty("calleeSymbolId").GetInt64());
         Assert.True(json.RootElement.GetProperty("truncated").GetBoolean());
+        Assert.Equal(
+            ["profile", "truncated", "root", "nodes", "edges"],
+            json.RootElement.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(["callerSymbolId", "calleeSymbolId"], edge.EnumerateObject().Select(property => property.Name));
+        Assert.DoesNotContain("callSites", CaptureGraphText(formatter => formatter.WriteCallerTree(result, "json")), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1648,6 +1657,8 @@ public sealed class OutputFormatterTests : IDisposable
                 new CallerTreeEdge(shared.Id, z.Id),
                 new CallerTreeEdge(shared.Id, a.Id),
             ],
+            CallSites: [],
+            ShowSource: false,
             Truncated: true);
 
         var tree = CaptureGraphText(formatter => formatter.WriteCallerTree(result, "tree"));
@@ -1684,6 +1695,23 @@ public sealed class OutputFormatterTests : IDisposable
             ],
             edge => Assert.Contains(edge, mermaid));
         Assert.Equal(
+            "flowchart TD" + Environment.NewLine +
+            "    n101[\"Example.Root()\"]" + Environment.NewLine +
+            "    n102[\"Example.A()\"]" + Environment.NewLine +
+            "    n106[\"Example.Shared()\"]" + Environment.NewLine +
+            "    n105[\"Example.Z2()\"]" + Environment.NewLine +
+            "    n103[\"Example.Z()\"]" + Environment.NewLine +
+            "    n104[\"Example.A2()\"]" + Environment.NewLine +
+            "    n101 --> n102" + Environment.NewLine +
+            "    n102 --> n101" + Environment.NewLine +
+            "    n106 --> n102" + Environment.NewLine +
+            "    n106 --> n103" + Environment.NewLine +
+            "    n105 --> n102" + Environment.NewLine +
+            "    n103 --> n101" + Environment.NewLine +
+            "    n104 --> n103" + Environment.NewLine +
+            "    %% truncated" + Environment.NewLine,
+            mermaid);
+        Assert.Equal(
             [101L, 102L, 106L, 105L, 103L, 104L],
             json.RootElement.GetProperty("nodes").EnumerateArray()
                 .Select(node => node.GetProperty("symbol").GetProperty("id").GetInt64()));
@@ -1691,6 +1719,48 @@ public sealed class OutputFormatterTests : IDisposable
             ["101->102", "102->101", "106->102", "106->103", "105->102", "103->101", "104->103"],
             json.RootElement.GetProperty("edges").EnumerateArray()
                 .Select(edge => $"{edge.GetProperty("callerSymbolId").GetInt64()}->{edge.GetProperty("calleeSymbolId").GetInt64()}"));
+        Assert.Equal(
+            ["profile", "truncated", "root", "nodes", "edges"],
+            json.RootElement.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(
+            """
+            [
+                {
+                  "callerSymbolId": 101,
+                  "calleeSymbolId": 102
+                },
+                {
+                  "callerSymbolId": 102,
+                  "calleeSymbolId": 101
+                },
+                {
+                  "callerSymbolId": 106,
+                  "calleeSymbolId": 102
+                },
+                {
+                  "callerSymbolId": 106,
+                  "calleeSymbolId": 103
+                },
+                {
+                  "callerSymbolId": 105,
+                  "calleeSymbolId": 102
+                },
+                {
+                  "callerSymbolId": 103,
+                  "calleeSymbolId": 101
+                },
+                {
+                  "callerSymbolId": 104,
+                  "calleeSymbolId": 103
+                }
+              ]
+            """.Replace("\n", Environment.NewLine, StringComparison.Ordinal),
+            json.RootElement.GetProperty("edges").GetRawText());
+        Assert.EndsWith(
+            Environment.NewLine,
+            CaptureGraphText(formatter => formatter.WriteCallerTree(result, "json")),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("callSites", json.RootElement.GetProperty("edges").GetRawText(), StringComparison.Ordinal);
     }
 
     [Fact]
