@@ -916,18 +916,20 @@ public sealed class CliCommandTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task RebuildDoesNotBypassSchemaFourRejectionOrModifyTheDatabase()
+    [Theory]
+    [InlineData(4)]
+    [InlineData(5)]
+    public async Task RebuildDoesNotBypassLegacySchemaRejectionOrModifyTheDatabase(int version)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var inputRoot = Path.Combine(_fixture.RootPath, $"schema-four-{Guid.NewGuid():N}");
+        var inputRoot = Path.Combine(_fixture.RootPath, $"schema-v{version}-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(inputRoot, "legacy.sqlite");
         Directory.CreateDirectory(inputRoot);
         await File.WriteAllTextAsync(
             Path.Combine(inputRoot, "Main.cs"),
             "namespace Legacy; public sealed class Worker { }",
             cancellationToken);
-        await CreateLegacyDatabaseAsync(databasePath, version: 4, cancellationToken);
+        await CreateLegacyDatabaseAsync(databasePath, version, cancellationToken);
         var before = await File.ReadAllBytesAsync(databasePath, cancellationToken);
 
         var result = await RunAsync(
@@ -937,13 +939,13 @@ public sealed class CliCommandTests : IDisposable
             "--db", databasePath);
 
         Assert.Equal(ExitCodes.DatabaseFailure, result.ExitCode);
-        Assert.Contains("Unsupported database schema version 4", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains($"Unsupported database schema version {version}", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("database was not modified", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Delete or rename the old database", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("choose a new --db path", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("run csindex index explicitly", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(before, await File.ReadAllBytesAsync(databasePath, cancellationToken));
-        await AssertLegacySentinelAsync(databasePath, version: 4, cancellationToken);
+        await AssertLegacySentinelAsync(databasePath, version, cancellationToken);
     }
 
     [Theory]
@@ -951,6 +953,7 @@ public sealed class CliCommandTests : IDisposable
     [InlineData(2)]
     [InlineData(3)]
     [InlineData(4)]
+    [InlineData(5)]
     public async Task LegacySchemaQueryCommandsRejectWithGuidanceAndPreserveBytes(int version)
     {
         var cancellationToken = TestContext.Current.CancellationToken;

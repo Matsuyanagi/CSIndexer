@@ -203,7 +203,7 @@ public sealed class SymbolSourceQueryTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
         var payloadReads = 0;
         var repository = fixture.Repository;
-        repository.NormalizedSourcePayloadReadObserver = () => payloadReads++;
+        repository.NormalizedSourcePayloadReadObserver = _ => payloadReads++;
         var query = new SemanticQueryService(repository);
 
         var result = await query.SearchSourceAsync(

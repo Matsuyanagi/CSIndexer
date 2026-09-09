@@ -206,6 +206,7 @@ public sealed class LogicalDeclarationExtractionTests
                 public void Run()
                 {
                     Target(1, 1);
+                    Missing(42);
                 }
             }
             """;
@@ -228,12 +229,25 @@ public sealed class LogicalDeclarationExtractionTests
             .ToHashSet(StringComparer.Ordinal);
         Assert.Equal(2, expectedDefinitionKeys.Count);
         Assert.True(expectedDefinitionKeys.SetEquals(call.CandidateSymbolKeys));
+        Assert.Equal("Target(1, 1)", source.Substring(call.SourceStart, call.SourceLength));
+        var document = Assert.Single(snapshot.Documents, candidate => candidate.Key == call.DocumentKey);
+        Assert.Equal(
+            "Target(1,1)",
+            document.NormalizedSource.AsSpan(call.NormalizedStart, call.NormalizedLength).ToString());
         Assert.All(call.CandidateSymbolKeys, key =>
         {
             Assert.DoesNotContain("|constructed:", key, StringComparison.Ordinal);
             Assert.DoesNotContain("|reduced:", key, StringComparison.Ordinal);
             Assert.True(snapshot.Symbols.ContainsKey(key));
         });
+
+        var unresolved = Assert.Single(snapshot.Calls, candidate =>
+            candidate.ResolutionStatus == ResolutionStatus.Unresolved &&
+            candidate.UnresolvedName == "Missing");
+        Assert.Equal("Missing(42)", source.Substring(unresolved.SourceStart, unresolved.SourceLength));
+        Assert.Equal(
+            "Missing(42)",
+            document.NormalizedSource.AsSpan(unresolved.NormalizedStart, unresolved.NormalizedLength).ToString());
     }
 
     [Fact]

@@ -170,6 +170,208 @@ public sealed class SqliteIndexTests
     }
 
     [Fact]
+    public async Task QueryRepository_HydratesEachDistinctPayloadOnceAcrossDocumentsAndRows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var snapshot = CreateSharedPayloadHydrationSnapshot(temporary.Path);
+        var index = new SqliteIndex(databasePath);
+        await index.SaveAsync(snapshot, cancellationToken);
+
+        var repository = index.CreateQueryRepository();
+        var profile = await repository.GetProfileAsync(cancellationToken: cancellationToken);
+        var callerSymbols = await Task.WhenAll(new[] { "Caller", "MirrorCaller", "ThirdCaller" }
+            .Select(name => GetSymbolAsync(
+                repository,
+                profile.Id,
+                name,
+                IndexedSymbolKind.Method,
+                cancellationToken)));
+        var callerIds = callerSymbols
+            .Select(symbol => symbol.Id)
+            .ToArray();
+        var observedPayloadIds = new List<long>();
+        repository.NormalizedSourcePayloadReadObserver = payloadId => observedPayloadIds.Add(payloadId);
+
+        var declarations = await repository.GetPreferredDeclarationsAsync(
+            profile.Id,
+            callerIds,
+            includeSourceText: true,
+            cancellationToken);
+
+        Assert.Equal(3, declarations.Count);
+        Assert.Equal(2, observedPayloadIds.Count);
+        Assert.Equal(2, observedPayloadIds.Distinct().Count());
+        Assert.Equal(observedPayloadIds.Order().ToArray(), observedPayloadIds);
+        AssertHydratedDeclarationSlices(snapshot, declarations);
+
+        observedPayloadIds.Clear();
+        var calls = await repository.GetCallsByCallerAsync(
+            profile.Id,
+            callerIds,
+            GeneratedFilter.Include,
+            includeSourceText: true,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(3, calls.Count);
+        Assert.Equal(2, observedPayloadIds.Count);
+        Assert.Equal(2, observedPayloadIds.Distinct().Count());
+        Assert.Equal(observedPayloadIds.Order().ToArray(), observedPayloadIds);
+        Assert.All(calls, call =>
+        {
+            var document = Assert.Single(snapshot.Documents, value => value.NormalizedPath == call.DocumentPath);
+            Assert.Equal(
+                document.NormalizedSource.AsSpan(call.NormalizedStart, call.NormalizedLength).ToString(),
+                call.NormalizedSource);
+        });
+    }
+
+    [Fact]
+    public async Task Save_DeduplicatesIdenticalPayloadsAcrossProjectsAndProfiles()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var source = "Sample{void Caller(){Callee();}}";
+        var first = CreatePayloadSnapshot(
+            temporary.Path,
+            "first-profile",
+            "project-a",
+            "A.cs",
+            source);
+        var second = CreatePayloadSnapshot(
+            temporary.Path,
+            "second-profile",
+            "project-b",
+            "B.cs",
+            source);
+        var index = new SqliteIndex(databasePath);
+
+        await index.SaveAsync(first, cancellationToken);
+        await index.SaveAsync(second, cancellationToken);
+
+        var counts = await ReadPayloadCountsAsync(databasePath, cancellationToken);
+        Assert.Equal((1, 2), counts);
+    }
+
+    [Fact]
+    public async Task Save_ReplacementDeletesOnlyOrphanedNormalizedPayloads()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var retainedSource = "Sample{void Caller(){Callee();}}";
+        var orphanedSource = "Sample{void Caller(){Other();}}";
+        var index = new SqliteIndex(databasePath);
+
+        await index.SaveAsync(
+            CreatePayloadSnapshot(
+                temporary.Path,
+                "retained-profile",
+                "project-retained",
+                "Retained.cs",
+                retainedSource),
+            cancellationToken);
+        await index.SaveAsync(
+            CreatePayloadSnapshot(
+                temporary.Path,
+                "replaced-profile",
+                "project-replaced",
+                "Replaced.cs",
+                orphanedSource),
+            cancellationToken);
+
+        Assert.Equal((2, 2), await ReadPayloadCountsAsync(databasePath, cancellationToken));
+
+        await index.SaveAsync(
+            CreatePayloadSnapshot(
+                temporary.Path,
+                "replaced-profile",
+                "project-replaced",
+                "Replaced.cs",
+                retainedSource),
+            cancellationToken);
+
+        Assert.Equal((1, 2), await ReadPayloadCountsAsync(databasePath, cancellationToken));
+        Assert.Equal(
+            1,
+            await CountPayloadHashAsync(
+                databasePath,
+                HashUtilities.Sha256(retainedSource),
+                cancellationToken));
+        Assert.Equal(
+            0,
+            await CountPayloadHashAsync(
+                databasePath,
+                HashUtilities.Sha256(orphanedSource),
+                cancellationToken));
+    }
+
+    [Fact]
+    public async Task Save_HashCollisionRollsBackPriorPayloadRows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var originalSource = "Sample{void Caller(){Callee();}}";
+        var collisionSource = "Sample{void Caller(){Other();}}";
+        var index = new SqliteIndex(databasePath);
+        var original = CreatePayloadSnapshot(
+            temporary.Path,
+            "collision-profile",
+            "project-collision",
+            "Collision.cs",
+            originalSource);
+        await index.SaveAsync(original, cancellationToken);
+        var collision = CreatePayloadSnapshot(
+            temporary.Path,
+            "collision-profile",
+            "project-collision",
+            "Collision.cs",
+            collisionSource);
+        await ForcePayloadHashAsync(
+            databasePath,
+            original.Documents[0].NormalizedSourceHash,
+            collision.Documents[0].NormalizedSourceHash,
+            cancellationToken);
+        var before = await ReadPayloadStateAsync(databasePath, cancellationToken);
+
+        await Assert.ThrowsAsync<IndexDatabaseException>(() => index.SaveAsync(collision, cancellationToken));
+        Assert.Equal(before, await ReadPayloadStateAsync(databasePath, cancellationToken));
+    }
+
+    [Fact]
+    public async Task Save_CancellationPreservesPriorPayloadRows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var temporary = new TempDirectory();
+        var databasePath = Path.Combine(temporary.Path, "index.sqlite");
+        var index = new SqliteIndex(databasePath);
+        await index.SaveAsync(
+            CreatePayloadSnapshot(
+                temporary.Path,
+                "cancel-profile",
+                "project-cancel",
+                "Cancel.cs",
+                "Sample{void Caller(){Callee();}}"),
+            cancellationToken);
+        var before = await ReadPayloadStateAsync(databasePath, cancellationToken);
+        var replacement = CreatePayloadSnapshot(
+            temporary.Path,
+            "cancel-profile",
+            "project-cancel",
+            "Cancel.cs",
+            "Sample{void Caller(){Other();}}");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            index.SaveAsync(replacement, cancellation.Token));
+        Assert.Equal(before, await ReadPayloadStateAsync(databasePath, cancellationToken));
+    }
+
+    [Fact]
     public async Task SymbolsIndexes_UseProfilePrefixedIndexesForRepresentativeRepositoryPredicates()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -1775,6 +1977,307 @@ public sealed class SqliteIndexTests
             typeSimpleName,
             kind,
             cancellationToken: cancellationToken));
+    }
+
+    private static void AssertHydratedDeclarationSlices(
+        IndexSnapshot snapshot,
+        IReadOnlyList<StoredDeclaration> declarations)
+    {
+        Assert.All(declarations, declaration =>
+        {
+            var document = Assert.Single(
+                snapshot.Documents,
+                value => value.NormalizedPath == declaration.DocumentPath);
+            Assert.Equal(
+                document.NormalizedSource.AsSpan(
+                    declaration.NormalizedStart,
+                    declaration.NormalizedLength).ToString(),
+                declaration.NormalizedSource);
+        });
+    }
+
+    private static IndexSnapshot CreatePayloadSnapshot(
+        string root,
+        string profileName,
+        string projectKey,
+        string documentPath,
+        string normalizedSource)
+    {
+        var snapshot = CreateSnapshot(root, profileName);
+        var originalProjectKey = snapshot.Projects[0].Key;
+        var originalDocumentKey = snapshot.Documents[0].Key;
+        var documentKey = $"{projectKey}|document:{documentPath}";
+        snapshot.Projects[0] = snapshot.Projects[0] with
+        {
+            Key = projectKey,
+            Name = projectKey,
+            AssemblyName = projectKey,
+            Fingerprint = HashUtilities.Sha256(projectKey),
+        };
+        snapshot.Documents[0] = snapshot.Documents[0] with
+        {
+            Key = documentKey,
+            ProjectKey = projectKey,
+            NormalizedPath = documentPath,
+            NormalizedSource = normalizedSource,
+            NormalizedSourceHash = HashUtilities.Sha256(normalizedSource),
+        };
+
+        foreach (var key in snapshot.Symbols.Keys.ToArray())
+        {
+            var symbol = snapshot.Symbols[key];
+            snapshot.Symbols[key] = symbol with
+            {
+                ProjectKey = symbol.ProjectKey == originalProjectKey ? projectKey : symbol.ProjectKey,
+                SourceDocumentKey = symbol.SourceDocumentKey == originalDocumentKey
+                    ? documentKey
+                    : symbol.SourceDocumentKey,
+            };
+        }
+
+        var declarationKeys = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var declaration in snapshot.Declarations.Values)
+        {
+            declarationKeys[declaration.Key] =
+                $"{declaration.SymbolKey}|declaration:{documentPath}:{declaration.SourceStart}:{declaration.SourceLength}:{(int)declaration.Role}";
+        }
+
+        var declarations = snapshot.Declarations.Values
+            .Select(declaration => declaration with
+            {
+                Key = declarationKeys[declaration.Key],
+                DocumentKey = documentKey,
+            })
+            .ToArray();
+        snapshot.Declarations.Clear();
+        foreach (var declaration in declarations)
+        {
+            snapshot.Declarations.Add(declaration.Key, declaration);
+        }
+
+        foreach (var key in snapshot.Symbols.Keys.ToArray())
+        {
+            var symbol = snapshot.Symbols[key];
+            snapshot.Symbols[key] = symbol with
+            {
+                PreferredDeclarationKey = symbol.PreferredDeclarationKey is { } preferred
+                    ? declarationKeys[preferred]
+                    : null,
+            };
+        }
+
+        for (var index = 0; index < snapshot.Calls.Count; index++)
+        {
+            if (snapshot.Calls[index].DocumentKey == originalDocumentKey)
+            {
+                snapshot.Calls[index] = snapshot.Calls[index] with { DocumentKey = documentKey };
+            }
+        }
+
+        return snapshot;
+    }
+
+    private static async Task<(int Payloads, int Documents)> ReadPayloadCountsAsync(
+        string databasePath,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT (SELECT COUNT(*) FROM normalized_sources), (SELECT COUNT(*) FROM documents);";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        return (reader.GetInt32(0), reader.GetInt32(1));
+    }
+
+    private static async Task<int> CountPayloadHashAsync(
+        string databasePath,
+        byte[] hash,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM normalized_sources WHERE normalized_source_hash = $hash;";
+        command.Parameters.Add("$hash", SqliteType.Blob).Value = hash;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    private static async Task ForcePayloadHashAsync(
+        string databasePath,
+        byte[] originalHash,
+        byte[] forcedHash,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE normalized_sources SET normalized_source_hash = $forced_hash WHERE normalized_source_hash = $original_hash;";
+        command.Parameters.Add("$original_hash", SqliteType.Blob).Value = originalHash;
+        command.Parameters.Add("$forced_hash", SqliteType.Blob).Value = forcedHash;
+        Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+    }
+
+    private static async Task<string> ReadPayloadStateAsync(
+        string databasePath,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                COALESCE((
+                    SELECT group_concat(hex(normalized_source_hash) || ':' || hex(normalized_source), '|')
+                    FROM (SELECT normalized_source_hash, normalized_source FROM normalized_sources ORDER BY id)),
+                    '')
+                || '|'
+                || COALESCE((
+                    SELECT group_concat(normalized_path, '|')
+                    FROM (SELECT normalized_path FROM documents ORDER BY id)),
+                    '')
+                || '|'
+                || COALESCE((
+                    SELECT group_concat(hex(request_hash), '|')
+                    FROM (SELECT request_hash FROM index_runs ORDER BY id)),
+                    '');
+            """;
+        return (string)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    private static IndexSnapshot CreateSharedPayloadHydrationSnapshot(
+        string root,
+        string profileName = "test")
+    {
+        var snapshot = CreateSnapshot(root, profileName);
+        var sharedText = snapshot.Documents[0].NormalizedSource;
+        AddHydrationProject(
+            snapshot,
+            "mirror",
+            "Mirror.cs",
+            sharedText,
+            "mirror-caller",
+            "MirrorCaller",
+            "mirror-callee",
+            "MirrorCallee",
+            callerStart: 7,
+            callerLength: 6,
+            calleeStart: 23,
+            calleeLength: 7);
+        AddHydrationProject(
+            snapshot,
+            "third",
+            "Third.cs",
+            "Third{void OtherCaller(){Target();}}",
+            "third-caller",
+            "ThirdCaller",
+            "third-callee",
+            "ThirdCallee",
+            callerStart: 11,
+            callerLength: 11,
+            calleeStart: 0,
+            calleeLength: 1);
+        return FinalizeSnapshotForSchemaFive(snapshot);
+    }
+
+    private static void AddHydrationProject(
+        IndexSnapshot snapshot,
+        string projectKey,
+        string documentPath,
+        string normalizedSource,
+        string callerKey,
+        string callerName,
+        string calleeKey,
+        string calleeName,
+        int callerStart,
+        int callerLength,
+        int calleeStart,
+        int calleeLength)
+    {
+        var documentKey = projectKey + "|document:" + documentPath;
+        snapshot.Projects.Add(new ProjectData
+        {
+            Key = projectKey,
+            Name = projectKey,
+            AssemblyName = projectKey,
+            Fingerprint = HashUtilities.Sha256(projectKey),
+        });
+        snapshot.Documents.Add(new DocumentData
+        {
+            Key = documentKey,
+            ProjectKey = projectKey,
+            NormalizedPath = documentPath,
+            ContentHash = HashUtilities.Sha256("content-" + projectKey),
+            NormalizedSource = normalizedSource,
+            NormalizedSourceHash = HashUtilities.Sha256(normalizedSource),
+            IsGenerated = false,
+            GenerationKind = GenerationKind.None,
+        });
+        snapshot.Symbols[callerKey] = new SymbolData
+        {
+            StableKey = callerKey,
+            ProjectKey = projectKey,
+            Kind = IndexedSymbolKind.Method,
+            Name = callerName,
+            NamespaceName = string.Empty,
+            TypeSimpleName = callerName,
+            FullyQualifiedName = callerName + "()",
+            DisplayName = callerName + "()",
+            ParameterCount = 0,
+            SourceDocumentKey = documentKey,
+            SourceStart = callerStart,
+            SourceLength = callerLength,
+        };
+        snapshot.Symbols[calleeKey] = new SymbolData
+        {
+            StableKey = calleeKey,
+            ProjectKey = projectKey,
+            Kind = IndexedSymbolKind.Method,
+            Name = calleeName,
+            NamespaceName = string.Empty,
+            TypeSimpleName = calleeName,
+            FullyQualifiedName = calleeName + "()",
+            DisplayName = calleeName + "()",
+            ParameterCount = 0,
+            SourceDocumentKey = documentKey,
+            SourceStart = calleeStart,
+            SourceLength = calleeLength,
+        };
+        snapshot.Calls.Add(new CallData
+        {
+            CallerSymbolKey = callerKey,
+            CalleeSymbolKey = calleeKey,
+            CalleeDefinitionKey = calleeKey,
+            ReferenceKind = ReferenceKind.Invocation,
+            DispatchKind = DispatchKind.Static,
+            ResolutionStatus = ResolutionStatus.Resolved,
+            ResolutionReason = ResolutionReason.None,
+            DocumentKey = documentKey,
+            SourceStart = calleeStart,
+            SourceLength = calleeLength,
+            NormalizedStart = calleeStart,
+            NormalizedLength = calleeLength,
+        });
     }
 
     private static IndexSnapshot CreateSnapshot(string root, string profileName = "test")

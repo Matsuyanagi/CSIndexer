@@ -225,10 +225,17 @@ public sealed class SchemaFiveLogicalSymbolTests
     [InlineData("logical-source-document-payload")]
     [InlineData("logical-source-start-payload")]
     [InlineData("logical-source-length-payload")]
+    [InlineData("bad-document-hash")]
+    [InlineData("unknown-declaration-document")]
+    [InlineData("unknown-call-document")]
     [InlineData("normalized-range-start-payload")]
     [InlineData("normalized-range-length-payload")]
     [InlineData("normalized-range-overflow-payload")]
     [InlineData("normalized-range-out-of-bounds-payload")]
+    [InlineData("call-normalized-range-start-payload")]
+    [InlineData("call-normalized-range-length-payload")]
+    [InlineData("call-normalized-range-overflow-payload")]
+    [InlineData("call-normalized-range-out-of-bounds-payload")]
     [InlineData("type-source-payload")]
     [InlineData("call-declaration-endpoint")]
     [InlineData("candidate-declaration-endpoint")]
@@ -664,6 +671,27 @@ public sealed class SchemaFiveLogicalSymbolTests
             case "logical-source-length-payload":
                 snapshot.Symbols["ordinary"] = snapshot.Symbols["ordinary"] with { SourceLength = 12 };
                 break;
+            case "bad-document-hash":
+                snapshot.Documents[0] = snapshot.Documents[0] with
+                {
+                    NormalizedSourceHash = [99],
+                };
+                break;
+            case "unknown-declaration-document":
+                {
+                    var declaration = snapshot.Declarations[ordinaryDeclaration];
+                    snapshot.Declarations[ordinaryDeclaration] = declaration with
+                    {
+                        DocumentKey = "project-path:src/Game.csproj|document:missing.cs",
+                    };
+                    break;
+                }
+            case "unknown-call-document":
+                snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with
+                {
+                    DocumentKey = "project-path:src/Game.csproj|document:missing.cs",
+                });
+                break;
             case "normalized-range-start-payload":
                 {
                     var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");
@@ -686,6 +714,26 @@ public sealed class SchemaFiveLogicalSymbolTests
                     };
                     break;
                 }
+            case "call-normalized-range-start-payload":
+                snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with { NormalizedStart = -1 });
+                break;
+            case "call-normalized-range-length-payload":
+                snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with { NormalizedLength = 0 });
+                break;
+            case "call-normalized-range-overflow-payload":
+                snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with
+                {
+                    NormalizedStart = int.MaxValue,
+                    NormalizedLength = 1,
+                });
+                break;
+            case "call-normalized-range-out-of-bounds-payload":
+                snapshot.Calls.Add(CreateCall("ordinary", "partial", []) with
+                {
+                    NormalizedStart = 179,
+                    NormalizedLength = 2,
+                });
+                break;
             case "normalized-range-out-of-bounds-payload":
                 {
                     var declaration = snapshot.Declarations.Values.Single(value => value.SymbolKey == "ordinary");

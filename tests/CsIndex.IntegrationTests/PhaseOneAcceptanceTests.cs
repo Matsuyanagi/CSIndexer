@@ -605,7 +605,7 @@ public sealed class PhaseOneAcceptanceTests(SemanticIndexFixture fixture)
         var cancellationToken = TestContext.Current.CancellationToken;
         var sourceCellReads = 0;
         var repository = fixture.Repository;
-        repository.NormalizedSourcePayloadReadObserver = () => sourceCellReads++;
+        repository.NormalizedSourcePayloadReadObserver = _ => sourceCellReads++;
         var query = new SemanticQueryService(repository);
 
         async Task InvokeAsync()

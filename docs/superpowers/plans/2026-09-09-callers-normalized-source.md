@@ -573,7 +573,12 @@ Do not catch and commit any failure; retain the existing rollback path.
 
 - [ ] **Step 5: Hydrate declaration slices from distinct shared payloads**
 
-Change declaration selects to return range columns unconditionally and no text columns. Materialize metadata, then, only when `includeSourceText` is true, gather distinct `DocumentId` values, load the joined payload once per document ID, and slice after full reader disposal. Implement a shared helper with this contract:
+Change declaration selects to return range columns unconditionally and no text
+columns. Materialize metadata, then, only when `includeSourceText` is true,
+gather distinct `DocumentId` values. Load `document_id ->
+normalized_source_id` without the text, fetch `normalized_sources` once per
+distinct payload ID, map each document to that shared string, and slice after
+all readers are disposed. Implement a shared helper with this contract:
 
 ```csharp
 private async Task<IReadOnlyDictionary<long, string>> LoadNormalizedSourcesByDocumentAsync(
@@ -590,7 +595,15 @@ private static string SliceNormalizedSource(
     IReadOnlyDictionary<long, string> documents);
 ```
 
-The loader query joins `documents d` to `normalized_sources ns`, orders by `d.id`, invokes `NormalizedSourcePayloadReadObserver` once per returned row, and rejects duplicate document IDs with unequal text. `SliceNormalizedSource` performs checked nonnegative/positive/end validation and throws `IndexDatabaseException` containing the row kind, row ID, and document ID. It never reads a file and never calls Roslyn or `SourceNormalizer`.
+The loader first orders and validates the document-to-payload mapping, then
+queries the distinct payload IDs. `NormalizedSourcePayloadReadObserver` accepts
+the payload ID and is invoked immediately after each actual text row is
+materialized; it must not use a set to hide duplicate text reads. Reject
+missing document mappings, missing payload rows, duplicate payload IDs, and
+unequal duplicate text as `IndexDatabaseException`. `SliceNormalizedSource`
+performs checked nonnegative/positive/end validation and throws
+`IndexDatabaseException` containing the row kind, row ID, and document ID. It
+never reads a file and never calls Roslyn or `SourceNormalizer`.
 
 Update `StoredSymbol`'s legacy constructor adapter so it no longer accepts normalized source/hash or synthesizes `PreferredDeclaration`; preferred source is populated only from real declaration rows. Update every fixture/construction call at compile errors to the new DTO signatures instead of adding compatibility overloads.
 

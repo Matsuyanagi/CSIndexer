@@ -12,7 +12,7 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
 
     private readonly string _databasePath = PathNormalizer.Normalize(databasePath);
 
-    internal Action? NormalizedSourcePayloadReadObserver { get; set; }
+    internal Action<long>? NormalizedSourcePayloadReadObserver { get; set; }
     internal Action<TraversalOperation>? TraversalObserver { get; set; }
 
     public string DatabasePath => _databasePath;
@@ -1319,45 +1319,93 @@ public sealed class QueryRepository(string databasePath, SchemaMigrator migrator
             return new Dictionary<long, string>();
         }
 
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT d.id, ns.id, ns.normalized_source
-            FROM documents d
-            JOIN normalized_sources ns ON ns.id = d.normalized_source_id
-            WHERE d.id IN (
-                SELECT CAST(value AS INTEGER) FROM json_each($document_ids)
-            )
-            ORDER BY d.id;
-            """;
-        command.Parameters.AddWithValue("$document_ids", JsonSerializer.Serialize(ids));
-        var result = new Dictionary<long, string>();
-        var payloadIds = new HashSet<long>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        var documentPayloads = new Dictionary<long, long>();
+        await using (var mappingCommand = connection.CreateCommand())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var documentId = reader.GetInt64(0);
-            var payloadId = reader.GetInt64(1);
-            var text = reader.GetString(2);
-            if (result.TryGetValue(documentId, out var existing))
+            mappingCommand.CommandText = """
+                SELECT d.id, d.normalized_source_id
+                FROM documents d
+                WHERE d.id IN (
+                    SELECT CAST(value AS INTEGER) FROM json_each($document_ids)
+                )
+                ORDER BY d.id;
+                """;
+            mappingCommand.Parameters.AddWithValue("$document_ids", JsonSerializer.Serialize(ids));
+            await using var mappingReader = await mappingCommand.ExecuteReaderAsync(cancellationToken);
+            while (await mappingReader.ReadAsync(cancellationToken))
             {
-                if (!StringComparer.Ordinal.Equals(existing, text))
+                cancellationToken.ThrowIfCancellationRequested();
+                var documentId = mappingReader.GetInt64(0);
+                var payloadId = mappingReader.GetInt64(1);
+                if (documentPayloads.TryGetValue(documentId, out var existingPayloadId))
                 {
+                    if (existingPayloadId != payloadId)
+                    {
+                        throw new IndexDatabaseException(
+                            $"Document {documentId} returned duplicate normalized-source mappings with unequal payload IDs.");
+                    }
+
                     throw new IndexDatabaseException(
-                        $"Document {documentId} returned duplicate normalized-source payloads with unequal text.");
+                        $"Document {documentId} returned duplicate normalized-source mappings.");
                 }
 
-                continue;
-            }
-
-            result.Add(documentId, text);
-            if (payloadIds.Add(payloadId))
-            {
-                NormalizedSourcePayloadReadObserver?.Invoke();
+                documentPayloads.Add(documentId, payloadId);
             }
         }
 
-        return result;
+        if (documentPayloads.Count != ids.Length)
+        {
+            var missingDocumentId = ids.First(id => !documentPayloads.ContainsKey(id));
+            throw new IndexDatabaseException(
+                $"The source query references missing normalized document {missingDocumentId}.");
+        }
+
+        var payloadIds = documentPayloads.Values.Distinct().Order().ToArray();
+        var payloads = new Dictionary<long, string>();
+        await using (var payloadCommand = connection.CreateCommand())
+        {
+            payloadCommand.CommandText = """
+                SELECT id, normalized_source
+                FROM normalized_sources
+                WHERE id IN (
+                    SELECT CAST(value AS INTEGER) FROM json_each($payload_ids)
+                )
+                ORDER BY id;
+                """;
+            payloadCommand.Parameters.AddWithValue("$payload_ids", JsonSerializer.Serialize(payloadIds));
+            await using var payloadReader = await payloadCommand.ExecuteReaderAsync(cancellationToken);
+            while (await payloadReader.ReadAsync(cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var payloadId = payloadReader.GetInt64(0);
+                var text = payloadReader.GetString(1);
+                NormalizedSourcePayloadReadObserver?.Invoke(payloadId);
+                if (payloads.TryGetValue(payloadId, out var existingText))
+                {
+                    if (!StringComparer.Ordinal.Equals(existingText, text))
+                    {
+                        throw new IndexDatabaseException(
+                            $"Normalized-source payload {payloadId} was returned with unequal text.");
+                    }
+
+                    throw new IndexDatabaseException(
+                        $"Normalized-source payload {payloadId} was returned more than once.");
+                }
+
+                payloads.Add(payloadId, text);
+            }
+        }
+
+        if (payloads.Count != payloadIds.Length)
+        {
+            var missingPayloadId = payloadIds.First(id => !payloads.ContainsKey(id));
+            throw new IndexDatabaseException(
+                $"The normalized document mapping references missing source payload {missingPayloadId}.");
+        }
+
+        return documentPayloads.ToDictionary(
+            pair => pair.Key,
+            pair => payloads[pair.Value]);
     }
 
     private static string SliceNormalizedSource(

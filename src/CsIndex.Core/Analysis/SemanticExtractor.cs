@@ -521,6 +521,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             AddUnresolvedCall(
                 callerKey,
                 invocationSyntax.Expression,
+                invocationSyntax,
                 documentState.Data.Key,
                 model,
                 projectState,
@@ -562,6 +563,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
             {
                 AddUnresolvedCall(
                     callerKey,
+                    creationSyntax,
                     creationSyntax,
                     documentState.Data.Key,
                     model,
@@ -1296,20 +1298,21 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
 
     private void AddUnresolvedCall(
         string callerKey,
-        ExpressionSyntax expression,
+        ExpressionSyntax lookupExpression,
+        SyntaxNode sourceNode,
         string documentKey,
         SemanticModel model,
         ProjectAnalysisState projectState,
         CancellationToken cancellationToken,
         DocumentAnalysisState documentState)
     {
-        var symbolInfo = model.GetSymbolInfo(expression, cancellationToken);
+        var symbolInfo = model.GetSymbolInfo(lookupExpression, cancellationToken);
         var candidates = NormalizeCandidateKeys(
             symbolInfo.CandidateSymbols.OfType<IMethodSymbol>(),
             _canonicalizer.NormalizeLogicalMethod,
             EnsureMethod);
         var ambiguous = candidates.Length > 0;
-        var normalizedRange = documentState.NormalizedSource.GetRange(expression);
+        var normalizedRange = documentState.NormalizedSource.GetRange(sourceNode);
         _snapshot.Calls.Add(new CallData
         {
             CallerSymbolKey = callerKey,
@@ -1322,11 +1325,11 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
                     ? ResolutionReason.MissingMetadataReference
                     : ResolutionReason.CompilationError,
             DocumentKey = documentKey,
-            SourceStart = expression.SpanStart,
-            SourceLength = expression.Span.Length,
+            SourceStart = sourceNode.SpanStart,
+            SourceLength = sourceNode.Span.Length,
             NormalizedStart = normalizedRange.Start,
             NormalizedLength = normalizedRange.Length,
-            UnresolvedName = expression.ToString(),
+            UnresolvedName = lookupExpression.ToString(),
             CandidateSymbolKeys = candidates,
         });
     }
