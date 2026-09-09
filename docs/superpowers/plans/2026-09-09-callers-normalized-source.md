@@ -685,13 +685,19 @@ public Task<CallResult> SemanticQueryService.FindCallersAsync(
 
 - [ ] **Step 1: Add CLI scope, DB-only hydration, exact source, and no-flag RED tests**
 
-In the option matrix, include `show-source` in exactly `symbol find` (existing), `callers`, and `callers tree`. Assert it is rejected by every other command and that `--show-source=true` is rejected as a value-bearing spelling.
+For the Task 3 intermediate gate, include `show-source` in exactly `symbol find`
+(existing) and `callers`. Assert it is rejected by every other command,
+including `callers tree`, and that `--show-source=true` is rejected as a
+value-bearing spelling. Task 4 changes the same matrix to the final approved
+scope (`symbol find`, `callers`, and `callers tree`) at the point where tree
+call-site associations and output are implemented. Do not create an
+intermediate release in which `callers tree` accepts and silently ignores the
+flag.
 
-Add normal/verbose help expectations:
+Add the Task 3 normal/verbose help expectation:
 
 ```text
 callers --show-source: include the normalized invocation or object-creation expression
-callers tree --show-source: include normalized source for every physical call site
 ```
 
 Create an indexed fixture with these calls:
@@ -769,7 +775,10 @@ new HelpOption(
     "Include the normalized invocation or object-creation expression"),
 ```
 
-Update the shared verbose option-scope reference so it names `callers` and `callers tree` while continuing to state every rejecting command. Do not add the flag to `QueryOptions`, because that would over-permit unrelated commands.
+Update the shared verbose option-scope reference so it names `callers` while
+continuing to state every rejecting command. Task 4 adds `callers tree` to this
+same reference and to command help. Do not add the flag to `QueryOptions`,
+because that would over-permit unrelated commands.
 
 - [ ] **Step 5: Add conditional table and JSON fields without changing the no-flag branch**
 
@@ -830,6 +839,8 @@ Record the GREEN commands, commit SHA, task report, and review verdict in the le
 - Modify: `tests/CsIndex.IntegrationTests/GraphQueryTests.cs`
 - Modify: `tests/CsIndex.IntegrationTests/OutputFormatterTests.cs`
 - Modify: `tests/CsIndex.IntegrationTests/CliCommandTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/CliSymbolPathOptionMatrixTests.cs`
+- Modify: `tests/CsIndex.IntegrationTests/VerboseHelpTests.cs`
 - Create: `tests/CsIndex.IntegrationTests/CallerTreeSourceOutputTests.cs`
 
 **Interfaces:**
@@ -874,7 +885,19 @@ internal static IReadOnlyList<CallerTreeCallSite> OrderCallerTreeCallSites(
 - For equal structural edge order, compare `Call.DocumentPath` ordinal, `SourceStart`, `SourceLength`, then `Call.Id`. Reject a call-site association whose pair is absent from `orderedEdges`.
 - Make `OutputFormatter.ResolveLocation` `internal static` without changing its behavior so graph formatting shares the established path/line/column conversion.
 
-- [ ] **Step 1: Add RED tests for duplicate, boundary, cycle/cross, ordering, and all formats**
+- [ ] **Step 1: Add RED tests for final CLI scope, duplicate, boundary, cycle/cross, ordering, and all formats**
+
+Change the Task 3 intermediate CLI matrix to the final approved scope:
+`show-source` is accepted by exactly `symbol find`, `callers`, and
+`callers tree`, and rejected everywhere else. Add the normal/verbose help
+expectation:
+
+```text
+callers tree --show-source: include normalized source for every physical call site
+```
+
+Keep `--show-source=true` invalid for the tree command because the option is a
+flag.
 
 Extend the builder fixture so the same caller invokes the same callee twice. Assert one `CallerTreeEdge` but two `CallerTreeCallSite` entries with distinct `StoredCall.Id` and original spans. Add separate cases for:
 
@@ -972,7 +995,10 @@ Do not retain sites before both endpoint nodes are accepted. Apply the same rule
 
 - [ ] **Step 4: Propagate the caller-tree flag through service and CLI**
 
-Add `showSource` to each caller-tree service overload and pass it unchanged to `BuildAsync`. In `RunCallerTreeAsync`, add `"show-source"` directly to that command's allowed options, add the command help description from Task 3, and call:
+Add `showSource` to each caller-tree service overload and pass it unchanged to
+`BuildAsync`. In `RunCallerTreeAsync`, add `"show-source"` directly to that
+command's allowed options, update the shared verbose option-scope reference and
+normal command help to the final scope, and call:
 
 ```csharp
 var result = await service.FindCallerTreeAsync(
