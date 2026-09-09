@@ -708,7 +708,7 @@ internal sealed class GraphOutputFormatter
                 _pathResolver,
                 _pathStyle);
             cancellationToken.ThrowIfCancellationRequested();
-            labels.Add(EscapeMermaidLabel($"{point.Path}:{point.Line}:{point.Column} {source}"));
+            labels.Add(EscapeMermaidCallSiteLabel($"{point.Path}:{point.Line}:{point.Column} {source}"));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -830,7 +830,6 @@ internal sealed class GraphOutputFormatter
 
     private static string EscapeMermaidLabel(string value) => value
         .Replace("&", "&amp;", StringComparison.Ordinal)
-        .Replace("|", "&#124;", StringComparison.Ordinal)
         .Replace("\"", "&quot;", StringComparison.Ordinal)
         .Replace("[", "&#91;", StringComparison.Ordinal)
         .Replace("]", "&#93;", StringComparison.Ordinal)
@@ -839,6 +838,9 @@ internal sealed class GraphOutputFormatter
         .Replace("\r\n", "<br/>", StringComparison.Ordinal)
         .Replace("\r", "<br/>", StringComparison.Ordinal)
         .Replace("\n", "<br/>", StringComparison.Ordinal);
+
+    private static string EscapeMermaidCallSiteLabel(string value) =>
+        EscapeMermaidLabel(value).Replace("|", "&#124;", StringComparison.Ordinal);
 
     private static string NormalizeText(string value) => value
         .Replace("\r\n", " ", StringComparison.Ordinal)

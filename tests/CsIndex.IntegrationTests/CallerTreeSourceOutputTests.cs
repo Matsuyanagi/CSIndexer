@@ -71,6 +71,60 @@ public sealed class CallerTreeSourceOutputTests
     }
 
     [Fact]
+    public async Task CallerTreeRetainsAmbiguousCandidateOnlyInvocationForExactOverload()
+    {
+        await using var fixture = await CallerTreeFixture.CreateAsync(
+            CallerTreeFixture.AmbiguousSource,
+            "Ambiguous.Host::Target(int,object)");
+        var repository = fixture.CreateRepository();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var profile = await repository.GetProfileAsync(null, cancellationToken);
+        var symbols = await repository.FindExecutableSymbolsAsync(
+            profile.Id,
+            sourceOnly: true,
+            cancellationToken);
+        var root = Assert.Single(
+            symbols,
+            symbol =>
+                symbol.Name == "Target" &&
+                symbol.Parameters.Count == 2 &&
+                symbol.Parameters[0].TypeDisplay == "int" &&
+                symbol.Parameters[1].TypeDisplay == "object");
+
+        var candidateCalls = await repository.GetCallsByCalleeAsync(
+            profile.Id,
+            [root.Id],
+            GeneratedFilter.Include,
+            new HashSet<ReferenceKind> { ReferenceKind.Invocation },
+            includeSourceText: true,
+            cancellationToken: cancellationToken);
+        var candidateCall = Assert.Single(candidateCalls);
+        Assert.Null(candidateCall.CalleeDefinitionId);
+        Assert.Null(candidateCall.CalleeSymbolId);
+        Assert.Equal(ResolutionStatus.Ambiguous, candidateCall.ResolutionStatus);
+        Assert.Equal("Target(1,1)", candidateCall.NormalizedSource);
+
+        var result = await new SemanticQueryService(repository).FindCallerTreeAsync(
+            fixture.TargetQuery,
+            depth: 1,
+            maxNodes: 10,
+            profileName: null,
+            showSource: true,
+            cancellationToken: cancellationToken);
+
+        Assert.Equal(root.Id, result.Root.Id);
+        var caller = Assert.Single(result.Nodes, node => node.Depth == 1).Symbol;
+        var edge = Assert.Single(result.Edges);
+        Assert.Equal(caller.Id, edge.CallerSymbolId);
+        Assert.Equal(root.Id, edge.CalleeSymbolId);
+        var site = Assert.Single(result.CallSites);
+        Assert.Equal(caller.Id, site.CallerSymbolId);
+        Assert.Equal(root.Id, site.CalleeSymbolId);
+        Assert.Equal(candidateCall.Id, site.Call.Id);
+        Assert.Equal("Target(1,1)", site.Call.NormalizedSource);
+    }
+
+    [Fact]
     public async Task CallerTreeWithoutShowSourceRetainsMetadataButReadsNoPayloadText()
     {
         await using var fixture = await CallerTreeFixture.CreateAsync();
@@ -499,6 +553,17 @@ public sealed class CallerTreeSourceOutputTests
             Assert.Equal(["callerSymbolId", "calleeSymbolId"], edge.EnumerateObject().Select(property => property.Name));
             Assert.False(edge.TryGetProperty("callSites", out _));
         });
+
+        var throwingCallSites = unflagged with { CallSites = new ThrowingCallSiteList() };
+        Assert.Equal(
+            expectedBaseTree,
+            fixture.Render(throwingCallSites, "tree", TestContext.Current.CancellationToken));
+        Assert.Equal(
+            expectedBaseMermaid,
+            fixture.Render(throwingCallSites, "mermaid", TestContext.Current.CancellationToken));
+        Assert.Equal(
+            actualJson,
+            fixture.Render(throwingCallSites, "json", TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -798,6 +863,19 @@ public sealed class CallerTreeSourceOutputTests
         }
     }
 
+    private sealed class ThrowingCallSiteList : IReadOnlyList<CallerTreeCallSite>
+    {
+        public int Count => throw new InvalidOperationException("CallSites must not be enumerated.");
+
+        public CallerTreeCallSite this[int index] =>
+            throw new InvalidOperationException("CallSites must not be indexed.");
+
+        public IEnumerator<CallerTreeCallSite> GetEnumerator() =>
+            throw new InvalidOperationException("CallSites must not be enumerated.");
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     private sealed class CallerTreeFixture : IAsyncDisposable
     {
         public const string Source = """"
@@ -823,27 +901,55 @@ public sealed class CallerTreeSourceOutputTests
             }
             """";
 
-        private CallerTreeFixture(string rootPath, string sourcePath, string databasePath)
+        public const string AmbiguousSource = """"
+            namespace Ambiguous
+            {
+                public sealed class Host
+                {
+                    public static void Target(int first, object second) { }
+                    public static void Target(object first, int second) { }
+
+                    public static void Caller()
+                    {
+                        Target(1, 1);
+                    }
+                }
+            }
+            """";
+
+        private CallerTreeFixture(
+            string rootPath,
+            string sourcePath,
+            string databasePath,
+            string sourceText,
+            string targetQuery)
         {
             RootPath = rootPath;
             SourcePath = sourcePath;
             DatabasePath = databasePath;
+            SourceText = sourceText;
+            TargetQuery = targetQuery;
         }
 
         public string RootPath { get; }
         public string SourcePath { get; }
         public string DatabasePath { get; }
-        public string TargetQuery => "Calls.Graph::Target(int)";
-        public string SourceText => Source;
+        public string TargetQuery { get; }
+        public string SourceText { get; }
 
-        public static async Task<CallerTreeFixture> CreateAsync()
+        public static Task<CallerTreeFixture> CreateAsync() =>
+            CreateAsync(Source, "Calls.Graph::Target(int)");
+
+        public static async Task<CallerTreeFixture> CreateAsync(
+            string source,
+            string targetQuery)
         {
             var rootPath = Path.Combine(Path.GetTempPath(), "csindex-caller-tree-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(rootPath);
             var sourcePath = Path.Combine(rootPath, "Graph.cs");
-            await File.WriteAllTextAsync(sourcePath, Source, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(sourcePath, source, TestContext.Current.CancellationToken);
             var databasePath = Path.Combine(rootPath, ".csindex", "index.sqlite");
-            var fixture = new CallerTreeFixture(rootPath, sourcePath, databasePath);
+            var fixture = new CallerTreeFixture(rootPath, sourcePath, databasePath, source, targetQuery);
 
             var options = new IndexOptions
             {

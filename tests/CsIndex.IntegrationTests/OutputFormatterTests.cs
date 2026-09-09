@@ -1629,6 +1629,28 @@ public sealed class OutputFormatterTests : IDisposable
     }
 
     [Fact]
+    public void GraphOutputFormatterNoFlagMermaidPreservesRawPipeInOperatorNodeLabel()
+    {
+        var root = CreateSymbol(AsyncRole.None, null, id: 401, displayName: "Example.Target()");
+        var caller = CreateSymbol(AsyncRole.None, null, id: 402, displayName: "Example.[operator:|]");
+        var result = new CallerTreeResult(
+            CreateSelection(CreateProfile(), root),
+            root,
+            [new CallerTreeNode(root, 0), new CallerTreeNode(caller, 1)],
+            [new CallerTreeEdge(caller.Id, root.Id)],
+            CallSites: [],
+            ShowSource: false,
+            Truncated: false);
+
+        Assert.Equal(
+            "flowchart TD" + Environment.NewLine +
+            "    n401[\"Example.Target()\"]" + Environment.NewLine +
+            "    n402[\"Example.&#91;operator:|&#93;\"]" + Environment.NewLine +
+            "    n402 --> n401" + Environment.NewLine,
+            CaptureGraphText(formatter => formatter.WriteCallerTree(result, "mermaid")));
+    }
+
+    [Fact]
     public void GraphOutputFormatterUsesCallerEdgesForBranchesAndAdditionalEdges()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 101, displayName: "Example.Root()");

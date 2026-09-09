@@ -52,11 +52,6 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
                 foreach (var call in calls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (!TargetsCallee(call, calleeNode.Symbol.Id))
-                    {
-                        continue;
-                    }
-
                     var candidateEdge = new CallerTreeEdge(call.CallerSymbolId, calleeNode.Symbol.Id);
                     if (!candidateCallSitesByEdge.TryGetValue(candidateEdge, out var candidateCallSites))
                     {
@@ -247,10 +242,6 @@ internal sealed class CallerTreeBuilder(QueryRepository repository)
     {
         return SymbolCanonicalComparer.OrderSymbols(callers, cancellationToken, afterOrderingComparison);
     }
-
-    private static bool TargetsCallee(StoredCall call, long calleeId) =>
-        call.CalleeDefinitionId == calleeId ||
-        (call.CalleeDefinitionId is null && call.CalleeSymbolId == calleeId);
 
     private static bool IsSourceBackedNonSystemExecutable(StoredSymbol symbol) =>
         (symbol.Kind is IndexedSymbolKind.Method or
