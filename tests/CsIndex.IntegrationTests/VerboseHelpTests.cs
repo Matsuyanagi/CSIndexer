@@ -260,6 +260,20 @@ public sealed class VerboseHelpTests
     }
 
     [Fact]
+    public async Task CallersHelpDescribesShowSourceExactly()
+    {
+        var result = await RunAsync("callers", "--help");
+
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        var helpLines = result.StandardOutput
+            .ReplaceLineEndings("\n")
+            .Split('\n', StringSplitOptions.None);
+        Assert.Contains(
+            "  --show-source               Include the normalized invocation or object-creation expression",
+            helpLines);
+    }
+
+    [Fact]
     public async Task CanonicalVerboseExamplesUseDotForExecutableChildrenAndKeepLegacyFormsInvalid()
     {
         var result = await RunAsync("--help-verbose");

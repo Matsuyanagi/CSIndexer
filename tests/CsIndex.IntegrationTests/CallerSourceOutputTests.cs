@@ -59,6 +59,69 @@ public sealed class CallerSourceOutputTests
     }
 
     [Fact]
+    public async Task FindCallersStringQueryOverloadForwardsShowSourceToHydration()
+    {
+        await using var fixture = await ExactCallerFixture.CreateAsync();
+        var repository = fixture.CreateRepository();
+        var payloadIds = new List<long>();
+        repository.NormalizedSourcePayloadReadObserver = payloadIds.Add;
+        try
+        {
+            var cancellationToken = TestContext.Current.CancellationToken;
+            var profile = await repository.GetProfileAsync(null, cancellationToken);
+            var result = await new SemanticQueryService(repository).FindCallersAsync(
+                "Calls.Targets::A(float)",
+                GeneratedFilter.Include,
+                DispatchSearchMode.Static,
+                CallerScope.Direct,
+                profileName: profile.Name,
+                includeOverrides: false,
+                showSource: true,
+                cancellationToken: cancellationToken);
+
+            Assert.True(result.ShowSource);
+            Assert.Equal(["A(f)"], result.Calls.Select(call => call.NormalizedSource));
+            Assert.Single(payloadIds);
+        }
+        finally
+        {
+            repository.NormalizedSourcePayloadReadObserver = null;
+        }
+    }
+
+    [Fact]
+    public async Task FindCallersFilteredStringQueryOverloadForwardsShowSourceToHydration()
+    {
+        await using var fixture = await ExactCallerFixture.CreateAsync();
+        var repository = fixture.CreateRepository();
+        var payloadIds = new List<long>();
+        repository.NormalizedSourcePayloadReadObserver = payloadIds.Add;
+        try
+        {
+            var cancellationToken = TestContext.Current.CancellationToken;
+            var profile = await repository.GetProfileAsync(null, cancellationToken);
+            var result = await new SemanticQueryService(repository).FindCallersAsync(
+                "Calls.Targets::A(float)",
+                GeneratedFilter.Include,
+                DispatchSearchMode.Static,
+                CallerScope.Direct,
+                filter: new FunctionTargetFilter(IndexedSymbolKind.Method, AsyncStatusFilter.All),
+                profileName: profile.Name,
+                includeOverrides: false,
+                showSource: true,
+                cancellationToken: cancellationToken);
+
+            Assert.True(result.ShowSource);
+            Assert.Equal(["A(f)"], result.Calls.Select(call => call.NormalizedSource));
+            Assert.Single(payloadIds);
+        }
+        finally
+        {
+            repository.NormalizedSourcePayloadReadObserver = null;
+        }
+    }
+
+    [Fact]
     public async Task FindCallersWithoutShowSourceDoesNotReadPayloadOrAttachText()
     {
         await using var fixture = await ExactCallerFixture.CreateAsync();
