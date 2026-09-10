@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-6 index（Tasks 1--14 completed, verified, and integrated） / Normalized caller-source persistence and output contract（Tasks 1--5 implementation, documentation, full Phase B gates, and scoped commit complete; independent Task 5 review, whole-branch review, post-review fresh gates, and finishing-branch integration choice pending） / Cross-volume generated compilation inputs（implementation, final review, post-review fresh gates, and branch integration complete; optional installed-binary deployment remains separate and pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-6 index（Tasks 1--14 completed, verified, and integrated） / Normalized caller-source persistence and output contract（Tasks 1--5 implementation, documentation, full Phase B gates, independent Task 5 review, final whole-branch review, Important fix `ad52067`, scoped re-review, and post-review fresh gates complete; no implementation work remains; finishing-branch integration choice is the only current feature action） / Cross-volume generated compilation inputs（implementation, final review, post-review fresh gates, and branch integration complete; optional installed-binary deployment remains separate and untouched）
 
 ## Last Completed Work
 
@@ -50,19 +50,19 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Currently Implementing
 
-- Normalized caller-source Tasks 1--5 implementation, documentation, and full
-  Phase B gates are complete. Independent Task 5 review, whole-branch review,
-  post-review fresh gates, and finishing-branch integration choice remain
-  pending.
+- No implementation work remains for normalized caller-source Tasks 1--5.
+  Independent Task 5 review, final whole-branch review, Important fix
+  `ad52067`, scoped re-review, and post-review fresh gates are complete. The
+  only current feature action is the finishing-branch integration choice;
+  optional installed-binary deployment remains separate and untouched.
 
 ## Next Actions
 
-1. Complete the independent Task 5 review and fix loop.
-2. Run the post-review fresh gates for the reviewed branch.
-3. Use the finishing-branch workflow to choose current-branch integration and,
-   separately if desired, installed-binary deployment; the installed
+1. Use the finishing-branch workflow to choose current-branch integration for
+   normalized caller-source.
+2. Separately, if desired, decide installed-binary deployment; the installed
    `C:\DosFree\csindex\csindex.exe` remains untouched.
-4. Longer-term: implement project-level reanalysis and dependent-project
+3. Longer-term: implement project-level reanalysis and dependent-project
    invalidation when inputs change, then begin Phase 3 Unity assembly recovery.
 
 ## Build Status
@@ -92,7 +92,7 @@ Task 3 pre-review full-solution acceptance verification:
 The prior Task 14 full-suite record was 1,179 tests; the fresh Task 3 run adds
 the compilation-only generated-input coverage.
 
-## Task 5 Phase A (2026-09-10)
+## Task 5 Phase A historical scoped checkpoint (2026-09-10)
 
 This is a documentation-only checkpoint for normalized document payloads and
 caller source. The six active documents are `CLI.md`, `DB_SCHEMA.md`,
@@ -103,11 +103,11 @@ analysis-cache 4 wording and the query-retained caller `CallSites` metadata
 contract are updated in the focused sections.
 
 No source or test files changed. Phase A scans and self-review are recorded in
-the ignored Task 5 report/ledger. Phase B results are recorded below; independent
-Task 5 review, whole-branch review, post-review fresh gates, finishing-branch
-choice, and current-branch integration remain intentionally pending.
+the ignored Task 5 report/ledger. The Phase A checkpoint preceded the later
+review and final-gate records below; its then-pending review/integration state
+is retained as history rather than current status.
 
-## Task 5 Phase B verification (2026-09-10)
+## Task 5 Phase B historical scoped verification (2026-09-10)
 
 - Restore: elevated rerun exit 0; 9 projects, 0 errors, 0 warnings.
 - Release build: elevated rerun exit 0; 9 projects, 0 errors, 0 warnings.
@@ -117,6 +117,43 @@ choice, and current-branch integration remain intentionally pending.
 - Integration tests: exit 0; 669 passed, 0 failed, 0 skipped, 0 warnings.
 - Format verification: exit 0; 0 files formatted correctly.
 - Diff check: exit 0; no whitespace errors.
+
+## Task 5 post-review final verification (2026-09-11)
+
+This separate record captures the controller-owned fresh whole-branch gates
+after the final review/fix/re-review. The Phase A and Phase B records above
+remain historical scoped checkpoints.
+
+The exact command sequence was:
+
+```powershell
+rtk dotnet restore CsIndex.sln
+rtk dotnet build CsIndex.sln -c Release --no-restore
+rtk dotnet test tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Storage.Tests\CsIndex.Storage.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Query.Tests\CsIndex.Query.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-build --no-restore
+rtk dotnet format CsIndex.sln --verify-no-changes --no-restore
+rtk git diff --check
+rtk git status --short --branch
+```
+
+- Restore: exit 0; 9 projects, 0 errors, 0 warnings.
+- Release build: exit 0; 9 projects, 0 errors, 0 warnings.
+- Core tests: exit 0; 225 passed, 0 failed, 0 skipped, 0 warnings.
+- Storage tests: exit 0; 88 passed, 0 failed, 0 skipped, 0 warnings.
+- Query tests: exit 0; 273 passed, 0 failed, 0 skipped, 0 warnings.
+- Integration tests: exit 0; 669 passed, 0 failed, 0 skipped, 0 warnings.
+- Format verification: exit 0.
+- `rtk git diff --check`: exit 0.
+- `rtk git status --short --branch`: exit 0 and clean.
+
+The final Sol/max review identified an Important uncancellable quadratic range
+lookup. Commit `ad52067` replaced it with an immutable `FrozenDictionary`
+lookup, active cancellation propagation, and deterministic tests. The scoped
+Sol/max re-review found that finding `ADDRESSED`, with no new Critical or
+Important findings. No merge, installed-binary deployment, cleanup, or current
+branch integration is claimed here.
 
 ## Cross-volume generated compilation-input verification
 

@@ -145,7 +145,7 @@ and formatter boundaries without changing the project-wide acceptance matrix:
   `RootSelectionOrchestrationTests`, and `PortableIndexAcceptanceTests`,
   together with the extraction, declaration, range, and cancellation suites.
 
-The Phase A focused commands were:
+The Phase A focused commands were a historical scoped checkpoint:
 
 ```powershell
 rtk dotnet test tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SourceNormalizerTests|FullyQualifiedName~RequestHasherTests"
@@ -153,13 +153,14 @@ rtk dotnet test tests\CsIndex.Storage.Tests\CsIndex.Storage.Tests.csproj -c Rele
 rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallerSourceOutputTests|FullyQualifiedName~CallerTreeSourceOutputTests|FullyQualifiedName~CliSymbolPathOptionMatrixTests|FullyQualifiedName~VerboseHelpTests"
 ```
 
-On 2026-09-10 these retained Phase A results were Core 23, Storage 39, and
-Integration 91 passed, each with zero warnings. The controller correction round
-changed documentation only; no code or test files changed, so these results
-remain the applicable focused evidence. The DDL equality, consistency scans,
-placeholder scan, and diff check are recorded in the ignored Task 5 report.
+The retained historical Phase A results on 2026-09-10 were Core 23, Storage 39,
+and Integration 91 passed, each with zero warnings. The controller correction
+round changed documentation only; no code or test files changed, so these
+results remain the applicable focused checkpoint evidence. The DDL equality,
+consistency scans, placeholder scan, and diff check are recorded in the ignored
+Task 5 report.
 
-## Task 5 Phase B verification record (2026-09-10)
+## Task 5 Phase B historical scoped verification record (2026-09-10)
 
 The completed Task 5 Phase B sequence was run in this exact order:
 
@@ -181,9 +182,47 @@ Windows SDK `MSB4184` access denial). Core, Storage, Query, and Integration
 tests completed with exit 0 and respectively 223, 88, 273, and 669 passed;
 each had 0 failures, 0 skips, and 0 warnings. Format verification completed
 with exit 0 and 0 files formatted; diff check and status each completed with
-exit 0. These are the scoped Task 5 Phase B results; independent Task 5 review,
-whole-branch review, whole-branch post-review gates, and finishing-branch
-integration remain pending.
+exit 0. These are the historical scoped Task 5 Phase B results; at that
+checkpoint independent Task 5 review, whole-branch review, whole-branch
+post-review gates, and finishing-branch integration remained pending. Their
+later review and final-gate outcome is recorded separately below.
+
+## Task 5 post-review whole-branch verification (2026-09-11)
+
+This separate record captures the controller-owned fresh whole-branch gates
+after the final review/fix/re-review. The Phase A and Phase B records above are
+preserved as historical scoped checkpoints.
+
+The exact command sequence was:
+
+```powershell
+rtk dotnet restore CsIndex.sln
+rtk dotnet build CsIndex.sln -c Release --no-restore
+rtk dotnet test tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Storage.Tests\CsIndex.Storage.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Query.Tests\CsIndex.Query.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-build --no-restore
+rtk dotnet format CsIndex.sln --verify-no-changes --no-restore
+rtk git diff --check
+rtk git status --short --branch
+```
+
+- Restore: exit 0; 9 projects, 0 errors, 0 warnings.
+- Release build: exit 0; 9 projects, 0 errors, 0 warnings.
+- Core tests: exit 0; 225 passed, 0 failed, 0 skipped, 0 warnings.
+- Storage tests: exit 0; 88 passed, 0 failed, 0 skipped, 0 warnings.
+- Query tests: exit 0; 273 passed, 0 failed, 0 skipped, 0 warnings.
+- Integration tests: exit 0; 669 passed, 0 failed, 0 skipped, 0 warnings.
+- Format verification: exit 0.
+- `rtk git diff --check`: exit 0.
+- `rtk git status --short --branch`: exit 0 and clean.
+
+The final Sol/max review identified an Important uncancellable quadratic range
+lookup. Commit `ad52067` replaced it with an immutable `FrozenDictionary`
+lookup, active cancellation propagation, and deterministic tests. The scoped
+Sol/max re-review found that finding `ADDRESSED`, with no new Critical or
+Important findings. This verification record does not claim merge,
+installed-binary deployment, worktree cleanup, or current-branch integration.
 
 ## Previous symbol/source/graph matrix
 
