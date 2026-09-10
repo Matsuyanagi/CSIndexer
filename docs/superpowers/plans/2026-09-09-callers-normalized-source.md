@@ -126,7 +126,9 @@ public sealed class NormalizedSourceDocument
 {
     public string Text { get; }
     public byte[] Hash { get; }
-    public NormalizedSourceRange GetRange(SyntaxNode node);
+    public NormalizedSourceRange GetRange(
+        SyntaxNode node,
+        CancellationToken cancellationToken = default);
     public string Slice(NormalizedSourceRange range);
 }
 
@@ -140,7 +142,7 @@ internal static NormalizedSourceDocument SourceNormalizer.NormalizeDocumentForTe
     Action? afterTokenMapped);
 ```
 
-- `GetRange` accepts only nodes from the normalized root's syntax tree, selects the first and last emitted descendant token, excludes a separator inserted before the first token due only to an outside predecessor, and throws `InvalidOperationException` when no real token was emitted.
+- Normalization constructs one immutable, document-owned O(1) token-key-to-span map. `GetRange` accepts only nodes from the normalized root's syntax tree, selects the first and last emitted descendant token, performs at most those two map probes, checks cancellation before lookup work and between the probes, excludes a separator inserted before the first token due only to an outside predecessor, and throws `InvalidOperationException` when no real token was emitted.
 - `Slice` uses `string.AsSpan(range.Start, range.Length).ToString()` after checked nonnegative/positive/end bounds and throws `ArgumentOutOfRangeException` for an invalid caller-supplied range.
 - `SourceNormalizer.Normalize(SyntaxNode)` and `NormalizeDocument(SyntaxNode)` call the same private token-emission loop. No second normalization policy is permitted.
 
@@ -191,6 +193,8 @@ public void NormalizeDocument_CancellationAfterMappedTokenStopsBeforeCompletion(
             afterTokenMapped: source.Cancel));
 }
 ```
+
+Add the range-lookup regressions `NormalizeDocument_GetRangeUsesAtMostTwoTokenMapLookupsForLargeRoot` (large real syntax tree, at most two map probes, and legacy-slice equivalence) and `NormalizeDocument_GetRangeObservesCancellationBetweenTokenLookups` (deterministic cancellation after the first probe, before the second lookup completes).
 
 - [ ] **Step 2: Run the focused tests and record the expected RED**
 

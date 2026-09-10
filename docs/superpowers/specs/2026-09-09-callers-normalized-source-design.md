@@ -236,7 +236,9 @@ public sealed class NormalizedSourceDocument
 {
     public string Text { get; }
     public byte[] Hash { get; }
-    public NormalizedSourceRange GetRange(SyntaxNode node);
+    public NormalizedSourceRange GetRange(
+        SyntaxNode node,
+        CancellationToken cancellationToken = default);
     public string Slice(NormalizedSourceRange range);
 }
 
@@ -244,6 +246,13 @@ public static NormalizedSourceDocument NormalizeDocument(
     SyntaxNode root,
     CancellationToken cancellationToken = default);
 ```
+
+Normalization constructs one immutable, document-owned O(1) token-key-to-span
+map. A range lookup enumerates the node only to select its first and last real
+emitted descendant tokens, then performs at most those two map probes. It checks
+cancellation before lookup work and between the first and last probes. Token
+keys retain syntax-tree identity so foreign trees and distinct tokens cannot
+alias.
 
 For a node with emitted tokens, its normalized range starts at its first
 emitted token, excluding any separator inserted before that token because of
@@ -458,6 +467,12 @@ materialized slice. No additional Roslyn work is performed.
   preserve token text and range correctness.
 - Boundary separators outside a node are excluded from its slice.
 - Cancellation remains observable.
+- `NormalizeDocument_GetRangeUsesAtMostTwoTokenMapLookupsForLargeRoot` proves
+  a large real syntax-tree root uses at most two token-map probes and that its
+  slice still equals legacy normalization.
+- `NormalizeDocument_GetRangeObservesCancellationBetweenTokenLookups`
+  cancels deterministically after the first probe and proves the second lookup
+  does not complete.
 
 ### Extraction and persistence
 

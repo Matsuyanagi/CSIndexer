@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
@@ -17,7 +19,7 @@ internal readonly record struct NormalizedTokenSpan(
 
 public sealed class NormalizedSourceDocument
 {
-    private readonly NormalizedTokenSpan[] _tokenSpans;
+    private readonly FrozenDictionary<NormalizedTokenKey, NormalizedTokenSpan> _tokenSpans;
 
     internal NormalizedSourceDocument(
         string text,
@@ -30,35 +32,47 @@ public sealed class NormalizedSourceDocument
 
         Text = text;
         Hash = hash;
-        _tokenSpans = tokenSpans.ToArray();
+        _tokenSpans = tokenSpans.ToFrozenDictionary(
+            span => new NormalizedTokenKey(span.SyntaxTree, span.OriginalSpan, span.RawKind),
+            static span => span,
+            NormalizedTokenKeyComparer.Instance);
     }
 
     public string Text { get; }
 
     public byte[] Hash { get; }
 
-    public NormalizedSourceRange GetRange(SyntaxNode node)
+    public NormalizedSourceRange GetRange(
+        SyntaxNode node,
+        CancellationToken cancellationToken = default) =>
+        GetRangeCore(node, cancellationToken, afterTokenMapProbe: null);
+
+    internal NormalizedSourceRange GetRangeForTesting(
+        SyntaxNode node,
+        CancellationToken cancellationToken,
+        Action? afterTokenMapProbe) =>
+        GetRangeCore(node, cancellationToken, afterTokenMapProbe);
+
+    private NormalizedSourceRange GetRangeCore(
+        SyntaxNode node,
+        CancellationToken cancellationToken,
+        Action? afterTokenMapProbe)
     {
         ArgumentNullException.ThrowIfNull(node);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        NormalizedTokenSpan? first = null;
-        NormalizedTokenSpan? last = null;
+        SyntaxToken? first = null;
+        SyntaxToken? last = null;
         foreach (var token in node.DescendantTokens())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (token.IsMissing || token.Text.Length == 0)
             {
                 continue;
             }
 
-            var emitted = FindToken(token);
-            if (emitted is null)
-            {
-                throw new InvalidOperationException(
-                    "The node does not belong to the normalized source document.");
-            }
-
-            first ??= emitted;
-            last = emitted;
+            first ??= token;
+            last = token;
         }
 
         if (first is not { } firstToken || last is not { } lastToken)
@@ -67,8 +81,28 @@ public sealed class NormalizedSourceDocument
                 "The node has no emitted token in the normalized source document.");
         }
 
-        var end = lastToken.NormalizedEnd;
-        return new NormalizedSourceRange(firstToken.NormalizedStart, checked(end - firstToken.NormalizedStart));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!TryGetTokenSpan(firstToken, afterTokenMapProbe, out var firstSpan))
+        {
+            throw new InvalidOperationException(
+                "The node does not belong to the normalized source document.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var lastSpan = firstSpan;
+        if (!firstToken.Equals(lastToken))
+        {
+            if (!TryGetTokenSpan(lastToken, afterTokenMapProbe, out lastSpan))
+            {
+                throw new InvalidOperationException(
+                    "The node does not belong to the normalized source document.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var end = lastSpan.NormalizedEnd;
+        return new NormalizedSourceRange(firstSpan.NormalizedStart, checked(end - firstSpan.NormalizedStart));
     }
 
     public string Slice(NormalizedSourceRange range)
@@ -101,18 +135,36 @@ public sealed class NormalizedSourceDocument
         return Text.AsSpan(range.Start, range.Length).ToString();
     }
 
-    private NormalizedTokenSpan? FindToken(SyntaxToken token)
+    private bool TryGetTokenSpan(
+        SyntaxToken token,
+        Action? afterTokenMapProbe,
+        out NormalizedTokenSpan span)
     {
-        foreach (var candidate in _tokenSpans)
-        {
-            if (ReferenceEquals(candidate.SyntaxTree, token.SyntaxTree) &&
-                candidate.OriginalSpan == token.Span &&
-                candidate.RawKind == token.RawKind)
-            {
-                return candidate;
-            }
-        }
+        var found = _tokenSpans.TryGetValue(
+            new NormalizedTokenKey(token.SyntaxTree, token.Span, token.RawKind),
+            out span);
+        afterTokenMapProbe?.Invoke();
+        return found;
+    }
 
-        return null;
+    private readonly record struct NormalizedTokenKey(
+        SyntaxTree? SyntaxTree,
+        TextSpan OriginalSpan,
+        int RawKind);
+
+    private sealed class NormalizedTokenKeyComparer : IEqualityComparer<NormalizedTokenKey>
+    {
+        internal static NormalizedTokenKeyComparer Instance { get; } = new();
+
+        public bool Equals(NormalizedTokenKey left, NormalizedTokenKey right) =>
+            ReferenceEquals(left.SyntaxTree, right.SyntaxTree) &&
+            left.OriginalSpan == right.OriginalSpan &&
+            left.RawKind == right.RawKind;
+
+        public int GetHashCode(NormalizedTokenKey key) => HashCode.Combine(
+            key.SyntaxTree is null ? 0 : RuntimeHelpers.GetHashCode(key.SyntaxTree),
+            key.OriginalSpan.Start,
+            key.OriginalSpan.Length,
+            key.RawKind);
     }
 }

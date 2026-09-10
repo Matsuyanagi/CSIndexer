@@ -225,7 +225,7 @@ class C
         Assert.NotEmpty(nodes);
         foreach (var node in nodes)
         {
-            var range = document.GetRange(node);
+            var range = document.GetRange(node, TestContext.Current.CancellationToken);
 
             Assert.Equal(SourceNormalizer.Normalize(node, TestContext.Current.CancellationToken).Text,
                 document.Slice(range));
@@ -250,10 +250,10 @@ class C
             .ToArray();
 
         Assert.Equal(2, nested.Length);
-        Assert.Equal("A(f)", document.Slice(document.GetRange(nested[0])));
-        Assert.Equal("A(10+20)", document.Slice(document.GetRange(nested[1])));
-        Assert.Equal("B(A(f),A(10+20))", document.Slice(document.GetRange(outer)));
-        Assert.DoesNotContain(';', document.Slice(document.GetRange(outer)));
+        Assert.Equal("A(f)", document.Slice(document.GetRange(nested[0], TestContext.Current.CancellationToken)));
+        Assert.Equal("A(10+20)", document.Slice(document.GetRange(nested[1], TestContext.Current.CancellationToken)));
+        Assert.Equal("B(A(f),A(10+20))", document.Slice(document.GetRange(outer, TestContext.Current.CancellationToken)));
+        Assert.DoesNotContain(';', document.Slice(document.GetRange(outer, TestContext.Current.CancellationToken)));
     }
 
     [Fact]
@@ -283,7 +283,7 @@ class C
         var document = SourceNormalizer.NormalizeDocument(root, TestContext.Current.CancellationToken);
         var invocation = Assert.Single(root.DescendantNodes().OfType<InvocationExpressionSyntax>());
 
-        Assert.Equal("M()", document.Slice(document.GetRange(invocation)));
+        Assert.Equal("M()", document.Slice(document.GetRange(invocation, TestContext.Current.CancellationToken)));
     }
 
     [Fact]
@@ -301,8 +301,8 @@ class C
         var foreignNode = Assert.Single(foreignRoot.DescendantNodes().OfType<MethodDeclarationSyntax>());
         var emptyNode = SyntaxFactory.IdentifierName(SyntaxFactory.MissingToken(SyntaxKind.IdentifierToken));
 
-        Assert.Throws<InvalidOperationException>(() => document.GetRange(foreignNode));
-        Assert.Throws<InvalidOperationException>(() => document.GetRange(emptyNode));
+        Assert.Throws<InvalidOperationException>(() => document.GetRange(foreignNode, TestContext.Current.CancellationToken));
+        Assert.Throws<InvalidOperationException>(() => document.GetRange(emptyNode, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -338,6 +338,60 @@ class C
                 root,
                 source.Token,
                 afterTokenMapped: source.Cancel));
+    }
+
+    [Fact]
+    public void NormalizeDocument_GetRangeUsesAtMostTwoTokenMapLookupsForLargeRoot()
+    {
+        var source = new StringBuilder("class C { void M() {");
+        for (var index = 0; index < 2_000; index++)
+        {
+            source.Append("M").Append(index).Append("();");
+        }
+
+        source.Append("} }");
+        var root = CSharpSyntaxTree.ParseText(
+                source.ToString(),
+                cancellationToken: TestContext.Current.CancellationToken)
+            .GetRoot(TestContext.Current.CancellationToken);
+        var document = SourceNormalizer.NormalizeDocument(root, TestContext.Current.CancellationToken);
+        var probes = 0;
+
+        var range = document.GetRangeForTesting(
+            root,
+            TestContext.Current.CancellationToken,
+            () => probes++);
+
+        Assert.Equal(
+            SourceNormalizer.Normalize(root, TestContext.Current.CancellationToken).Text,
+            document.Slice(range));
+        Assert.InRange(probes, 1, 2);
+    }
+
+    [Fact]
+    public void NormalizeDocument_GetRangeObservesCancellationBetweenTokenLookups()
+    {
+        var root = CSharpSyntaxTree.ParseText(
+                "class C { void M() { First(); Second(); Third(); } }",
+                cancellationToken: TestContext.Current.CancellationToken)
+            .GetRoot(TestContext.Current.CancellationToken);
+        var document = SourceNormalizer.NormalizeDocument(root, TestContext.Current.CancellationToken);
+        using var cancellation = new CancellationTokenSource();
+        var probes = 0;
+
+        Assert.Throws<OperationCanceledException>(() => document.GetRangeForTesting(
+            root,
+            cancellation.Token,
+            () =>
+            {
+                probes++;
+                if (probes == 1)
+                {
+                    cancellation.Cancel();
+                }
+            }));
+
+        Assert.Equal(1, probes);
     }
 
     private static IEnumerable<Microsoft.CodeAnalysis.SyntaxToken> CancelAfterTwoTokens(

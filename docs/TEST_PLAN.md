@@ -100,7 +100,10 @@ and formatter boundaries without changing the project-wide acceptance matrix:
 - `SourceNormalizerTests`: one normalized document per indexed input, equal
   node slices, independent nested invocation ranges, literal/comment behavior,
   UTF-16 code-unit and surrogate-safe range bounds, invalid/foreign/empty range
-  rejection, and cancellation.
+  rejection, cancellation, bounded first/last token-map lookup for a large
+  real syntax tree (`NormalizeDocument_GetRangeUsesAtMostTwoTokenMapLookupsForLargeRoot`),
+  and cancellation between range probes
+  (`NormalizeDocument_GetRangeObservesCancellationBetweenTokenLookups`).
 - `RequestHasherTests`: schema 6 and analysis-cache 4 request identity.
 - `SqliteIndexTests`: version-6 DDL, normalized-source hash/text collision
   integrity, identical-payload deduplication across projects/profiles,
