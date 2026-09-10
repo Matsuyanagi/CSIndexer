@@ -39,10 +39,10 @@
 
 ## Symbol, source, and graph expansion
 
-- Only schema version 5 is supported. There is no automatic migration,
-  compatibility reader, auto-delete, or implicit `--rebuild` for any older or
-  unknown database. Delete/rename the old file or choose a new `--db`, then run
-  `csindex index` explicitly.
+- Only schema version 6 is supported. Schema version 5 and older, plus unknown
+  databases, are rejected; there is no automatic migration, compatibility
+  reader, auto-delete, or implicit `--rebuild`. Delete/rename the old file or
+  choose a new `--db`, then run `csindex index` explicitly.
 - The persisted-path model has one storage root. An ordinary persisted project,
   document, or linked source must share the storage root's Windows drive or UNC
   server/share. A physical C# document on another volume/share is retained in

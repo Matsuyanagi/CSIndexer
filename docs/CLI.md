@@ -1,7 +1,7 @@
 # CLI
 
 > **Current contract:** the final section, "Canonical query interface (schema
-> version 5)", is authoritative for symbol-path grammar, typed conditions,
+> version 6)", is authoritative for symbol-path grammar, typed conditions,
 > command option scope, portable paths, help, and query output. Earlier query
 > examples are retained as implementation history where explicitly marked;
 > the build and indexing instructions remain active.
@@ -76,7 +76,7 @@ MSBuildWorkspaceを起動せず、MSBuildが注入するdocumentを読み込み�
 
 ## Queries
 
-> **Superseded where conflicting:** use the schema-version-5 matrix and grammar
+> **Superseded where conflicting:** use the schema-version-6 matrix and grammar
 > in the final section. This section preserves earlier command examples only.
 
 ```powershell
@@ -97,7 +97,7 @@ csindex overrides "BaseClass::Run()"
 csindex conditions
 ```
 
-共通の出力option（commandごとの受理範囲は後述のschema-version-5 matrixに従う）:
+共通の出力option（commandごとの受理範囲は後述のschema-version-6 matrixに従う）:
 
 - `--db <path>`。省略時はcurrent directoryの`.csindex/index.sqlite`。
 - `--profile <name>`
@@ -182,7 +182,7 @@ csindex callees "Alpha.DescendantCallees::Execute()" --exclude-lambda-calls
 
 ### 非同期解析情報の出力
 
-既存の検索コマンドの結果へ非同期解析情報を追加します。schema version 5では、これとは別に
+既存の検索コマンドの結果へ非同期解析情報を追加します。schema version 6では、これとは別に
 `csindex async tree`が永続化された非同期経路を表示します。`--async-status`は直接の
 `AsyncRole`を対象とし、`symbol list --async-involved`は派生値
 `AsyncInvolvementDepth != null`を対象とします。両方を指定した場合はANDで結合します。
@@ -217,12 +217,12 @@ call行では既存の`[ReferenceKind, ResolutionStatus]`の後へ`[Awaited]`の
 
 The former flat matcher/schema-4 command contract is superseded. Its active
 source-layout and graph guarantees are incorporated into the canonical
-schema-version-5 section below; historical wording remains available in Git
+schema-version-6 section below; historical wording remains available in Git
 history.
 
 ---
 
-## Canonical query interface (schema version 5)
+## Canonical query interface (schema version 6)
 
 ### Quick start
 
@@ -234,10 +234,10 @@ csindex source search --include-literal "CancellationToken"
 csindex callers tree "Game::Player::Run()" --depth 3
 ```
 
-All queries require a schema-version-5 database. If an older database is
-opened, CsIndex leaves it unchanged and reports how to rebuild: delete or
-rename the old file, or select a new `--db` path, and explicitly run
-`csindex index`.
+All queries require a schema-version-6 database. Schema 5 and older databases
+are rejected without migration or compatibility fallback. CsIndex leaves the
+database unchanged and reports how to rebuild: delete or rename the old file,
+or select a new `--db` path, and explicitly run `csindex index`.
 
 ### Symbol-path grammar
 
@@ -378,16 +378,59 @@ An option not present in a row is rejected for that command.
 | `definition <selector>` | `Q + C + require-single + include-overrides` |
 | `definition --at` | `Q + at` only; no root conditions |
 | `references` | `Q + C + exclude-generated + only-generated + require-single + include-overrides` |
-| `callers` | `Q + C + exclude-generated + only-generated + require-single + include-overrides + dispatch + caller-scope` |
+| `callers` | `Q + C + exclude-generated + only-generated + require-single + include-overrides + dispatch + caller-scope + show-source` |
 | `callees` | `Q + C + exclude-generated + only-generated + require-single + include-overrides + exclude-lambda-calls` |
 | `overrides` | `Q + C + require-single`; no `include-overrides` |
 | `async tree` | `Q + C + max-nodes` |
-| `callers tree` | `Q + C + depth + max-nodes` |
+| `callers tree` | `Q + C + depth + max-nodes + show-source` |
 | `conditions` | `db`, `profile`, `output-format`, `output-file`, `help`, `help-verbose`, `verbose`, `base-dir`, `path-style` |
 
 The symbols in the table are option names without their leading `--`. `Q` and
 `C` expand exactly to the groups above; verbose help prints a fully expanded,
 sorted `Accepted options:` list for machine comparison.
+
+`--show-source` is accepted by exactly `symbol find`, `callers`, and
+`callers tree`. It is a flag and therefore `--show-source=<value>` is invalid.
+`references`, `callees`, `overrides`, and `async tree` do not accept it.
+
+### Normalized caller source
+
+These are runnable examples for the complete caller-source scope:
+
+```powershell
+csindex callers "Game::Player::Tick()" --show-source
+csindex callers "Game::Player::Tick()" --show-source --output-format json
+csindex callers tree "Game::Player::Tick()" --show-source
+csindex callers tree "Game::Player::Tick()" --show-source --output-format mermaid
+csindex callers tree "Game::Player::Tick()" --show-source --output-format json
+```
+
+Ordinary `callers --show-source` returns the normalized invocation or object-
+creation expression for each physical call row. Table output appends one TAB
+and a sanitized `normalizedSource` value to the existing call record. JSON adds
+the final `normalizedSource` property to every call; without the flag the
+property is omitted and normalized payload text is not loaded.
+
+`callers tree` keeps one structural caller/callee edge and associates every
+retained physical call site with that edge. The association order is the
+canonical structural-edge order, then document path, original source start,
+original source length, and call ID. Text tree output writes one `@ path:line:column`
+record per site, with a TAB followed by sanitized source. Mermaid keeps one
+edge label containing ordered sites separated by `<br/>`; JSON adds ordered
+`callSites` objects with `id`, `location`, and exact `normalizedSource`.
+Ordinary table and text-tree outputs use `TableTextSanitizer` for TAB, CR/LF,
+NEL, U+2028, and U+2029. Mermaid escapes `&`, quotes, brackets, angle
+brackets, and `|`, converts CR/LF to `<br/>`, and joins sites with `<br/>`.
+JSON preserves the exact stored source UTF-16 slice. The query retains
+`CallSites` metadata even when source is not requested, with null source strings.
+Only the caller-tree no-flag formatter avoids enumerating `CallSites` or
+emitting `callSites`; ordinary callers still enumerate `Calls`, but do not
+hydrate or emit `normalizedSource`.
+
+`symbol find --include` and `--exclude` remain declaration-slice filters:
+each condition is evaluated against the normalized range of one physical
+function declaration, never against the complete document. Multiple include
+terms cannot be distributed across different declarations.
 
 ### Command behavior
 

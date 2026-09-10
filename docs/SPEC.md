@@ -7,7 +7,7 @@
 
 > **Current canonical revision:** Section 34 is the authoritative contract for
 > structured symbol paths, typed query conditions, logical declarations,
-> schema version 5, portable persisted paths, help, ordering, and atomic query
+> schema version 6, portable persisted paths, help, ordering, and atomic query
 > output. It supersedes conflicting details in sections 14, 16, 18, 19, 21,
 > and 33. All unrelated requirements in sections 1-33 remain active.
 
@@ -1037,7 +1037,7 @@ enum ReferenceKind
 
 CLIの`--async-status all|async|sync`はこの派生depthではなく直接`AsyncRole`にだけ適用する。`async`は`AsyncRole != None`、`sync`は`AsyncRole == None`のmethod/lambdaを対象にし、型などの非関数symbolを`sync`へ含めない。既存の`symbol list --async-involved`は`AsyncInvolvementDepth != null`による派生条件のまま維持し、両optionの併用はAND条件とする。
 
-Coreモデルとschema version 5のSQLite列は次の対応とする。
+Coreモデルとschema version 6のSQLite列は次の対応とする。
 
 | Coreモデル | SQLite列 |
 |---|---|
@@ -1524,7 +1524,7 @@ override.
 
 # 19. SQLite設計
 
-Current storage uses schema version 5 and analysis-cache version 3. The exact
+Current storage uses schema version 6 and analysis-cache version 4. The exact
 DDL, including every column, index, foreign key, unique constraint, check
 constraint, default, and delete action, is normative in `docs/DB_SCHEMA.md`.
 
@@ -1535,6 +1535,7 @@ schema_info
 analysis_profiles
 index_runs
 projects
+normalized_sources
 documents
 symbols
 method_parameters
@@ -1782,9 +1783,10 @@ Unknown source layout: <value>. Use single-line or multi-line.
 
 single-lineのstdoutはrecordだけとし、件数summaryはstderrへ出す。`multi-line`はheading、symbol行、`    source: <normalized-source>`行を維持する。single-lineの各fieldとmulti-lineのsignature/sourceは、TAB、CRLF（1個のspace）、CR、LF、U+0085、U+2028、U+2029をASCII spaceへ表示時だけ置換し、各record/source行を1物理行にする。この表示変換はDBの`normalized_source`とhash、source search、JSONの`normalizedSource`を変更してはならない。
 
-Schema version 5 retains the async-analysis fields, persisted async next-hop,
-executable metadata, normalized-source, and graph-query support. Source payload
-is stored on declaration rows as specified in section 34 and `DB_SCHEMA.md`.
+Schema version 6 retains the async-analysis fields, persisted async next-hop,
+executable metadata, shared normalized document payloads, ranges, and
+graph-query support. Source payload is stored once per normalized document as
+specified in section 34 and `DB_SCHEMA.md`.
 
 - symbol JSON: `asyncRole`（flags enumの文字列表現）、`isAsyncInvolved`（depthがnullでないか）、`asyncInvolvementDepth`（nullable整数）
 - call JSON: `asyncUsageKind`（enumの文字列表現）
@@ -2480,7 +2482,7 @@ Cache reused / rebuilt
 
 ## 33.1 共通要件
 
-* schema version 5以外は既存DBを変更せずに拒否する。migration/auto-delete/implicit rebuildは行わず、delete/renameまたは新しい`--db`の後に明示的な`csindex index`を要求する。
+* schema version 6以外（schema 5以下を含む）は既存DBを変更せずに拒否する。migration/auto-delete/implicit rebuildは行わず、delete/renameまたは新しい`--db`の後に明示的な`csindex index`を要求する。
 * 構造解析にはRoslynの構文木、`SemanticModel`、シンボルを使用する。呼び出し、所有、最短経路、継承などの関係は表示名ではなくstable keyとDB上のsymbol IDで保持する。
 * 再帰構造はvisited IDで循環を防止する。深いグラフは再帰呼び出しではなく反復処理で探索する。
 * 解析、正規化、並べ替え、検索、グラフ構築、出力は処理途中でも`CancellationToken`を確認する。
@@ -2599,7 +2601,7 @@ nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界
 
 ## 33.7 スキーマと更新の原子性
 
-schema version 5はlogical path/metadata/async depth-nextを`symbols`へ、physical source location/role/normalized source/hashを`symbol_declarations`へ保存する。analysis-cache versionは3である。正確なDDLは第34章と`docs/DB_SCHEMA.md`を正式定義とする。
+schema version 6はlogical path/metadata/async depth-nextを`symbols`へ、physical source location/roleとnormalized UTF-16 rangesを`symbol_declarations`へ、normalized document payloadを`normalized_sources`へ保存する。analysis-cache versionは4である。正確なDDLは第34章と`docs/DB_SCHEMA.md`を正式定義とする。
 
 更新は1つのSQLite transactionで行い、全symbol row、自己参照、parameter/call/relation/interface binding/conditional symbolを保存して`PRAGMA foreign_key_check`に成功した場合だけcommitする。例外またはcancel時はrollbackして直前のindexを保持する。旧schema、未知schema、`schema_info`のない非空DBはWALやDDLを変更する前に拒否する。
 
@@ -2660,8 +2662,8 @@ schema version 5はlogical path/metadata/async depth-nextを`symbols`へ、physi
 
 # 34. Canonical structured-path and portable-index contract (current)
 
-This section is normative for the current build. Schema version 5 and
-analysis-cache version 3 are required.
+This section is normative for the current build. Schema version 6 and
+analysis-cache version 4 are required.
 
 ## 34.1 Structured symbol-path grammar
 
@@ -2854,7 +2856,8 @@ declaration; passing declarations project to one logical result.
 ## 34.5 Logical symbol and declaration model
 
 `symbols` stores one logical semantic identity. `symbol_declarations` stores
-physical source locations and normalized source. The exact declaration-role
+physical source locations and normalized UTF-16 ranges into the shared
+`normalized_sources` document payload. The exact declaration-role
 domain is:
 
 ```text
@@ -2930,15 +2933,16 @@ is present, in which case a post-filter count other than one returns exit 5.
 and rejects condition-only, lambda/synthetic, initializer, and top-level roots.
 Expansion occurs after root filtering/cardinality and before command work.
 
-## 34.7 Schema version 5 invariants
+## 34.7 Schema version 6 invariants
 
-The exact DDL is `docs/DB_SCHEMA.md`. Version 5 contains:
+The exact DDL is `docs/DB_SCHEMA.md`. Version 6 contains:
 
 ```text
 schema_info
 analysis_profiles
 index_runs
 projects
+normalized_sources
 documents
 symbols
 method_parameters
@@ -2952,8 +2956,10 @@ conditional_symbols_used
 
 Semantic path identity/display components live in dedicated `symbols` columns;
 the removed legacy `fully_qualified_name` and `display_name` columns are not
-part of version 5. Source span/text/hash live in `symbol_declarations`, not the
-logical row. `declaration_role` has a database check constraint for numeric
+part of version 6. `normalized_sources` owns one complete normalized document
+per unique SHA-256/text pair; `documents.normalized_source_id` references it,
+and declarations/calls store only normalized UTF-16 start/length ranges.
+`declaration_role` has a database check constraint for numeric
 values 1, 2, and 3. Logical identity is unique per profile, declaration identity
 is unique per key and location/role, and all call/relation endpoints use logical
 symbol foreign keys.
@@ -2964,8 +2970,27 @@ endpoints used as logical endpoints, and partial self relations. Saving is one
 transaction followed by foreign-key validation; failure rolls back without
 replacing the prior valid snapshot.
 
+Each normalized document is produced once at index time by `SourceNormalizer`.
+Its full normalized text and SHA-256 hash are stored in `normalized_sources`;
+equal hashes are verified with ordinal text equality before a payload is shared.
+Declarations and calls store independent `normalized_start` and
+`normalized_length` ranges. Ranges are UTF-16 code-unit offsets and lengths,
+must be positive and in bounds, and are sliced in C# rather than with SQLite
+`substr`. Declaration extents intentionally overlap for containing methods,
+local functions, and lambdas; each slice still equals the existing per-node
+normalization.
+
+Query hydration loads each distinct referenced document payload only when a
+source-bearing query requests it. No-source paths leave `NormalizedSource`
+null and do not read payload text. Missing documents, payloads, or malformed
+ranges raise an integrity error naming the affected row/document; there is no
+source-file reparse, reconstruction, legacy-column fallback, or SQL substring
+fallback. Existing location formatting is separate and may read the original
+file to translate original UTF-16 offsets into line and column; line/column
+locations are not persisted.
+
 There is no old-schema migration, auto-deletion, or fallback. Querying or
-indexing schema version 4 or older fails before modifying it. `--rebuild` does
+indexing schema version 5 or older fails before modifying it. `--rebuild` does
 not authorize deletion. The recovery is to delete or rename the old database,
 or choose a new `--db` path, and then explicitly run `csindex index`.
 
@@ -3048,3 +3073,37 @@ or malformed path grammar, invalid generic/anonymous/glob/regex/case/style
 input, and forbidden combinations. A required-root zero match and single-root
 ambiguity remain query errors; exit 5 is reserved for the explicit
 `--require-single` contract.
+
+## 34.11 Normalized caller-source contract
+
+`symbol find --include` and `--exclude` match the normalized slice of each
+physical function declaration. Conditions are never evaluated against the
+complete document, and repeated include terms cannot be distributed across
+different declarations. A logical symbol is selected when at least one of its
+physical declarations passes the complete condition set.
+
+`callers --show-source` hydrates the normalized invocation or object-creation
+expression for each physical call row. Table output appends one sanitized
+`normalizedSource` value; JSON appends exact `normalizedSource`. Without the
+flag, normalized source text is not hydrated and `normalizedSource` is omitted.
+
+`callers tree --show-source` retains one structural edge per caller/callee
+pair and associates every eligible physical call site with that edge,
+including retained cycle, cross, and finite-depth edges. Sites are ordered by
+structural edge order, document path, original source start, original source
+length, and call ID. Text tree output writes one sanitized `@ path:line:column`
+line per site. Mermaid uses one escaped edge label with sites joined by
+`<br/>`; JSON adds ordered `callSites` entries containing `id`, exact
+`location`, and exact `normalizedSource`. Ordinary table and text-tree sources
+use `TableTextSanitizer` for TAB, CR/LF, NEL, U+2028, and U+2029. Mermaid
+escapes `&`, quotes, brackets, angle brackets, and `|`, converts CR/LF to
+`<br/>`, and joins sites with `<br/>`; JSON remains lossless. The query retains
+`CallerTreeResult.CallSites` metadata when `ShowSource` is false, with each
+source string null. Only the caller-tree no-flag formatter avoids enumerating
+`CallSites` or emitting `callSites`; ordinary callers still enumerate
+`CallResult.Calls`, but do not hydrate or emit `normalizedSource`. Caller/tree
+selection, ordering, and bytes remain compatible.
+
+The final `--show-source` scope is exactly `symbol find`, `callers`, and
+`callers tree`. It is rejected by `references`, `callees`, `overrides`, and
+`async tree`, and the flag does not accept a value.

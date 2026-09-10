@@ -2,14 +2,14 @@
 
 ## Current Phase
 
-Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-5 index（Tasks 1--14 completed and verified; branch integration pending） / Cross-volume generated compilation inputs（implementation, final review, and post-review fresh gates complete; branch integration and optional installed-binary deployment pending）
+Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 async analysis, symbol/source search, and bounded graphs（completed） / Override-aware method search（completed） / Canonical C# symbol paths, typed search, logical declarations, and portable schema-6 index（Tasks 1--14 completed, verified, and integrated） / Normalized caller-source persistence and output contract（Tasks 1--5 implementation, documentation, full Phase B gates, and scoped commit complete; independent Task 5 review, whole-branch review, post-review fresh gates, and finishing-branch integration choice pending） / Cross-volume generated compilation inputs（implementation, final review, post-review fresh gates, and branch integration complete; optional installed-binary deployment remains separate and pending）
 
 ## Last Completed Work
 
 - .NET 10 Windows CLI、Roslyn、SQLiteの責務分離されたソリューションを作成
 - MSBuildWorkspaceによるProject/Solution入力とAdhocWorkspaceによるDirectory入力を実装
 - 型、メソッド、コンストラクター、ローカル関数、ラムダ、呼び出し、参照、継承関係を抽出
-- SQLite schema version 5、analysis-cache version 3、logical symbol / physical declaration分離、portable root anchor、原子的な更新、破損・非対応DBの非変更拒否を実装
+- SQLite schema version 6、analysis-cache version 4、logical symbol / physical declaration分離、shared normalized document payload、portable root anchor、原子的な更新、破損・非対応DBの非変更拒否を実装
 - 全検索コマンド、table / JSON出力、生成コードフィルターを実装
 - Phase 1/2の自動受け入れテストとCLIプロセス試験を完了
 - Roslynで`AsyncRole`と`AsyncUsageKind`を抽出し、Task/ValueTask/UniTask、UniTaskVoid、非同期ストリーム、await/await foreach/await usingを分類
@@ -27,15 +27,15 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 - Source-definition stable keys now include the owning project key, so same-profile projects with identical assembly/TFM/FQN remain separate while metadata-only symbols stay assembly-scoped.
 - Long-running normalization, extraction ordering, async propagation, source filtering, caller traversal, and output ordering observe in-flight cancellation.
 - Async propagation and reconstruction share source-backed method/lambda eligibility, validate executable/origin state before truncation, and exclude metadata-only awaitable hops; finite caller-tree boundaries retain internal cycle/cross edges.
-- Schema version 5 includes semantic path indexes, logical/declaration uniqueness and role constraints, profile-prefixed indexes, and a partial source-executable index, with PRAGMA and query-plan regression tests.
+- Schema version 6 includes semantic path indexes, logical/declaration uniqueness and role constraints, profile-prefixed indexes, shared normalized document payloads/ranges, and a partial source-executable index, with PRAGMA and query-plan regression tests.
 - Graph-root ambiguity reports deterministic canonical candidates, duplicate names include document path and ID, and global/command help is snapshot-tested against the accepted grammar.
 - Added direct acceptance coverage for nested/all-same-ordinal lambda search, reverse insertion ties, final numeric-ID ordering, duplicate projects, excluded reverse callers, all executable declaration signature kinds, literal variants, corruption, and in-flight cancellation.
-- 承認済みのsymbol/source/graph要件を役割別の永続文書へ統合した。現在は`SPEC.md`第34章を正式仕様、`CLI.md`をコマンド契約、`DB_SCHEMA.md`をschema version 5 DB契約、`DECISIONS.md`を判断履歴、`TEST_PLAN.md`を正式な受け入れmatrixとする。
+- 承認済みのsymbol/source/graph要件を役割別の永続文書へ統合した。現在は`SPEC.md`第34章を正式仕様、`CLI.md`をコマンド契約、`DB_SCHEMA.md`をschema version 6 DB契約、`DECISIONS.md`を判断履歴、`TEST_PLAN.md`を正式な受け入れmatrixとする。
 - 実行可能targetを扱うcommandへ共通の`--kind all|method|lambda`と`--async-status all|async|sync`を追加した。filterはdirect `AsyncRole`とtarget/root解決へだけ適用し、`--async-involved`の派生到達性およびgraph/caller/calleeの二次表示とは区別する。
 - ラムダtarget grammarをflat queryとgraph rootへ共通化し、method overrideを展開した後にkind/direct-async filterを適用する。delegate `Invoke`、event、callback、reflection、runtime flowからlambda call/reference edgeは生成しない。
 - active format optionを`--output-format`へ変更し、`-o` / `--output-file`によるBOMなしUTF-8の同一formatter payload出力を実装した。same-directory temporary file、成功時commit、失敗/cancel時cleanup、DB path同一拒否を含む。
 - source tableに既定`single-line`の固定record schemaと`multi-line`互換layoutを追加した。table表示だけでTAB、CRLF、CR、LF、U+0085、U+2028、U+2029をASCII spaceへsanitizeし、DB/hash/search/JSONはlosslessに保持する。
-- zero-width array-rank tokenを正規化およびseparator判定から除外した。現在はschema version 5 / `AnalysisCacheVersion = 3`で旧display path、rooted path、anonymous marker、split partial identityを含むcache reuseを防ぐ。旧DBは暗黙rebuildせず非変更で拒否する。
+- zero-width array-rank tokenを正規化およびseparator判定から除外した。現在はschema version 6 / `AnalysisCacheVersion = 4`で旧display path、rooted path、anonymous marker、split partial identityを含むcache reuseを防ぐ。旧DBは暗黙rebuildせず非変更で拒否する。
 - Added canonical csharp/explicit parsing and formatting, complete source-callable special segments, semantic identity ordering, typed condition compilation, root-first command orchestration, one-logical/two-declaration partial persistence, portable standard/custom DB relocation, read-only `--base-dir`, and absolute/relative path presentation.
 - Added terminal concise/verbose help for global and every recognized command; `--help --verbose` and `--help-verbose` are byte-identical and dependency-free after option-scope validation.
 - Replaced unbounded per-ID and per-search-seed SQLite parameter expansion with
@@ -50,19 +50,20 @@ Phase 1（部分再解析を除く実用版） / Phase 2（完了） / Phase 4 a
 
 ## Currently Implementing
 
-- No feature implementation remains on this branch. Integration and any
-  installed-binary deployment are intentionally separate user choices.
+- Normalized caller-source Tasks 1--5 implementation, documentation, and full
+  Phase B gates are complete. Independent Task 5 review, whole-branch review,
+  post-review fresh gates, and finishing-branch integration choice remain
+  pending.
 
 ## Next Actions
 
-- Choose how to integrate `codex/cross-volume-generated-documents`.
-- If desired after integration, separately build and replace the installed
-  `C:\DosFree\csindex\csindex.exe`; it was not modified during implementation or
-  verification.
-
-1. 検証済みfeature branchのintegration方法を選択
-2. 入力変更時のプロジェクト単位再解析と参照元プロジェクトの無効化を実装
-3. Phase 3のUnityアセンブリ復元へ着手
+1. Complete the independent Task 5 review and fix loop.
+2. Run the post-review fresh gates for the reviewed branch.
+3. Use the finishing-branch workflow to choose current-branch integration and,
+   separately if desired, installed-binary deployment; the installed
+   `C:\DosFree\csindex\csindex.exe` remains untouched.
+4. Longer-term: implement project-level reanalysis and dependent-project
+   invalidation when inputs change, then begin Phase 3 Unity assembly recovery.
 
 ## Build Status
 
@@ -90,6 +91,32 @@ Task 3 pre-review full-solution acceptance verification:
 
 The prior Task 14 full-suite record was 1,179 tests; the fresh Task 3 run adds
 the compilation-only generated-input coverage.
+
+## Task 5 Phase A (2026-09-10)
+
+This is a documentation-only checkpoint for normalized document payloads and
+caller source. The six active documents are `CLI.md`, `DB_SCHEMA.md`,
+`SPEC.md`, `IMPLEMENTATION_STATUS.md`, `TEST_PLAN.md`, and the one bounded
+consistency correction in `KNOWN_LIMITATIONS.md`. The BASE project/status and
+test-plan records remain in this file and `TEST_PLAN.md`; current schema 6 /
+analysis-cache 4 wording and the query-retained caller `CallSites` metadata
+contract are updated in the focused sections.
+
+No source or test files changed. Phase A scans and self-review are recorded in
+the ignored Task 5 report/ledger. Phase B results are recorded below; independent
+Task 5 review, whole-branch review, post-review fresh gates, finishing-branch
+choice, and current-branch integration remain intentionally pending.
+
+## Task 5 Phase B verification (2026-09-10)
+
+- Restore: elevated rerun exit 0; 9 projects, 0 errors, 0 warnings.
+- Release build: elevated rerun exit 0; 9 projects, 0 errors, 0 warnings.
+- Core tests: exit 0; 223 passed, 0 failed, 0 skipped, 0 warnings.
+- Storage tests: exit 0; 88 passed, 0 failed, 0 skipped, 0 warnings.
+- Query tests: exit 0; 273 passed, 0 failed, 0 skipped, 0 warnings.
+- Integration tests: exit 0; 669 passed, 0 failed, 0 skipped, 0 warnings.
+- Format verification: exit 0; 0 files formatted correctly.
+- Diff check: exit 0; no whitespace errors.
 
 ## Cross-volume generated compilation-input verification
 
@@ -156,12 +183,16 @@ not the post-review final gates.
 - src/CsIndex.Core/Analysis/AsyncOperationClassifier.cs
 - src/CsIndex.Core/Analysis/AsyncInvolvementPropagator.cs
 - src/CsIndex.Core/Analysis/SourceNormalizer.cs
+- src/CsIndex.Core/Analysis/NormalizedSourceDocument.cs
 - src/CsIndex.Core/Caching/RequestHasher.cs
+- src/CsIndex.Core/Model/IndexData.cs
 - src/CsIndex.Core/Input/WorkspaceLoader.cs
 - src/CsIndex.Storage/SqliteIndex.cs
+- src/CsIndex.Storage/QueryRepository.cs
 - src/CsIndex.Storage/Schema/SchemaMigrator.cs
 - src/CsIndex.Query/SemanticQueryService.cs
 - src/CsIndex.Query/AsyncPathResolver.cs
+- src/CsIndex.Query/QueryResults.cs
 - src/CsIndex.Query/CallerTreeBuilder.cs
 - src/CsIndex.Query/Symbols/SymbolPathParser.cs
 - src/CsIndex.Query/Symbols/SymbolPathResolver.cs
@@ -186,6 +217,8 @@ not the post-review final gates.
 - tests/CsIndex.Core.Tests/RequestHasherTests.cs
 - tests/CsIndex.Core.Tests/ProjectScopedSourceSymbolIdentityTests.cs
 - tests/CsIndex.Core.Tests/SemanticExtractorCancellationTests.cs
+- tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
+- tests/CsIndex.Core.Tests/RequestHasherTests.cs
 - tests/CsIndex.IntegrationTests/CliCommandTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
 - tests/CsIndex.IntegrationTests/FunctionTargetFilterTests.cs
@@ -194,6 +227,9 @@ not the post-review final gates.
 - tests/CsIndex.IntegrationTests/GraphQueryTests.cs
 - tests/CsIndex.IntegrationTests/SemanticIndexFixture.cs
 - tests/CsIndex.IntegrationTests/ProjectScopedSourceSymbolPersistenceTests.cs
+- tests/CsIndex.IntegrationTests/CallerSourceOutputTests.cs
+- tests/CsIndex.IntegrationTests/CallerTreeSourceOutputTests.cs
+- tests/CsIndex.Storage.Tests/SqliteIndexTests.cs
 - tests/CsIndex.Query.Tests/CallerTreeBuilderTests.cs
 - docs/SPEC.md
 - docs/CLI.md
@@ -205,7 +241,9 @@ not the post-review final gates.
 
 ## Database Schema Version
 
-- 5（`AnalysisCacheVersion = 3`）。旧versionはmigration/auto-delete/implicit rebuildを行わず、delete/renameまたは新しい`--db`を選択して明示的に`csindex index`するよう案内する。
+- 6（`AnalysisCacheVersion = 4`）。schema 5 and older, plus unknown databases,
+  are rejected without migration/auto-delete/implicit rebuild; delete/rename or
+  choose a new `--db` and explicitly run `csindex index`.
 
 ## CLI Commands Implemented
 
@@ -224,6 +262,12 @@ not the post-review final gates.
 - `conditions`
 
 `index`以外の結果payload commandは`--output-format`と`-o` / `--output-file`を受理する。`--kind`と`--async-status`は実行可能target/rootを持つcommandだけに適用し、`conditions`と`index`は拒否する。
+`--show-source` is accepted only by `symbol find`, `callers`, and `callers tree`.
+When it is absent, the caller-tree query still retains
+`CallerTreeResult.CallSites` metadata with null source strings. Only the
+caller-tree no-flag formatter avoids enumerating `CallSites` or emitting
+`callSites`; ordinary callers still enumerate `CallResult.Calls`, but do not
+hydrate or emit `normalizedSource`.
 
 ## Pending Decisions
 

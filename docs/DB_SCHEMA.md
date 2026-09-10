@@ -1,13 +1,13 @@
 # SQLite schema
 
-This is the exact active schema for CsIndex. `SchemaMigrator.CurrentVersion` and `RequestHasher.SchemaVersion` are 5; `RequestHasher.AnalysisCacheVersion` is 3.
+This is the exact active schema for CsIndex. `SchemaMigrator.CurrentVersion` and `RequestHasher.SchemaVersion` are 6; `RequestHasher.AnalysisCacheVersion` is 4.
 
 ## Compatibility and creation
 
 - A new, otherwise empty database is placed in WAL mode and the complete schema is created in one transaction.
-- An existing database must have exactly one `schema_info` row whose value is 5.
+- An existing database must have exactly one `schema_info` row whose value is 6.
 - A database with no `schema_info` but any user table/index/view/trigger is incompatible.
-- There is no migration, fallback, auto-delete, or implicit rebuild. A version-4-or-older query or index attempt leaves that database unchanged.
+- There is no migration, compatibility fallback, auto-delete, or implicit rebuild. Schema 5 and older query or index attempts leave the database unchanged.
 - The recovery message is actionable: delete or rename the old database, or choose a new `--db` path, then run `csindex index` explicitly. `--rebuild` does not authorize incompatible-schema deletion.
 - Foreign-key enforcement is enabled for every opened connection. Existing schema compatibility is checked before WAL is enabled.
 
@@ -22,7 +22,7 @@ This is the exact active schema for CsIndex. `SchemaMigrator.CurrentVersion` and
 
 ## Logical symbols and declarations
 
-`symbols` contains logical semantic rows. It deliberately has no legacy `fully_qualified_name`, `display_name`, source-span, or normalized-source columns. Semantic display/identity components are stored separately. Physical source payload lives in `symbol_declarations`.
+`symbols` contains logical semantic rows. It deliberately has no legacy `fully_qualified_name`, `display_name`, source-span, or normalized-source columns. Semantic display/identity components are stored separately. The complete normalized document payload lives in `normalized_sources`; declarations and calls retain only ranges into that payload.
 
 The declaration-role encoding is exact:
 
@@ -34,16 +34,16 @@ The declaration-role encoding is exact:
 
 The database check constraint accepts only 1, 2, or 3. A logical partial pair has one `symbols` row and two declaration rows. `preferred_declaration_id` points to the implementation when present, otherwise to the definition or ordinary declaration. A definition-only partial is valid. Calls, candidates, relations, interface bindings, containing/async links, and graph roots all reference logical symbol IDs.
 
-## Exact version-5 DDL
+## Exact version-6 DDL
 
-The block below is copied from `SchemaMigrator.CreateVersionFiveAsync`. It is normative for every column, default, uniqueness constraint, check constraint, foreign key, delete action, partial index, and index column order.
+The block below is copied from `SchemaMigrator.CreateVersionSixAsync`. It is normative for every column, default, uniqueness constraint, check constraint, foreign key, delete action, partial index, and index column order.
 
 ```sql
 CREATE TABLE schema_info (
     version INTEGER NOT NULL
 );
 
-INSERT INTO schema_info(version) VALUES (5);
+INSERT INTO schema_info(version) VALUES (6);
 
 CREATE TABLE analysis_profiles (
     id                    INTEGER PRIMARY KEY,
@@ -88,19 +88,29 @@ CREATE TABLE projects (
       REFERENCES analysis_profiles(id)
 );
 
+CREATE TABLE normalized_sources (
+    id                    INTEGER PRIMARY KEY,
+    normalized_source_hash BLOB NOT NULL UNIQUE,
+    normalized_source     TEXT NOT NULL
+);
+
 CREATE TABLE documents (
     id                    INTEGER PRIMARY KEY,
     project_id            INTEGER NOT NULL,
     normalized_path       TEXT NOT NULL,
     content_hash          BLOB NOT NULL,
     semantic_hash         BLOB,
+    normalized_source_id  INTEGER NOT NULL,
     is_generated          INTEGER NOT NULL DEFAULT 0,
     generation_kind       INTEGER NOT NULL DEFAULT 0,
 
     UNIQUE(project_id, normalized_path),
 
     FOREIGN KEY(project_id)
-      REFERENCES projects(id) ON DELETE CASCADE
+      REFERENCES projects(id) ON DELETE CASCADE,
+
+    FOREIGN KEY(normalized_source_id)
+      REFERENCES normalized_sources(id)
 );
 
 CREATE TABLE symbols (
@@ -181,8 +191,8 @@ CREATE TABLE symbol_declarations (
     declaration_role      INTEGER NOT NULL CHECK (declaration_role IN (1, 2, 3)),
     source_start           INTEGER NOT NULL,
     source_length         INTEGER NOT NULL,
-    normalized_source     TEXT NOT NULL,
-    normalized_source_hash BLOB NOT NULL,
+    normalized_start      INTEGER NOT NULL,
+    normalized_length     INTEGER NOT NULL,
     is_generated          INTEGER NOT NULL,
 
     UNIQUE(symbol_id, document_id, source_start, source_length, declaration_role),
@@ -208,6 +218,8 @@ CREATE TABLE calls (
     document_id            INTEGER NOT NULL,
     source_start           INTEGER NOT NULL,
     source_length          INTEGER NOT NULL,
+    normalized_start      INTEGER NOT NULL,
+    normalized_length     INTEGER NOT NULL,
     unresolved_name        TEXT,
     receiver_type_key      TEXT,
 
@@ -342,6 +354,9 @@ ON symbol_declarations(symbol_id);
 CREATE INDEX ix_symbol_declarations_document_location_role
 ON symbol_declarations(document_id, source_start, source_length, declaration_role);
 
+CREATE INDEX ix_documents_normalized_source
+ON documents(normalized_source_id);
+
 CREATE INDEX ix_calls_callee
 ON calls(callee_definition_id);
 
@@ -363,9 +378,22 @@ ON interface_method_bindings(analysis_profile_id, implementing_type_id);
 
 ## Save-time consistency and atomicity
 
-Before replacement, snapshot validation requires canonical relative run/project/document paths, one profile-scoped stable key per logical symbol, valid declaration keys/roles/locations, a valid preferred declaration owned by the same logical symbol, logical call/relation endpoints, and no partial self relation. Invalid snapshots are rejected.
+`normalized_sources` is content-addressed by SHA-256. A document's normalized
+text and hash are inserted once and identical normalized documents may share one
+payload row. `INSERT OR IGNORE` is followed by an ordinal text comparison; a
+same-hash, unequal-text row is an integrity failure rather than an alias.
 
-A save writes the run, projects, documents, logical symbols, parameters, declarations, calls/candidates, relations, interface bindings, and conditional-symbol usage in one transaction. Deferred numeric links such as containing, async-next, callee, and preferred-declaration IDs are resolved against persisted logical/declaration maps. `PRAGMA foreign_key_check` must succeed before commit. Failure or cancellation rolls back and preserves the previous valid index.
+Before replacement, snapshot validation requires canonical relative run/project/document paths, one profile-scoped stable key per logical symbol, valid declaration keys/roles/locations, a valid preferred declaration owned by the same logical symbol, logical call/relation endpoints, and no partial self relation. It also requires every document hash to equal SHA-256 of its normalized text, every declaration and call range to be nonnegative with positive length and to fit within its referenced normalized document, and every referenced document to exist. Invalid snapshots are rejected.
+
+A save writes the run, projects, normalized payloads, documents, logical symbols, parameters, declarations, calls/candidates, relations, interface bindings, and conditional-symbol usage in one transaction. Deferred numeric links such as containing, async-next, callee, and preferred-declaration IDs are resolved against persisted logical/declaration maps. After replacing profile data, only normalized-source rows not referenced by any document are deleted. `PRAGMA foreign_key_check` must succeed before commit. Failure or cancellation, including orphan cleanup failure, rolls back and preserves the previous valid index.
+
+`symbol_declarations.normalized_source` and
+`symbol_declarations.normalized_source_hash` were removed in version 6. There
+is no declaration-level text/hash compatibility column, compatibility reader,
+dual-write path, or source-file fallback. Source ranges use .NET string
+indexing: UTF-16 code-unit offsets and lengths. Query hydration and declaration
+or call materialization bounds-check and slice in C#; SQLite `substr` is not
+used.
 
 ## Inspection reference
 
@@ -373,10 +401,18 @@ Useful read-only checks for a fresh database are:
 
 ```sql
 SELECT version FROM schema_info;
+PRAGMA table_info(normalized_sources);
+PRAGMA table_info(documents);
 PRAGMA table_info(symbols);
 PRAGMA table_info(symbol_declarations);
+PRAGMA table_info(calls);
+PRAGMA foreign_key_list(documents);
 PRAGMA foreign_key_list(symbol_declarations);
+PRAGMA foreign_key_list(calls);
+PRAGMA index_list(normalized_sources);
+PRAGMA index_list(documents);
 PRAGMA index_list(symbols);
 PRAGMA index_list(symbol_declarations);
+PRAGMA index_list(calls);
 SELECT input_root, index_root_anchor FROM index_runs;
 ```

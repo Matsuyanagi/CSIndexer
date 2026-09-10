@@ -63,7 +63,7 @@ separate source-enumerator route and does not load MSBuild-injected documents.
 - 所有者分離: async lambda/local functionを独立した起点depth 0として扱い、ネストしたoperationのロールやdepthが外側メソッドへ漏れないことを確認する。field/property initializer lambda内のローカル変数初期化子をsynthetic initializerと誤認せず、`ContainsAwait`と呼び出し辺をlambda所有にするケースを含める。
 - 呼び出し利用方法: `AsyncUsageKind`の`Awaited`、`Forwarded`、`Discarded`、`Stored`、`Passed`、`Unobserved`と、該当なしの`None`を確認する。lambda/local-function所有者境界の外側にある代入・引数文脈を継承しないケース、`await LeafAsync().ConfigureAwait(false)`で内側呼び出しが`Awaited`を優先する競合祖先ケース、同期呼び出しの代入が`None`になるawaitability gateを明示的に検証する。
 - 伝播: chain、自己/相互循環、非同期起点へつながらない循環、複数起点/複数経路の最短距離、呼び出し元方向だけの伝播を確認する。非同期起点からのみ呼ばれる同期calleeは非関与のままとする。
-- 永続化: schema/request version 5、analysis-cache version 3、`async_role`、`async_involvement_depth`、`async_next_symbol_id`、`async_usage_kind`の保存とDB-only復元を確認する。version mismatchでfail-fastし、version 4以前を含む既存DBのテーブル、行、journal modeを変更しないことを確認する。`schema_info`のない非空の未認識DBも、marker行を保持し、CsIndex tableを追加せず、journal modeを変更しないことを確認する。
+- 永続化: schema/request version 6、analysis-cache version 4、`async_role`、`async_involvement_depth`、`async_next_symbol_id`、`async_usage_kind`の保存とDB-only復元を確認する。version mismatchでfail-fastし、version 5以前を含む既存DBのテーブル、行、journal modeを変更しないことを確認する。`schema_info`のない非空の未認識DBも、marker行を保持し、CsIndex tableを追加せず、journal modeを変更しないことを確認する。
 - CLI: symbol/call JSON propertyと、非同期情報があるsymbolだけのtable suffix、callの`[AsyncUsageKind]`を`Console.Out`捕捉で確認する。
 
 Status: 完了。Core、Storage、Integrationの自動テストで上記を検証済み。
@@ -73,9 +73,9 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
 - Core extraction: verify nullable `symbols.type_kind` values and
   `interface_method_bindings` for explicit, implicit, inherited, abstract,
   default-interface, partial-type, and repeated-interface-path cases.
-- Storage: verify schema/request-hash version 5, the binding table's primary
+- Storage: verify schema/request-hash version 6 and analysis-cache version 4, the binding table's primary
   key and foreign keys, both binding indexes, transactional persistence, and
-  DB-only reconstruction. Verify that a version 4 database is rejected
+  DB-only reconstruction. Verify that a version 5-or-older database is rejected
   without modifying its schema objects, rows, or journal mode.
 - Query semantics: verify exact behavior when the option is absent; interface
   expansion rooted at `IPlayable::Play()`; descendant-only concrete expansion
@@ -91,6 +91,53 @@ Status: 完了。Core、Storage、Integrationの自動テストで上記を検�
   exact invalid-argument message for type-only queries; and verify rejection
   by unsupported commands.
 
+## Normalized document and caller-source acceptance (Task 5)
+
+The active persistence contract is schema version 6 with analysis-cache version
+4. These focused classes cover the normalized-document payload, range, query,
+and formatter boundaries without changing the project-wide acceptance matrix:
+
+- `SourceNormalizerTests`: one normalized document per indexed input, equal
+  node slices, independent nested invocation ranges, literal/comment behavior,
+  UTF-16 code-unit and surrogate-safe range bounds, invalid/foreign/empty range
+  rejection, and cancellation.
+- `RequestHasherTests`: schema 6 and analysis-cache 4 request identity.
+- `SqliteIndexTests`: version-6 DDL, normalized-source hash/text collision
+  integrity, identical-payload deduplication across projects/profiles,
+  orphan-payload cleanup, transactional rollback, distinct-payload hydration,
+  and UTF-16 range slicing.
+- `SymbolSourceQueryTests`: declaration-slice filter isolation and source-query
+  selection semantics.
+- `CallerSourceOutputTests`: independent nested invocation/object-creation
+  slices, DB-only hydration after file replacement, table sanitization, exact
+  JSON source, and no-flag omission/payload-read behavior.
+- `CallerTreeSourceOutputTests`: physical-site retention and ordering, cycle /
+  cross-edge, candidate-only, depth/max-node, and generated-filter behavior,
+  tree/Mermaid/JSON formatting, exact source/control escaping, cancellation,
+  and no-flag retention of `CallSites` metadata with null source strings while
+  no-flag formatter paths do not enumerate or emit it.
+- `CliSymbolPathOptionMatrixTests` and `VerboseHelpTests`: exact
+  `--show-source` scope and help/option rejection contract.
+- Existing Task 1-4 command families remain active in the canonical matrix:
+  `SymbolPathResolverTests`, `SymbolSourceQueryTests`,
+  `CallerTreeBuilderTests`, `GraphQueryTests`, `OutputFormatterTests`,
+  `RootSelectionOrchestrationTests`, and `PortableIndexAcceptanceTests`,
+  together with the extraction, declaration, range, and cancellation suites.
+
+The Phase A focused commands were:
+
+```powershell
+rtk dotnet test tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SourceNormalizerTests|FullyQualifiedName~RequestHasherTests"
+rtk dotnet test tests\CsIndex.Storage.Tests\CsIndex.Storage.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SqliteIndexTests"
+rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallerSourceOutputTests|FullyQualifiedName~CallerTreeSourceOutputTests|FullyQualifiedName~CliSymbolPathOptionMatrixTests|FullyQualifiedName~VerboseHelpTests"
+```
+
+On 2026-09-10 these retained Phase A results were Core 23, Storage 39, and
+Integration 91 passed, each with zero warnings. The controller correction round
+changed documentation only; no code or test files changed, so these results
+remain the applicable focused evidence. The DDL equality, consistency scans,
+placeholder scan, and diff check are recorded in the ignored Task 5 report.
+
 ## Previous symbol/source/graph matrix
 
 The obsolete flat-matcher and schema-4 mapping has been retired from the
@@ -99,7 +146,7 @@ available in Git history. Current behavior is mapped below.
 
 ---
 
-## Current schema-5 canonical acceptance matrix
+## Current schema-6 canonical acceptance matrix
 
 Every row below is active. A passing aggregate run does not substitute for the
 focused suites named in the row.
@@ -112,7 +159,7 @@ focused suites named in the row.
 | 22.4 callable and partial identity | every included/excluded source callable, special/synthetic markers, immediate-owner anonymous ordinals, one partial logical row/two role rows/preferred implementation, logical call/relation endpoints | `CallablePathExtractionTests`; `ExecutableSymbolExtractionTests`; `LogicalDeclarationExtractionTests`; `SchemaFiveLogicalSymbolTests`; `RootSelectionOrchestrationTests` |
 | 22.5 typed conditions | mixed glob/literal/regex, independent case categories, hierarchy/file/method/source semantics, bounded regex failure, OR/AND composition, one-declaration scope and partial projection | `TypedConditionCompilerTests`; `StructuralGlobMatcherTests`; `SourceTextFilterTests`; `TypedSearchAcceptanceTests` |
 | 22.6 command matrix and traversal | every allowed/forbidden option, exact selection minimums, definition-at isolation, filters before logical cardinality, root-only traversal semantics, exact override expansion, initializer/top-level eligibility | `CliSymbolPathOptionMatrixTests`; `RootSelectionOrchestrationTests`; `CliCommandTests`; `TypedSearchAcceptanceTests` |
-| 22.7 portable paths and schema | default/custom anchor, zero rooted persisted paths, linked `../`, same-volume/share preflight, relocation/base override, path styles/at-location, non-mutating schema-4 rejection, actionable rebuild guidance | `IndexPathResolverTests`; `PortablePathPersistenceTests`; `PortablePathOutputTests`; `SchemaFiveLogicalSymbolTests`; `PortableIndexAcceptanceTests` |
+| 22.7 portable paths and schema | default/custom anchor, zero rooted persisted paths, linked `../`, same-volume/share preflight, relocation/base override, path styles/at-location, non-mutating schema-5-or-older rejection, actionable rebuild guidance | `IndexPathResolverTests`; `PortablePathPersistenceTests`; `PortablePathOutputTests`; `SchemaFiveLogicalSymbolTests`; `PortableIndexAcceptanceTests` |
 | 22.8 ordering, help, output safety | semantic order invariant across presentation/base/case/format, parent-first trees and role order, all normal/verbose help scopes, identical verbose spellings, terminal dependency-free help, atomic file/cancellation/failure behavior | `SymbolCanonicalComparerTests`; `VerboseHelpTests`; `SymbolPathOutputAcceptanceTests`; `OutputFormatterTests`; `PortableIndexAcceptanceTests`; `CliCommandTests` |
 
 ### Active negative contract
@@ -133,7 +180,7 @@ focused suites named in the row.
 - Output formatting, cancellation, flush, replace, database, and path failures
   must preserve an existing destination and remove owned temporary files.
 
-### Task 14 focused verification record
+### Task 14 focused verification record (historical schema-5 observations)
 
 Fresh results on 2026-09-01:
 
