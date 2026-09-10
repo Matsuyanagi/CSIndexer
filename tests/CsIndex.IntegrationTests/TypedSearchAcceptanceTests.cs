@@ -105,7 +105,7 @@ public sealed class TypedSearchAcceptanceTests(CSharpSymbolPathAcceptanceFixture
             [
                 "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
                 .. QueryOptionFamilies, "require-single", "include-overrides", "exclude-generated", "only-generated",
-                "dispatch", "caller-scope",
+                "dispatch", "caller-scope", "show-source",
             ]),
         new(
             "callees",
@@ -135,7 +135,7 @@ public sealed class TypedSearchAcceptanceTests(CSharpSymbolPathAcceptanceFixture
             ["callers", "tree"],
             [
                 "db", "profile", "output-format", "output-file", "help", "help-verbose", "verbose",
-                .. QueryOptionFamilies, "depth", "max-nodes",
+                .. QueryOptionFamilies, "depth", "max-nodes", "show-source",
             ]),
         new(
             "definition --at",
