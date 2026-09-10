@@ -217,8 +217,6 @@ not the post-review final gates.
 - tests/CsIndex.Core.Tests/RequestHasherTests.cs
 - tests/CsIndex.Core.Tests/ProjectScopedSourceSymbolIdentityTests.cs
 - tests/CsIndex.Core.Tests/SemanticExtractorCancellationTests.cs
-- tests/CsIndex.Core.Tests/SourceNormalizerTests.cs
-- tests/CsIndex.Core.Tests/RequestHasherTests.cs
 - tests/CsIndex.IntegrationTests/CliCommandTests.cs
 - tests/CsIndex.IntegrationTests/OutputFormatterTests.cs
 - tests/CsIndex.IntegrationTests/FunctionTargetFilterTests.cs

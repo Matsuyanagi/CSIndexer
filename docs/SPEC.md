@@ -1548,11 +1548,14 @@ conditional_symbols_used
 ```
 
 `symbols` is a logical semantic table with structured path identity/display
-components. Physical source location, normalized source/hash, generated state,
-and the typed `ordinary | partial-definition | partial-implementation` role
-are stored in `symbol_declarations`. The preferred declaration is the partial
-implementation when available. Calls, relations, interface bindings,
-containment, and async links reference logical symbol IDs.
+components. Physical source location, generated state, and the typed
+`ordinary | partial-definition | partial-implementation` role are stored in
+`symbol_declarations`. The full normalized document text/hash is stored once in
+`normalized_sources`; each `documents.normalized_source_id` references that
+payload, and declarations and calls retain normalized UTF-16 start/length
+ranges into it. The preferred declaration is the partial implementation when
+available. Calls, relations, interface bindings, containment, and async links
+reference logical symbol IDs.
 
 `index_runs.input_root` is `.`, and `index_root_anchor` is relative from the
 database directory to the one storage root. Project/document/source-derived
@@ -2601,7 +2604,7 @@ nodeとedgeはIDで一意化し、cycleでも停止する。有限のdepth境界
 
 ## 33.7 スキーマと更新の原子性
 
-schema version 6はlogical path/metadata/async depth-nextを`symbols`へ、physical source location/roleとnormalized UTF-16 rangesを`symbol_declarations`へ、normalized document payloadを`normalized_sources`へ保存する。analysis-cache versionは4である。正確なDDLは第34章と`docs/DB_SCHEMA.md`を正式定義とする。
+schema version 6はlogical path/metadata/async depth-nextを`symbols`へ、physical source location/roleとnormalized UTF-16 rangesを`symbol_declarations`へ、callsのnormalized UTF-16 rangesを`calls`へ、normalized document payloadを`normalized_sources`へ保存する。analysis-cache versionは4である。正確なDDLは第34章と`docs/DB_SCHEMA.md`を正式定義とする。
 
 更新は1つのSQLite transactionで行い、全symbol row、自己参照、parameter/call/relation/interface binding/conditional symbolを保存して`PRAGMA foreign_key_check`に成功した場合だけcommitする。例外またはcancel時はrollbackして直前のindexを保持する。旧schema、未知schema、`schema_info`のない非空DBはWALやDDLを変更する前に拒否する。
 

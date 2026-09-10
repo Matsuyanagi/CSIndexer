@@ -116,6 +116,24 @@ and formatter boundaries without changing the project-wide acceptance matrix:
   tree/Mermaid/JSON formatting, exact source/control escaping, cancellation,
   and no-flag retention of `CallSites` metadata with null source strings while
   no-flag formatter paths do not enumerate or emit it.
+- No-flag compatibility is mutation-sensitive: existing `symbol find` table
+  and JSON output, and ordinary `callers` table and JSON output, keep their
+  exact prior bytes, field sets, and record ordering; no `normalizedSource` is
+  hydrated or emitted. Caller-tree tree, Mermaid, and JSON output likewise
+  keep their exact prior bytes, field sets, and node/edge/site ordering. The
+  query may retain `CallerTreeResult.CallSites` metadata with null source
+  strings, but no-flag caller-tree formatters do not enumerate `CallSites`,
+  emit `callSites`, or read normalized payloads; ordinary callers continue to
+  enumerate `CallResult.Calls` for the existing projection without hydrating
+  or emitting `normalizedSource`.
+- Direct evidence includes
+  `CliCommandTests.SingleLineSymbolAndSourceCommandsEmitOnlyFixedSchemaRecordsAndDiagnosticSummaries`,
+  `CliCommandTests.OutputFilePayloadMatchesStdoutAcrossEverySupportedCommandAndFormat`,
+  `OutputFormatterTests`,
+  `CallerSourceOutputTests.FindCallersWithoutShowSourceDoesNotReadPayloadOrAttachText`,
+  `CallerSourceOutputTests.NoFlagTableAndJsonRemainByteIdenticalToTask3BaseSnapshots`,
+  `CallerTreeSourceOutputTests.CallerTreeWithoutShowSourceRetainsMetadataButReadsNoPayloadText`,
+  and `CallerTreeSourceOutputTests.CallerTreeNoFlagFormatsMatchTheExistingProjectionAndOmitCallSites`.
 - `CliSymbolPathOptionMatrixTests` and `VerboseHelpTests`: exact
   `--show-source` scope and help/option rejection contract.
 - Existing Task 1-4 command families remain active in the canonical matrix:
@@ -137,6 +155,32 @@ Integration 91 passed, each with zero warnings. The controller correction round
 changed documentation only; no code or test files changed, so these results
 remain the applicable focused evidence. The DDL equality, consistency scans,
 placeholder scan, and diff check are recorded in the ignored Task 5 report.
+
+## Task 5 Phase B verification record (2026-09-10)
+
+The completed Task 5 Phase B sequence was run in this exact order:
+
+```powershell
+rtk dotnet restore CsIndex.sln
+rtk dotnet build CsIndex.sln -c Release --no-restore
+rtk dotnet test tests\CsIndex.Core.Tests\CsIndex.Core.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Storage.Tests\CsIndex.Storage.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.Query.Tests\CsIndex.Query.Tests.csproj -c Release --no-build --no-restore
+rtk dotnet test tests\CsIndex.IntegrationTests\CsIndex.IntegrationTests.csproj -c Release --no-build --no-restore
+rtk dotnet format CsIndex.sln --verify-no-changes --no-restore
+rtk git diff --check
+rtk git status --short --branch
+```
+
+The restore and Release build completed with exit 0 for 9 projects, 0 errors,
+and 0 warnings (the initial sandbox attempts were retried after the known
+Windows SDK `MSB4184` access denial). Core, Storage, Query, and Integration
+tests completed with exit 0 and respectively 223, 88, 273, and 669 passed;
+each had 0 failures, 0 skips, and 0 warnings. Format verification completed
+with exit 0 and 0 files formatted; diff check and status each completed with
+exit 0. These are the scoped Task 5 Phase B results; independent Task 5 review,
+whole-branch review, whole-branch post-review gates, and finishing-branch
+integration remain pending.
 
 ## Previous symbol/source/graph matrix
 
