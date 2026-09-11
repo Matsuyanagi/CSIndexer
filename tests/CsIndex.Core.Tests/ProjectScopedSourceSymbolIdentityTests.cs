@@ -120,6 +120,42 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
         Assert.DoesNotContain("|project:", objectToString.StableKey, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ExtractAsync_MapsRetargetedErrorTypeCandidateToItsSourceDeclaration()
+    {
+        using var temporary = new TempDirectory();
+        using var workspace = new AdhocWorkspace();
+        var projects = CreateProjectsWithUnresolvedCrossProjectSignature(workspace, temporary);
+        var snapshot = CreateSnapshot(temporary.Path);
+
+        await new SemanticExtractor(new ProjectFingerprintBuilder()).ExtractAsync(
+            projects,
+            snapshot,
+            includeDiagnostics: true,
+            TestContext.Current.CancellationToken);
+
+        var dependencyProjectKey = Assert.Single(
+            snapshot.Projects,
+            project => project.Name == "Dependency").Key;
+        var convert = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.ProjectKey == dependencyProjectKey &&
+            symbol.TypeSimpleName == "Target" &&
+            symbol.Name == "Convert");
+        Assert.NotNull(convert.PreferredDeclarationKey);
+        Assert.Single(snapshot.Declarations.Values, declaration =>
+            declaration.SymbolKey == convert.StableKey);
+
+        var runner = Assert.Single(snapshot.Symbols.Values, symbol =>
+            symbol.TypeSimpleName == "Runner" &&
+            symbol.Name == "Run");
+        var call = Assert.Single(snapshot.Calls, candidate =>
+            candidate.CallerSymbolKey == runner.StableKey &&
+            candidate.ReferenceKind == ReferenceKind.Invocation);
+        Assert.True(
+            call.CalleeDefinitionKey == convert.StableKey ||
+            call.CandidateSymbolKeys.Contains(convert.StableKey, StringComparer.Ordinal));
+    }
+
     private static string NormalizedSource(IndexSnapshot snapshot, SymbolData symbol)
     {
         var declaration = snapshot.Declarations[symbol.PreferredDeclarationKey!];
@@ -206,6 +242,75 @@ public sealed class ProjectScopedSourceSymbolIdentityTests
         [
             workspace.CurrentSolution.GetProject(firstProjectId)!,
             workspace.CurrentSolution.GetProject(secondProjectId)!,
+        ];
+    }
+
+    private static IReadOnlyList<Project> CreateProjectsWithUnresolvedCrossProjectSignature(
+        AdhocWorkspace workspace,
+        TempDirectory temporary)
+    {
+        const string dependencySource = """
+            namespace Dependency;
+
+            public static class Target
+            {
+                public static void Convert(
+                    MissingNode node,
+                    MissingList<MissingNode> items)
+                {
+                }
+            }
+            """;
+        const string consumerSource = """
+            namespace Consumer;
+
+            public sealed class Runner
+            {
+                public void Run()
+                {
+                    Dependency.Target.Convert(default, default);
+                }
+            }
+            """;
+
+        var dependencyProjectPath = temporary.Write("Dependency/Dependency.csproj", "<Project />");
+        var dependencySourcePath = temporary.Write("Dependency/Target.cs", dependencySource);
+        var consumerProjectPath = temporary.Write("Consumer/Consumer.csproj", "<Project />");
+        var consumerSourcePath = temporary.Write("Consumer/Runner.cs", consumerSource);
+        var dependencyProjectId = ProjectId.CreateNewId("Dependency");
+        var consumerProjectId = ProjectId.CreateNewId("Consumer");
+        var dependencyDocumentId = DocumentId.CreateNewId(dependencyProjectId, "Target.cs");
+        var consumerDocumentId = DocumentId.CreateNewId(consumerProjectId, "Runner.cs");
+        MetadataReference[] references = [];
+
+        var solution = workspace.CurrentSolution
+            .AddProject(CreateProjectInfo(
+                dependencyProjectId,
+                "Dependency",
+                dependencyProjectPath,
+                references))
+            .AddProject(CreateProjectInfo(
+                consumerProjectId,
+                "Consumer",
+                consumerProjectPath,
+                references))
+            .AddDocument(
+                dependencyDocumentId,
+                "Target.cs",
+                SourceText.From(dependencySource),
+                filePath: dependencySourcePath)
+            .AddDocument(
+                consumerDocumentId,
+                "Runner.cs",
+                SourceText.From(consumerSource),
+                filePath: consumerSourcePath)
+            .AddProjectReference(consumerProjectId, new ProjectReference(dependencyProjectId));
+        Assert.True(workspace.TryApplyChanges(solution));
+
+        return
+        [
+            workspace.CurrentSolution.GetProject(dependencyProjectId)!,
+            workspace.CurrentSolution.GetProject(consumerProjectId)!,
         ];
     }
 

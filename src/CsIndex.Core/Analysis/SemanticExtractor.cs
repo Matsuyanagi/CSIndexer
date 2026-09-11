@@ -18,6 +18,7 @@ internal enum DeclarationFinalizationPhase
 public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerprintBuilder)
 {
     private readonly Dictionary<SourceSymbolLookupKey, string> _sourceSymbolKeys = [];
+    private readonly Dictionary<SourceSymbolLocationLookupKey, string> _sourceSymbolLocationKeys = [];
     private readonly Dictionary<SyntaxTree, string> _sourceTreeProjectKeys = [];
     private readonly HashSet<SyntaxTree> _compilationOnlySourceTrees =
         new(ReferenceEqualityComparer.Instance);
@@ -99,6 +100,7 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         _canonicalizer = new SymbolCanonicalizer(snapshot.Profile, mappings.GetSourceTreePath);
         _projectStates.Clear();
         _sourceSymbolKeys.Clear();
+        _sourceSymbolLocationKeys.Clear();
         _sourceTreeProjectKeys.Clear();
         _compilationOnlySourceTrees.Clear();
         _declarationProjectionData.Clear();
@@ -1619,13 +1621,69 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         return data.StableKey;
     }
 
-    private void RegisterSourceSymbol(string projectKey, ISymbol symbol, string stableKey) =>
-        _sourceSymbolKeys[new SourceSymbolLookupKey(projectKey, NormalizeSourceSymbol(symbol))] = stableKey;
+    private void RegisterSourceSymbol(string projectKey, ISymbol symbol, string stableKey)
+    {
+        var normalized = NormalizeSourceSymbol(symbol);
+        _sourceSymbolKeys[new SourceSymbolLookupKey(projectKey, normalized)] = stableKey;
+        foreach (var location in normalized.Locations)
+        {
+            if (TryCreateSourceSymbolLocationKey(projectKey, normalized, location, out var locationKey))
+            {
+                _sourceSymbolLocationKeys[locationKey] = stableKey;
+            }
+        }
+    }
 
-    private bool TryGetSourceSymbolKey(string projectKey, ISymbol symbol, out string stableKey) =>
-        _sourceSymbolKeys.TryGetValue(
-            new SourceSymbolLookupKey(projectKey, NormalizeSourceSymbol(symbol)),
-            out stableKey!);
+    private bool TryGetSourceSymbolKey(string projectKey, ISymbol symbol, out string stableKey)
+    {
+        var normalized = NormalizeSourceSymbol(symbol);
+        if (_sourceSymbolKeys.TryGetValue(new SourceSymbolLookupKey(projectKey, normalized), out stableKey!))
+        {
+            return true;
+        }
+
+        foreach (var location in normalized.Locations)
+        {
+            if (TryCreateSourceSymbolLocationKey(projectKey, normalized, location, out var locationKey) &&
+                _sourceSymbolLocationKeys.TryGetValue(locationKey, out stableKey!))
+            {
+                return true;
+            }
+        }
+
+        stableKey = null!;
+        return false;
+    }
+
+    private static bool TryCreateSourceSymbolLocationKey(
+        string projectKey,
+        ISymbol symbol,
+        Location location,
+        out SourceSymbolLocationLookupKey key)
+    {
+        if (!location.IsInSource ||
+            location.SourceTree is not { FilePath.Length: > 0 } sourceTree)
+        {
+            key = default;
+            return false;
+        }
+
+        key = new SourceSymbolLocationLookupKey(
+            projectKey,
+            PathNormalizer.NormalizeForComparison(sourceTree.FilePath),
+            location.SourceSpan.Start,
+            location.SourceSpan.Length,
+            symbol.Kind,
+            symbol.MetadataName,
+            symbol switch
+            {
+                IMethodSymbol method => method.Arity,
+                INamedTypeSymbol type => type.Arity,
+                _ => 0,
+            },
+            symbol is IMethodSymbol methodSymbol ? methodSymbol.Parameters.Length : 0);
+        return true;
+    }
 
     private string? ResolveSourceProjectKey(ISymbol symbol)
     {
@@ -1780,6 +1838,16 @@ public sealed class SemanticExtractor(ProjectFingerprintBuilder projectFingerpri
         symbol is IMethodSymbol method ? _canonicalizer.NormalizeLogicalMethod(method) : symbol.OriginalDefinition;
 
     private readonly record struct SourceSymbolLookupKey(string ProjectKey, ISymbol Symbol);
+
+    private readonly record struct SourceSymbolLocationLookupKey(
+        string ProjectKey,
+        string SourcePath,
+        int SourceStart,
+        int SourceLength,
+        SymbolKind SymbolKind,
+        string MetadataName,
+        int Arity,
+        int ParameterCount);
 
     private void UpsertSymbol(SymbolData symbol)
     {
