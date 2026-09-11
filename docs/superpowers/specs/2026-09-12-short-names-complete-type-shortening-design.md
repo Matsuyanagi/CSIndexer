@@ -172,7 +172,9 @@ The following fields never change under `--short-names`:
 
 Consumers requiring canonical machine-readable type strings must omit
 `--short-names`. JSON shape and property presence do not change merely because
-the option is present.
+the option is present. `fullyQualifiedName` continues to use csharp path style
+regardless of `--symbol-path-style`; only namespace qualification responds to
+`--short-names` in that field.
 
 ## 6. Output-surface consistency
 
