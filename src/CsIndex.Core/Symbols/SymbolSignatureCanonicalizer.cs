@@ -246,7 +246,7 @@ public static class SymbolSignatureCanonicalizer
         NameSyntax display,
         CanonicalTypeSignature pair)
     {
-        var displayComponents = FlattenDisplayName(display);
+        var displayComponents = FlattenDisplayName(display, pair);
         if (displayComponents.Count != identity.Segments.Count)
         {
             throw CreateDisplayMismatch(pair);
@@ -410,18 +410,22 @@ public static class SymbolSignatureCanonicalizer
             display.ParameterList.WithParameters(SyntaxFactory.SeparatedList(parameters)));
     }
 
-    private static IReadOnlyList<SimpleNameSyntax> FlattenDisplayName(NameSyntax display) =>
+    private static IReadOnlyList<SimpleNameSyntax> FlattenDisplayName(
+        NameSyntax display,
+        CanonicalTypeSignature pair) =>
         display switch
         {
             IdentifierNameSyntax identifier => [identifier],
             GenericNameSyntax generic => [generic],
             QualifiedNameSyntax qualified =>
             [
-                .. FlattenDisplayName(qualified.Left),
+                .. FlattenDisplayName(qualified.Left, pair),
                 qualified.Right,
             ],
-            AliasQualifiedNameSyntax aliasQualified => FlattenDisplayName(aliasQualified.Name),
-            _ => throw new InvalidOperationException($"Unsupported display name syntax: {display}"),
+            AliasQualifiedNameSyntax aliasQualified when
+                string.Equals(aliasQualified.Alias.Identifier.Text, "global", StringComparison.Ordinal) =>
+                FlattenDisplayName(aliasQualified.Name, pair),
+            _ => throw CreateDisplayMismatch(pair),
         };
 
     private static int GetDisplayTypeArgumentCount(SimpleNameSyntax display) =>
@@ -1346,8 +1350,15 @@ public static class SymbolSignatureCanonicalizer
             }
         }
 
-        public bool HasQualifiedName(string qualifiedName) =>
-            string.Equals(GetQualifiedName(), qualifiedName, StringComparison.Ordinal);
+        public bool HasQualifiedName(string qualifiedName)
+        {
+            var expectedSegments = qualifiedName.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            var namespaceSegmentCount = NamespaceSegmentCount ?? Math.Max(Segments.Count - 1, 0);
+            return namespaceSegmentCount == Math.Max(expectedSegments.Length - 1, 0) &&
+                   Segments.Count == expectedSegments.Length &&
+                   Segments.Select(segment => segment.Name)
+                       .SequenceEqual(expectedSegments, StringComparer.Ordinal);
+        }
 
         private string GetQualifiedName() =>
             string.Join('.', Segments.Select(segment => segment.Name));

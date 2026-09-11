@@ -324,6 +324,49 @@ public sealed class SymbolSignatureCanonicalizerTests
         Assert.Contains("does not match display", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("::System.Int32", "int")]
+    [InlineData("::System.Object", "dynamic")]
+    public void FormatTypeDisplay_RejectsGlobalOuterTypesThatResembleFrameworkNames(
+        string identity,
+        string display)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(
+                new CanonicalTypeSignature(identity, display),
+                shortNames: true));
+
+        Assert.Contains("does not match display", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatTypeDisplay_RejectsNonGlobalAliasQualifiedDisplayNames()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(
+                new CanonicalTypeSignature("::Bar", "Alias::Bar"),
+                shortNames: true));
+
+        Assert.Contains("does not match display", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("delegate*<ref System.Int32, Game.Models.Widget>", "delegate*<ref int, Widget>")]
+    [InlineData("delegate*<in System.Int32, Game.Models.Widget>", "delegate*<in int, Widget>")]
+    [InlineData("delegate*<out System.Int32, Game.Models.Widget>", "delegate*<out int, Widget>")]
+    [InlineData("delegate*<ref readonly System.Int32, Game.Models.Widget>", "delegate*<ref readonly int, Widget>")]
+    [InlineData("delegate*<System.Int32, ref Game.Models.Widget>", "delegate*<int, ref Widget>")]
+    [InlineData("delegate*<System.Int32, ref readonly Game.Models.Widget>", "delegate*<int, ref readonly Widget>")]
+    public void FormatTypeDisplay_PreservesFunctionPointerRefKindTokens(
+        string typeText,
+        string expected)
+    {
+        var canonical = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource(typeText));
+
+        Assert.Equal(expected, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+    }
+
     [Fact]
     public void CanonicalizeType_EncodesNamespaceAndTypeBoundary()
     {
