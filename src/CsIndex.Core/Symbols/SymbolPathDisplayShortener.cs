@@ -2,6 +2,8 @@ namespace CsIndex.Core.Symbols;
 
 internal static class SymbolPathDisplayShortener
 {
+    private const string InitializerMarkerPrefix = "<initializer:";
+
     private static readonly string[] ConversionMarkers =
     [
         "conversion:implicit:",
@@ -94,7 +96,18 @@ internal static class SymbolPathDisplayShortener
         if (identity.StartsWith("<", StringComparison.Ordinal) ||
             display.StartsWith("<", StringComparison.Ordinal))
         {
-            if (!string.Equals(identity, display, StringComparison.Ordinal))
+            if (TryGetInitializerMember(identity, out var identityMember) &&
+                TryGetInitializerMember(display, out var displayMember))
+            {
+                if (!string.Equals(
+                        NormalizeCallableName(identityMember),
+                        NormalizeCallableName(displayMember),
+                        StringComparison.Ordinal))
+                {
+                    ThrowMismatch("callable marker");
+                }
+            }
+            else if (!string.Equals(identity, display, StringComparison.Ordinal))
             {
                 ThrowMismatch("callable marker");
             }
@@ -208,6 +221,19 @@ internal static class SymbolPathDisplayShortener
 
     private static string NormalizeCallableName(string value) =>
         value.StartsWith("@", StringComparison.Ordinal) ? value[1..] : value;
+
+    private static bool TryGetInitializerMember(string value, out string member)
+    {
+        if (!value.StartsWith(InitializerMarkerPrefix, StringComparison.Ordinal) ||
+            !value.EndsWith('>'))
+        {
+            member = string.Empty;
+            return false;
+        }
+
+        member = value[InitializerMarkerPrefix.Length..^1];
+        return true;
+    }
 
     private static string ShortenParameterList(string identity, string display)
     {

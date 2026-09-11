@@ -535,6 +535,37 @@ public sealed class SymbolPathFormatterTests
             exception.Message);
     }
 
+    [Fact]
+    public void Format_ShortNamesNormalizesInitializerIdentifierEscape()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "<initializer:@field>",
+            ExecutableIdentityPath = "<initializer:field>",
+        };
+
+        Assert.Equal(
+            "Outer<T>.Inner<U>::<initializer:@field>",
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+    }
+
+    [Fact]
+    public void Format_ShortNamesRejectsDifferentInitializerIdentifier()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "<initializer:other>",
+            ExecutableIdentityPath = "<initializer:field>",
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            "Symbol executable path mismatch (callable marker): identity '<initializer:field>', display '<initializer:other>'.",
+            exception.Message);
+    }
+
     [Theory]
     [InlineData("[constructor]()", "[destructor]()", "special marker")]
     [InlineData("[operator:<](Game::Number)", "[operator:>](Game.Number)", "special marker")]
