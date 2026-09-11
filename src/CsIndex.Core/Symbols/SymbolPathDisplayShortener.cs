@@ -64,12 +64,22 @@ internal static class SymbolPathDisplayShortener
         if (identityParts.Prefix.StartsWith("[", StringComparison.Ordinal) !=
             displayPrefix.StartsWith("[", StringComparison.Ordinal))
         {
-            ThrowMismatch("special payload");
+            ThrowMismatch("special marker");
         }
 
-        var shortenedPrefix = displayPrefix.StartsWith("[", StringComparison.Ordinal)
-            ? ShortenSpecialPayload(identityParts.Prefix, displayPrefix)
-            : displayPrefix;
+        string shortenedPrefix;
+        if (displayPrefix.StartsWith("[", StringComparison.Ordinal))
+        {
+            var identityPayload = ParseBracketed(identityParts.Prefix);
+            var displayPayload = ParseBracketed(displayPrefix);
+            ValidateGenericSuffix(identityPayload.Suffix, displayPayload.Suffix);
+            shortenedPrefix = ShortenSpecialPayload(identityParts.Prefix, displayPrefix);
+        }
+        else
+        {
+            ValidateOrdinaryCallablePrefix(identityParts.Prefix, displayPrefix);
+            shortenedPrefix = displayPrefix;
+        }
 
         if (!identityParts.HasParameters)
         {
@@ -78,6 +88,126 @@ internal static class SymbolPathDisplayShortener
 
         return $"{shortenedPrefix}({ShortenParameterList(identityParts.Parameters, displayParts.Parameters)})";
     }
+
+    private static void ValidateOrdinaryCallablePrefix(string identity, string display)
+    {
+        if (identity.StartsWith("<", StringComparison.Ordinal) ||
+            display.StartsWith("<", StringComparison.Ordinal))
+        {
+            if (!string.Equals(identity, display, StringComparison.Ordinal))
+            {
+                ThrowMismatch("callable marker");
+            }
+
+            return;
+        }
+
+        var identityName = ParseCallableName(identity);
+        var displayName = ParseCallableName(display);
+        if (!string.Equals(
+                NormalizeCallableName(identityName.Name),
+                NormalizeCallableName(displayName.Name),
+                StringComparison.Ordinal))
+        {
+            ThrowMismatch("callable name");
+        }
+
+        if (identityName.GenericArity != displayName.GenericArity)
+        {
+            ThrowMismatch("generic arity");
+        }
+    }
+
+    private static void ValidateGenericSuffix(string identity, string display)
+    {
+        var identityArity = ParseGenericIdentityArity(identity);
+        var displayArity = ParseGenericDisplayArity(display);
+        if (identityArity != displayArity)
+        {
+            ThrowMismatch("generic arity");
+        }
+    }
+
+    private static CallableNameParts ParseCallableName(string value)
+    {
+        var genericStart = value.IndexOf('<');
+        if (genericStart >= 0)
+        {
+            if (!value.EndsWith('>') || genericStart == 0)
+            {
+                ThrowMismatch("generic arity");
+            }
+
+            var arguments = value[(genericStart + 1)..^1];
+            if (arguments.Length == 0)
+            {
+                ThrowMismatch("generic arity");
+            }
+
+            return new CallableNameParts(
+                value[..genericStart],
+                SplitTopLevel(arguments, ',', requireNonEmpty: true).Count);
+        }
+
+        var identityArityStart = value.IndexOf('\u0060');
+        if (identityArityStart >= 0)
+        {
+            var arity = 0;
+            if (identityArityStart == 0 ||
+                !int.TryParse(value[(identityArityStart + 1)..], out arity) ||
+                arity < 0)
+            {
+                ThrowMismatch("generic arity");
+            }
+
+            return new CallableNameParts(value[..identityArityStart], arity);
+        }
+
+        return new CallableNameParts(value, 0);
+    }
+
+    private static int ParseGenericIdentityArity(string value)
+    {
+        if (value.Length == 0)
+        {
+            return 0;
+        }
+
+        var arity = 0;
+        if (!value.StartsWith("\u0060", StringComparison.Ordinal) ||
+            !int.TryParse(value[1..], out arity) ||
+            arity < 0)
+        {
+            ThrowMismatch("generic arity");
+        }
+
+        return arity;
+    }
+
+    private static int ParseGenericDisplayArity(string value)
+    {
+        if (value.Length == 0)
+        {
+            return 0;
+        }
+
+        if (!value.StartsWith("<", StringComparison.Ordinal) ||
+            !value.EndsWith('>'))
+        {
+            ThrowMismatch("generic arity");
+        }
+
+        var arguments = value[1..^1];
+        if (arguments.Length == 0)
+        {
+            ThrowMismatch("generic arity");
+        }
+
+        return SplitTopLevel(arguments, ',', requireNonEmpty: true).Count;
+    }
+
+    private static string NormalizeCallableName(string value) =>
+        value.StartsWith("@", StringComparison.Ordinal) ? value[1..] : value;
 
     private static string ShortenParameterList(string identity, string display)
     {
@@ -119,11 +249,16 @@ internal static class SymbolPathDisplayShortener
         if (identityMarkerKind != displayMarkerKind ||
             !string.Equals(identityMarker, displayMarker, StringComparison.Ordinal))
         {
-            ThrowMismatch("special payload");
+            ThrowMismatch("special marker");
         }
 
         if (identityMarkerKind == SpecialMarkerKind.None)
         {
+            if (!string.Equals(identityPayload.Content, displayPayload.Content, StringComparison.Ordinal))
+            {
+                ThrowMismatch("special marker");
+            }
+
             return display;
         }
 
@@ -138,6 +273,16 @@ internal static class SymbolPathDisplayShortener
 
             if (!identityPayload.Content.Contains("::", StringComparison.Ordinal))
             {
+                var ordinaryIdentityMember = identityPayload.Content[identityMarker!.Length..];
+                var ordinaryDisplayMember = displayPayload.Content[displayMarker!.Length..];
+                if (!string.Equals(
+                        NormalizeCallableName(ordinaryIdentityMember),
+                        NormalizeCallableName(ordinaryDisplayMember),
+                        StringComparison.Ordinal))
+                {
+                    ThrowMismatch("special member");
+                }
+
                 return display;
             }
 
@@ -152,7 +297,16 @@ internal static class SymbolPathDisplayShortener
                 identityMarker!.Length..identityMemberDot];
             var interfaceDisplayType = displayPayload.Content[
                 displayMarker!.Length..displayMemberDot];
+            var identityMember = identityPayload.Content[(identityMemberDot + 1)..];
             var displayMember = displayPayload.Content[(displayMemberDot + 1)..];
+            if (!string.Equals(
+                    NormalizeCallableName(identityMember),
+                    NormalizeCallableName(displayMember),
+                    StringComparison.Ordinal))
+            {
+                ThrowMismatch("special member");
+            }
+
             return $"[{displayMarker}{ShortenType(interfaceIdentityType, interfaceDisplayType)}.{displayMember}]{displayPayload.Suffix}";
         }
         catch (StructuralMismatchException exception) when (exception.Category == "type")
@@ -481,6 +635,8 @@ internal static class SymbolPathDisplayShortener
         throw new StructuralMismatchException(category);
 
     private sealed record SegmentParts(string Prefix, string Parameters, bool HasParameters);
+
+    private sealed record CallableNameParts(string Name, int GenericArity);
 
     private readonly record struct BracketedPayload(string Content, string Suffix);
 

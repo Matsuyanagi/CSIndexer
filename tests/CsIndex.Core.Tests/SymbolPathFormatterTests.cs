@@ -92,6 +92,126 @@ public sealed class SymbolPathFormatterTests
                 "[operator:*](Game.Number*,Game.Number)",
                 "[operator:*](Game::Number*,Game::Number)",
                 "[operator:*](Number*,Number)"),
+            ["unary-plus"] = (
+                "[operator:+](Game.Number)",
+                "[operator:+](Game::Number)",
+                "[operator:+](Number)"),
+            ["unary-minus"] = (
+                "[operator:-](Game.Number)",
+                "[operator:-](Game::Number)",
+                "[operator:-](Number)"),
+            ["logical-not"] = (
+                "[operator:!](Game.Number)",
+                "[operator:!](Game::Number)",
+                "[operator:!](Number)"),
+            ["ones-complement"] = (
+                "[operator:~](Game.Number)",
+                "[operator:~](Game::Number)",
+                "[operator:~](Number)"),
+            ["increment"] = (
+                "[operator:++](Game.Number)",
+                "[operator:++](Game::Number)",
+                "[operator:++](Number)"),
+            ["decrement"] = (
+                "[operator:--](Game.Number)",
+                "[operator:--](Game::Number)",
+                "[operator:--](Number)"),
+            ["true"] = (
+                "[operator:true](Game.Number)",
+                "[operator:true](Game::Number)",
+                "[operator:true](Number)"),
+            ["false"] = (
+                "[operator:false](Game.Number)",
+                "[operator:false](Game::Number)",
+                "[operator:false](Number)"),
+            ["subtraction"] = (
+                "[operator:-](Game.Number,Game.Number)",
+                "[operator:-](Game::Number,Game::Number)",
+                "[operator:-](Number,Number)"),
+            ["division"] = (
+                "[operator:/](Game.Number,Game.Number)",
+                "[operator:/](Game::Number,Game::Number)",
+                "[operator:/](Number,Number)"),
+            ["modulus"] = (
+                "[operator:%](Game.Number,Game.Number)",
+                "[operator:%](Game::Number,Game::Number)",
+                "[operator:%](Number,Number)"),
+            ["bitwise-and"] = (
+                "[operator:&](Game.Number,Game.Number)",
+                "[operator:&](Game::Number,Game::Number)",
+                "[operator:&](Number,Number)"),
+            ["bitwise-or"] = (
+                "[operator:|](Game.Number,Game.Number)",
+                "[operator:|](Game::Number,Game::Number)",
+                "[operator:|](Number,Number)"),
+            ["exclusive-or"] = (
+                "[operator:^](Game.Number,Game.Number)",
+                "[operator:^](Game::Number,Game::Number)",
+                "[operator:^](Number,Number)"),
+            ["unsigned-right-shift"] = (
+                "[operator:>>>](Game.Number,Game.Number)",
+                "[operator:>>>](Game::Number,Game::Number)",
+                "[operator:>>>](Number,Number)"),
+            ["equality"] = (
+                "[operator:==](Game.Number,Game.Number)",
+                "[operator:==](Game::Number,Game::Number)",
+                "[operator:==](Number,Number)"),
+            ["inequality"] = (
+                "[operator:!=](Game.Number,Game.Number)",
+                "[operator:!=](Game::Number,Game::Number)",
+                "[operator:!=](Number,Number)"),
+            ["less-than-or-equal"] = (
+                "[operator:<=](Game.Number,Game.Number)",
+                "[operator:<=](Game::Number,Game::Number)",
+                "[operator:<=](Number,Number)"),
+            ["greater-than-or-equal"] = (
+                "[operator:>=](Game.Number,Game.Number)",
+                "[operator:>=](Game::Number,Game::Number)",
+                "[operator:>=](Number,Number)"),
+            ["addition-assignment"] = (
+                "[operator:+=](Game.Number,Game.Number)",
+                "[operator:+=](Game::Number,Game::Number)",
+                "[operator:+=](Number,Number)"),
+            ["subtraction-assignment"] = (
+                "[operator:-=](Game.Number,Game.Number)",
+                "[operator:-=](Game::Number,Game::Number)",
+                "[operator:-=](Number,Number)"),
+            ["multiplication-assignment"] = (
+                "[operator:*=](Game.Number,Game.Number)",
+                "[operator:*=](Game::Number,Game::Number)",
+                "[operator:*=](Number,Number)"),
+            ["division-assignment"] = (
+                "[operator:/=](Game.Number,Game.Number)",
+                "[operator:/=](Game::Number,Game::Number)",
+                "[operator:/=](Number,Number)"),
+            ["modulus-assignment"] = (
+                "[operator:%=](Game.Number,Game.Number)",
+                "[operator:%=](Game::Number,Game::Number)",
+                "[operator:%=](Number,Number)"),
+            ["bitwise-and-assignment"] = (
+                "[operator:&=](Game.Number,Game.Number)",
+                "[operator:&=](Game::Number,Game::Number)",
+                "[operator:&=](Number,Number)"),
+            ["bitwise-or-assignment"] = (
+                "[operator:|=](Game.Number,Game.Number)",
+                "[operator:|=](Game::Number,Game::Number)",
+                "[operator:|=](Number,Number)"),
+            ["exclusive-or-assignment"] = (
+                "[operator:^=](Game.Number,Game.Number)",
+                "[operator:^=](Game::Number,Game::Number)",
+                "[operator:^=](Number,Number)"),
+            ["left-shift-assignment"] = (
+                "[operator:<<=](Game.Number,Game.Number)",
+                "[operator:<<=](Game::Number,Game::Number)",
+                "[operator:<<=](Number,Number)"),
+            ["right-shift-assignment"] = (
+                "[operator:>>=](Game.Number,Game.Number)",
+                "[operator:>>=](Game::Number,Game::Number)",
+                "[operator:>>=](Number,Number)"),
+            ["unsigned-right-shift-assignment"] = (
+                "[operator:>>>=](Game.Number,Game.Number)",
+                "[operator:>>>=](Game::Number,Game::Number)",
+                "[operator:>>>=](Number,Number)"),
             ["[conversion:implicit:int](Game.Number)"] = (
                 "[conversion:implicit:int](Game.Number)",
                 "[conversion:implicit:System::Int32](Game::Number)",
@@ -326,6 +446,84 @@ public sealed class SymbolPathFormatterTests
         Assert.Equal(
             "Symbol executable path mismatch (special payload): identity '[conversion:implicit:System::String]()', display '[conversion:implicit:System.Guid]()'.",
             exception.Message);
+    }
+
+    [Fact]
+    public void Format_ShortNamesRejectMismatchedOrdinaryCallableName()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "Walk(System.Guid)",
+            ExecutableIdentityPath = "Run(System::Guid)",
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            "Symbol executable path mismatch (callable name): identity 'Run(System::Guid)', display 'Walk(System.Guid)'.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void Format_ShortNamesRejectMismatchedGenericCallableArity()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "Run<T,U>(System.Guid)",
+            ExecutableIdentityPath = "Run\u00601(System::Guid)",
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            "Symbol executable path mismatch (generic arity): identity 'Run\u00601(System::Guid)', display 'Run<T,U>(System.Guid)'.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void Format_ShortNamesRejectMismatchedSyntheticCallableMarker()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "<lambda#2>",
+            ExecutableIdentityPath = "<lambda#1>",
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            "Symbol executable path mismatch (callable marker): identity '<lambda#1>', display '<lambda#2>'.",
+            exception.Message);
+    }
+
+    [Theory]
+    [InlineData("[constructor]()", "[destructor]()", "special marker")]
+    [InlineData("[operator:<](Game::Number)", "[operator:>](Game.Number)", "special marker")]
+    [InlineData("[get:Other]()", "[get:Name]()", "special member")]
+    [InlineData("[explicit:System::IDisposable.Close]()", "[explicit:System.IDisposable.Dispose]()", "special member")]
+    public void Format_ShortNamesRejectMismatchedSpecialCallableMarker(
+        string identity,
+        string display,
+        string category)
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = display,
+            ExecutableIdentityPath = identity,
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Contains(
+            $"Symbol executable path mismatch ({category}):",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(identity, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(display, exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
