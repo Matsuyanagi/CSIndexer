@@ -213,6 +213,117 @@ public sealed class SymbolSignatureCanonicalizerTests
         Assert.DoesNotContain("global::", named.DisplayText, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("System::Guid", "System.Guid", "Guid")]
+    [InlineData(
+        "System.Collections.Generic::Dictionary<System::String,System.Collections.Generic::List<Game.Models::Widget>>",
+        "System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<Game.Models.Widget>>",
+        "Dictionary<string, List<Widget>>")]
+    [InlineData(
+        "Game.Models::Outer<System::Int32>.Inner<System::String>",
+        "Game.Models.Outer<int>.Inner<string>",
+        "Outer<int>.Inner<string>")]
+    [InlineData("Game::@class", "Game.@class", "@class")]
+    [InlineData("会社.モデル::入力", "会社.モデル.入力", "入力")]
+    public void FormatTypeDisplay_ShortNamesRemoveOnlySemanticNamespaces(
+        string identity,
+        string display,
+        string expected)
+    {
+        var canonical = new CanonicalTypeSignature(identity, display);
+
+        Assert.Equal(expected, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+        Assert.Equal(display, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: false));
+    }
+
+    [Theory]
+    [InlineData("bool")]
+    [InlineData("byte")]
+    [InlineData("sbyte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("int")]
+    [InlineData("uint")]
+    [InlineData("long")]
+    [InlineData("ulong")]
+    [InlineData("nint")]
+    [InlineData("nuint")]
+    [InlineData("char")]
+    [InlineData("float")]
+    [InlineData("double")]
+    [InlineData("decimal")]
+    [InlineData("string")]
+    [InlineData("object")]
+    [InlineData("void")]
+    public void FormatTypeDisplay_PreservesEveryCSharpPredefinedAlias(string typeText)
+    {
+        var canonical = typeText == "void"
+            ? new CanonicalTypeSignature("System::Void", typeText)
+            : SymbolSignatureCanonicalizer.CanonicalizeType(GetParameterType(typeText));
+
+        Assert.Equal(typeText, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+    }
+
+    [Theory]
+    [InlineData("(System.DateTime, Game.Models.Widget?[])", "(DateTime, Widget? [])")]
+    [InlineData(
+        "delegate* unmanaged[Cdecl]<System.Int32, Game.Models.Widget, void>",
+        "delegate* unmanaged[Cdecl]<int, Widget, void>")]
+    [InlineData(
+        "delegate*<System.Int32, void>",
+        "delegate*<int, void>")]
+    [InlineData(
+        "delegate* unmanaged<System.Int32, void>",
+        "delegate* unmanaged<int, void>")]
+    [InlineData(
+        "delegate* unmanaged[Cdecl,SuppressGCTransition]<System.Int32, void>",
+        "delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>")]
+    [InlineData(
+        "System.Collections.Generic.List<Game.Models.Outer<int>.Inner<string?>[]>*",
+        "List<Outer<int>.Inner<string?>[]>*")]
+    [InlineData("dynamic", "dynamic")]
+    [InlineData("T", "T")]
+    public void FormatTypeDisplay_ShortNamesRewriteAllCanonicalShapes(string typeText, string expected)
+    {
+        var genericParameters = typeText == "T" ? new[] { "T" } : null;
+        var canonical = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource(typeText, genericParameters));
+
+        Assert.Equal(expected, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+    }
+
+    [Fact]
+    public void FormatTypeDisplay_ShortNamesAcceptsNullableValueAndReferencePairs()
+    {
+        var nullableValue = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource("System.DateTime?"));
+        var nullableReference = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource("Game.Models.Widget?"));
+        var nullableReferenceArray = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource("Game.Models.Widget[]?"));
+        var (_, _, _, nullableReferencePlaceholder) = GetConstrainedPlaceholderParameterTypes();
+        var nullableReferencePlaceholderCanonical = SymbolSignatureCanonicalizer.CanonicalizeType(nullableReferencePlaceholder);
+
+        Assert.Equal("DateTime?", SymbolSignatureCanonicalizer.FormatTypeDisplay(nullableValue, shortNames: true));
+        Assert.Equal("Widget?", SymbolSignatureCanonicalizer.FormatTypeDisplay(nullableReference, shortNames: true));
+        Assert.Equal("Widget[]?", SymbolSignatureCanonicalizer.FormatTypeDisplay(nullableReferenceArray, shortNames: true));
+        Assert.Equal("TReference?", SymbolSignatureCanonicalizer.FormatTypeDisplay(nullableReferencePlaceholderCanonical, shortNames: true));
+        Assert.NotEqual(nullableValue.IdentityKey, nullableReference.IdentityKey);
+        Assert.Contains("Nullable", nullableValue.IdentityKey, StringComparison.Ordinal);
+        Assert.DoesNotContain("?", nullableReference.IdentityKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatTypeDisplay_RejectsStructurallyMismatchedIdentityAndDisplay()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(
+                new CanonicalTypeSignature("Game::Outer.Inner", "Game.Outer"),
+                shortNames: true));
+
+        Assert.Contains("does not match display", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void CanonicalizeType_EncodesNamespaceAndTypeBoundary()
     {
@@ -1156,6 +1267,46 @@ public sealed class SymbolSignatureCanonicalizerTests
     {
         var parameter = GetParameter(typeText, genericParameters);
         return parameter.Type;
+    }
+
+    private static ITypeSymbol GetParameterTypeFromDeclaredSource(
+        string typeText,
+        IReadOnlyList<string>? genericParameters = null)
+    {
+        var genericList = genericParameters is null ? string.Empty : $"<{string.Join(",", genericParameters)}>";
+        var source = $$"""
+            #nullable enable
+
+            namespace Game.Models;
+
+            public sealed class Widget { }
+            public class Outer<TOuter>
+            {
+                public class Inner<TInner> { }
+            }
+
+            public unsafe class C{{genericList}}
+            {
+                public void M({{typeText}} value) { }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(
+            source,
+            new CSharpParseOptions(LanguageVersion.Preview),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var compilation = CSharpCompilation.Create(
+            "FormatTypeDisplayTests",
+            [tree],
+            GetPlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(TestContext.Current.CancellationToken),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var type = compilation.Assembly.GlobalNamespace
+            .GetNamespaceMembers().Single(candidate => candidate.Name == "Game")
+            .GetNamespaceMembers().Single(candidate => candidate.Name == "Models")
+            .GetTypeMembers("C").Single();
+        return type.GetMembers("M").OfType<IMethodSymbol>().Single().Parameters[0].Type;
     }
 
     private static IParameterSymbol GetParameter(

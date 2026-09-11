@@ -72,6 +72,29 @@ public static class SymbolSignatureCanonicalizer
         return new CanonicalTypeSignature(node.IdentityKey, FormatTypeDisplay(type));
     }
 
+    public static string FormatTypeDisplay(CanonicalTypeSignature type, bool shortNames)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        if (!shortNames)
+        {
+            return type.DisplayText;
+        }
+
+        var syntax = SyntaxFactory.ParseTypeName(type.DisplayText);
+        if (syntax.ContainsDiagnostics)
+        {
+            if (!string.Equals(type.DisplayText, "void", StringComparison.Ordinal))
+            {
+                throw CreateDisplayMismatch(type);
+            }
+
+            syntax = SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.VoidKeyword));
+        }
+
+        var identity = ParseIdentityNode(type.IdentityKey);
+        return RewriteShortDisplay(identity, syntax, type).NormalizeWhitespace().ToFullString();
+    }
+
     public static CanonicalParameterSignature CanonicalizeParameter(IParameterSymbol parameter)
     {
         ArgumentNullException.ThrowIfNull(parameter);
@@ -189,6 +212,238 @@ public static class SymbolSignatureCanonicalizer
         var rewritten = (TypeSyntax)new TupleElementNameOmittingRewriter().Visit(syntax)!;
         return rewritten.NormalizeWhitespace().ToFullString();
     }
+
+    private static TypeSyntax RewriteShortDisplay(
+        TypeNode identity,
+        TypeSyntax display,
+        CanonicalTypeSignature pair) =>
+        (identity, display) switch
+        {
+            (NamedTypeNode named, IdentifierNameSyntax identifier)
+                when IsDynamicDisplay(named, identifier) => identifier,
+            (NamedTypeNode named, IdentifierNameSyntax identifier)
+                when IsPredefinedAliasDisplay(named, identifier) => identifier,
+            (NamedTypeNode named, PredefinedTypeSyntax predefined) =>
+                RewritePredefinedTypeDisplay(named, predefined, pair),
+            (NamedTypeNode named, NameSyntax name) => RewriteNamedTypeDisplay(named, name, pair),
+            (NamedTypeNode named, NullableTypeSyntax nullable) =>
+                RewriteNullableTypeDisplay(named, nullable, pair),
+            (PlaceholderTypeNode, IdentifierNameSyntax identifier) => identifier,
+            (NullableTypeNode nullable, NullableTypeSyntax syntax) =>
+                syntax.WithElementType(RewriteShortDisplay(nullable.Element, syntax.ElementType, pair)),
+            (TypeNode node, NullableTypeSyntax syntax) => RewriteNullableTypeDisplay(node, syntax, pair),
+            (ArrayTypeNode array, ArrayTypeSyntax syntax) => RewriteArrayTypeDisplay(array, syntax, pair),
+            (PointerTypeNode pointer, PointerTypeSyntax syntax) =>
+                syntax.WithElementType(RewriteShortDisplay(pointer.Element, syntax.ElementType, pair)),
+            (TupleTypeNode tuple, TupleTypeSyntax syntax) => RewriteTupleTypeDisplay(tuple, syntax, pair),
+            (FunctionPointerTypeNode functionPointer, FunctionPointerTypeSyntax syntax) =>
+                RewriteFunctionPointerTypeDisplay(functionPointer, syntax, pair),
+            _ => throw CreateDisplayMismatch(pair),
+        };
+
+    private static NameSyntax RewriteNamedTypeDisplay(
+        NamedTypeNode identity,
+        NameSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        var displayComponents = FlattenDisplayName(display);
+        if (displayComponents.Count != identity.Segments.Count)
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        var rewrittenComponents = new List<SimpleNameSyntax>(displayComponents.Count);
+        for (var index = 0; index < identity.Segments.Count; index++)
+        {
+            var identitySegment = identity.Segments[index];
+            var displayComponent = displayComponents[index];
+            if (!string.Equals(
+                    NormalizeIdentityName(identitySegment.Name),
+                    displayComponent.Identifier.ValueText,
+                    StringComparison.Ordinal) ||
+                identitySegment.Arguments.Count != GetDisplayTypeArgumentCount(displayComponent))
+            {
+                throw CreateDisplayMismatch(pair);
+            }
+
+            if (displayComponent is GenericNameSyntax generic)
+            {
+                var arguments = generic.TypeArgumentList.Arguments
+                    .Zip(identitySegment.Arguments)
+                    .Select(argument => RewriteShortDisplay(argument.Second, argument.First, pair))
+                    .ToArray();
+                displayComponent = generic.WithTypeArgumentList(
+                    generic.TypeArgumentList.WithArguments(SyntaxFactory.SeparatedList(arguments)));
+            }
+
+            rewrittenComponents.Add(displayComponent);
+        }
+
+        var namespaceSegmentCount = identity.NamespaceSegmentCount ?? 0;
+        if (namespaceSegmentCount < 0 || namespaceSegmentCount >= rewrittenComponents.Count)
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        NameSyntax rewritten = rewrittenComponents[namespaceSegmentCount];
+        for (var index = namespaceSegmentCount + 1; index < rewrittenComponents.Count; index++)
+        {
+            rewritten = SyntaxFactory.QualifiedName(rewritten, rewrittenComponents[index]);
+        }
+
+        return rewritten;
+    }
+
+    private static TypeSyntax RewritePredefinedTypeDisplay(
+        NamedTypeNode identity,
+        PredefinedTypeSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        var keyword = display.Keyword.ValueText;
+        if (!PredefinedTypeNames.TryGetValue(keyword, out var qualifiedName) ||
+            !identity.HasQualifiedName(qualifiedName) ||
+            identity.Segments.Any(segment => segment.Arguments.Count != 0))
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        return display;
+    }
+
+    private static TypeSyntax RewriteNullableTypeDisplay(
+        TypeNode identity,
+        NullableTypeSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        var element = identity switch
+        {
+            NamedTypeNode named when named.HasQualifiedName("System.Nullable") && named.Arguments.Count == 1 =>
+                named.Arguments[0],
+            NullableTypeNode nullable => nullable.Element,
+            TypeNode node when node.Classification != TypeClassification.Value => node,
+            _ => throw CreateDisplayMismatch(pair),
+        };
+
+        return display.WithElementType(RewriteShortDisplay(element, display.ElementType, pair));
+    }
+
+    private static TypeSyntax RewriteArrayTypeDisplay(
+        ArrayTypeNode identity,
+        ArrayTypeSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        var identityArrays = new List<ArrayTypeNode>();
+        TypeNode element = identity;
+        while (element is ArrayTypeNode array)
+        {
+            identityArrays.Add(array);
+            element = array.Element;
+        }
+
+        if (display.RankSpecifiers.Count != identityArrays.Count ||
+            display.RankSpecifiers
+                .Reverse()
+                .Zip(identityArrays)
+                .Any(pairing => pairing.First.Sizes.Count != pairing.Second.Rank))
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        return display.WithElementType(RewriteShortDisplay(element, display.ElementType, pair));
+    }
+
+    private static TypeSyntax RewriteTupleTypeDisplay(
+        TupleTypeNode identity,
+        TupleTypeSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        if (identity.Elements.Count != display.Elements.Count)
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        var elements = identity.Elements
+            .Zip(display.Elements)
+            .Select(pairing => pairing.Second.WithType(
+                RewriteShortDisplay(pairing.First, pairing.Second.Type, pair)))
+            .ToArray();
+        return display.WithElements(SyntaxFactory.SeparatedList(elements));
+    }
+
+    private static TypeSyntax RewriteFunctionPointerTypeDisplay(
+        FunctionPointerTypeNode identity,
+        FunctionPointerTypeSyntax display,
+        CanonicalTypeSignature pair)
+    {
+        if (!string.Equals(
+                identity.CallingConvention,
+                GetSelectorCallingConvention(display),
+                StringComparison.Ordinal) ||
+            display.ParameterList.Parameters.Count != identity.Parameters.Count + 1)
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        var parameters = new List<FunctionPointerParameterSyntax>(display.ParameterList.Parameters.Count);
+        for (var index = 0; index < identity.Parameters.Count; index++)
+        {
+            var identityParameter = identity.Parameters[index];
+            var displayParameter = display.ParameterList.Parameters[index];
+            if (identityParameter.RefKind != GetSelectorFunctionPointerRefKind(displayParameter, isReturn: false))
+            {
+                throw CreateDisplayMismatch(pair);
+            }
+
+            parameters.Add(displayParameter.WithType(
+                RewriteShortDisplay(identityParameter.Type, displayParameter.Type, pair)));
+        }
+
+        var displayReturn = display.ParameterList.Parameters[^1];
+        if (identity.ReturnRefKind != GetSelectorFunctionPointerRefKind(displayReturn, isReturn: true))
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        parameters.Add(displayReturn.WithType(
+            RewriteShortDisplay(identity.ReturnType, displayReturn.Type, pair)));
+        return display.WithParameterList(
+            display.ParameterList.WithParameters(SyntaxFactory.SeparatedList(parameters)));
+    }
+
+    private static IReadOnlyList<SimpleNameSyntax> FlattenDisplayName(NameSyntax display) =>
+        display switch
+        {
+            IdentifierNameSyntax identifier => [identifier],
+            GenericNameSyntax generic => [generic],
+            QualifiedNameSyntax qualified =>
+            [
+                .. FlattenDisplayName(qualified.Left),
+                qualified.Right,
+            ],
+            AliasQualifiedNameSyntax aliasQualified => FlattenDisplayName(aliasQualified.Name),
+            _ => throw new InvalidOperationException($"Unsupported display name syntax: {display}"),
+        };
+
+    private static int GetDisplayTypeArgumentCount(SimpleNameSyntax display) =>
+        display is GenericNameSyntax generic ? generic.TypeArgumentList.Arguments.Count : 0;
+
+    private static string NormalizeIdentityName(string name) =>
+        name.StartsWith('@') ? name[1..] : name;
+
+    private static bool IsDynamicDisplay(NamedTypeNode identity, IdentifierNameSyntax display) =>
+        !IsEscapedIdentifier(display.Identifier) &&
+        string.Equals(display.Identifier.ValueText, "dynamic", StringComparison.Ordinal) &&
+        identity.HasQualifiedName("System.Object") &&
+        identity.Arguments.Count == 0;
+
+    private static bool IsPredefinedAliasDisplay(NamedTypeNode identity, IdentifierNameSyntax display) =>
+        !IsEscapedIdentifier(display.Identifier) &&
+        PredefinedTypeNames.TryGetValue(display.Identifier.ValueText, out var qualifiedName) &&
+        identity.HasQualifiedName(qualifiedName) &&
+        identity.Segments.All(segment => segment.Arguments.Count == 0);
+
+    private static InvalidOperationException CreateDisplayMismatch(CanonicalTypeSignature pair) =>
+        new($"Canonical type identity '{pair.IdentityKey}' does not match display '{pair.DisplayText}'.");
 
     private static TypeNode CreateNode(ITypeSymbol type)
     {
@@ -855,6 +1110,11 @@ public static class SymbolSignatureCanonicalizer
         if (identity.StartsWith('(') && identity.EndsWith(')'))
         {
             return new TupleTypeNode(SplitTopLevel(identity[1..^1], ',').Select(ParseIdentityNode).ToArray());
+        }
+
+        if (identity.EndsWith('?') && identity.Length > 1)
+        {
+            return new NullableTypeNode(ParseIdentityNode(identity[..^1]));
         }
 
         if (identity.StartsWith('!') && int.TryParse(identity[1..], out var typeOrdinal))
