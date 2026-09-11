@@ -102,8 +102,8 @@ internal static class SymbolPathDisplayShortener
             return;
         }
 
-        var identityName = ParseCallableName(identity);
-        var displayName = ParseCallableName(display);
+        var identityName = ParseCallableIdentityName(identity);
+        var displayName = ParseCallableDisplayName(display);
         if (!string.Equals(
                 NormalizeCallableName(identityName.Name),
                 NormalizeCallableName(displayName.Name),
@@ -128,39 +128,39 @@ internal static class SymbolPathDisplayShortener
         }
     }
 
-    private static CallableNameParts ParseCallableName(string value)
+    private static CallableNameParts ParseCallableIdentityName(string value)
     {
         var genericStart = value.IndexOf('<');
         if (genericStart >= 0)
         {
-            if (!value.EndsWith('>') || genericStart == 0)
-            {
-                ThrowMismatch("generic arity");
-            }
-
-            var arguments = value[(genericStart + 1)..^1];
-            if (arguments.Length == 0)
-            {
-                ThrowMismatch("generic arity");
-            }
-
-            return new CallableNameParts(
-                value[..genericStart],
-                SplitTopLevel(arguments, ',', requireNonEmpty: true).Count);
+            ThrowMismatch("generic syntax");
         }
 
         var identityArityStart = value.IndexOf('\u0060');
         if (identityArityStart >= 0)
         {
-            var arity = 0;
-            if (identityArityStart == 0 ||
-                !int.TryParse(value[(identityArityStart + 1)..], out arity) ||
-                arity < 0)
-            {
-                ThrowMismatch("generic arity");
-            }
+            return new CallableNameParts(
+                value[..identityArityStart],
+                ParseGenericIdentityArity(value[identityArityStart..]));
+        }
 
-            return new CallableNameParts(value[..identityArityStart], arity);
+        return new CallableNameParts(value, 0);
+    }
+
+    private static CallableNameParts ParseCallableDisplayName(string value)
+    {
+        var identityArityStart = value.IndexOf('\u0060');
+        if (identityArityStart >= 0)
+        {
+            ThrowMismatch("generic syntax");
+        }
+
+        var genericStart = value.IndexOf('<');
+        if (genericStart >= 0)
+        {
+            return new CallableNameParts(
+                value[..genericStart],
+                ParseGenericDisplayArity(value[genericStart..]));
         }
 
         return new CallableNameParts(value, 0);

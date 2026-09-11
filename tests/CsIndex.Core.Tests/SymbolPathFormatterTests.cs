@@ -482,6 +482,42 @@ public sealed class SymbolPathFormatterTests
             exception.Message);
     }
 
+    [Theory]
+    [InlineData("Run<T>(System::Guid)", "Run<T>(System.Guid)")]
+    [InlineData("Run\u00601(System::Guid)", "Run\u00601(System.Guid)")]
+    public void Format_ShortNamesRejectsWrongDirectionOrdinaryGenericSyntax(string identity, string display)
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = display,
+            ExecutableIdentityPath = identity,
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            string.Format(
+                "Symbol executable path mismatch (generic syntax): identity '{0}', display '{1}'.",
+                identity,
+                display),
+            exception.Message);
+    }
+
+    [Fact]
+    public void Format_ShortNamesAcceptsCanonicalOrdinaryGenericCallablePair()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "Run<T>(System.Guid)",
+            ExecutableIdentityPath = "Run\u00601(System::Guid)",
+        };
+
+        Assert.Equal(
+            "Outer<T>.Inner<U>::Run<T>(Guid)",
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+    }
+
     [Fact]
     public void Format_ShortNamesRejectMismatchedSyntheticCallableMarker()
     {
