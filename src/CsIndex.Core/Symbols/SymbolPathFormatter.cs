@@ -46,8 +46,14 @@ public sealed class SymbolPathFormatter
             _ => throw new ArgumentOutOfRangeException(nameof(options), options.Style, "Unknown symbol path style."),
         };
 
-        return string.IsNullOrEmpty(path.ExecutableDisplayPath)
+        var executable = options.ShortNames
+            ? SymbolPathDisplayShortener.ShortenExecutablePath(
+                path.ExecutableIdentityPath,
+                path.ExecutableDisplayPath)
+            : path.ExecutableDisplayPath;
+
+        return string.IsNullOrEmpty(executable)
             ? owner
-            : $"{owner}::{path.ExecutableDisplayPath}";
+            : $"{owner}::{executable}";
     }
 }
