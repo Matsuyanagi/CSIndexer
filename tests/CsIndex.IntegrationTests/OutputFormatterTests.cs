@@ -52,17 +52,24 @@ public sealed class OutputFormatterTests : IDisposable
     [Theory]
     [InlineData(
         "Nop.Core.Caching.DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)",
-        "DistributedCacheLocker::RunWithHeartbeatAsync(System.String,System.TimeSpan,System.TimeSpan,System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task>,System.Threading.CancellationTokenSource)")]
+        "RunWithHeartbeatAsync(System::String,System::TimeSpan,System::TimeSpan,System::Func<System.Threading::CancellationToken,System.Threading.Tasks::Task>,System.Threading::CancellationTokenSource)",
+        "DistributedCacheLocker::RunWithHeartbeatAsync(String,TimeSpan,TimeSpan,Func<CancellationToken, Task>,CancellationTokenSource)")]
     [InlineData(
         "Example.Handlers.Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])",
-        "Worker::Execute(System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Example.Models.Widget?[]>>,System.Nullable<System.Int32>[])")]
+        "Execute(System.Collections.Generic::Dictionary<System::String,System.Collections.Generic::List<Example.Models::Widget[]>>,System::Nullable<System::Int32>[])",
+        "Worker::Execute(Dictionary<String, List<Widget? []>>,Nullable<Int32>[])")]
     [InlineData(
         "Example.Handlers.Worker::Run(System.Threading.Tasks.Task).<lambda#1>",
-        "Worker::Run(System.Threading.Tasks.Task).<lambda#1>")]
+        "Run(System.Threading.Tasks::Task).<lambda#1>",
+        "Worker::Run(Task).<lambda#1>")]
     [InlineData(
         "会社.モデル.サービス::実行(会社.モデル.入力)",
-        "サービス::実行(会社.モデル.入力)")]
-    public void SymbolPathFormatterShortNamesRemoveOnlyOwnerNamespace(string name, string expected)
+        "実行(会社.モデル::入力)",
+        "サービス::実行(入力)")]
+    public void SymbolPathFormatterShortNamesShortenOwnerAndTypeNames(
+        string name,
+        string identityExecutable,
+        string expected)
     {
         var separator = name.IndexOf("::", StringComparison.Ordinal);
         var owner = separator < 0 ? name : name[..separator];
@@ -72,9 +79,9 @@ public sealed class OutputFormatterTests : IDisposable
             TypeDisplayPath: separator < 0 ? owner : owner[(owner.LastIndexOf('.') + 1)..],
             TypeIdentityPath: separator < 0 ? owner : owner[(owner.LastIndexOf('.') + 1)..],
             ExecutableDisplayPath: executable,
-            ExecutableIdentityPath: executable,
+            ExecutableIdentityPath: identityExecutable,
             SegmentDisplay: executable,
-            SegmentIdentity: executable,
+            SegmentIdentity: identityExecutable,
             SegmentKind: CallablePathSegmentKind.Named);
         var actual = new CsIndex.Core.Symbols.SymbolPathFormatter().Format(
             path,
@@ -634,24 +641,32 @@ public sealed class OutputFormatterTests : IDisposable
             AsyncRole.None,
             asyncInvolvementDepth: null,
             displayName: displayName,
-            parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
-            namespaceName: "Nop.Core.Caching");
+            parameters: [new StoredParameter(0, "name", "System::String", 0, false, "System.String")],
+            namespaceName: "Nop.Core.Caching",
+            pathData: CreateCanonicalPath(
+                "Nop.Core.Caching",
+                "DistributedCacheLocker",
+                "DistributedCacheLocker",
+                "RunWithHeartbeatAsync(System.String)",
+                "RunWithHeartbeatAsync(System::String)"));
         var context = new QueryContext(CreateProfile(), [symbol]);
 
         using var document = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions).WriteSymbols(context));
 
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("matched").EnumerateArray());
         Assert.Equal(
-            "DistributedCacheLocker::RunWithHeartbeatAsync(System.String)",
+            "DistributedCacheLocker::RunWithHeartbeatAsync(String)",
             outputSymbol.GetProperty("displayName").GetString());
         Assert.Equal("symbol-1", outputSymbol.GetProperty("stableKey").GetString());
         Assert.Equal("Nop.Core.Caching", outputSymbol.GetProperty("namespaceName").GetString());
-        Assert.Equal(displayName, outputSymbol.GetProperty("fullyQualifiedName").GetString());
-        Assert.Equal("System.String", Assert.Single(outputSymbol.GetProperty("parameters").EnumerateArray()).GetString());
+        Assert.Equal(
+            "DistributedCacheLocker::RunWithHeartbeatAsync(String)",
+            outputSymbol.GetProperty("fullyQualifiedName").GetString());
+        Assert.Equal("String", Assert.Single(outputSymbol.GetProperty("parameters").EnumerateArray()).GetString());
     }
 
     [Fact]
-    public void WriteSymbolsTableKeepsReturnAndParameterTypesWhileShorteningOwnerNamespace()
+    public void WriteSymbolsTableShortensReturnAndParameterTypesWithCanonicalPairs()
     {
         var symbol = CreateSymbol(
             AsyncRole.DeclaredAsync,
@@ -659,46 +674,60 @@ public sealed class OutputFormatterTests : IDisposable
             displayName: "Tokyo.Gamer::Play(System.String,System.Threading.CancellationToken)",
             parameters:
             [
-                new StoredParameter(0, "name", "System.String", 0, false),
-                new StoredParameter(1, "token", "System.Threading.CancellationToken", 0, false),
+                new StoredParameter(0, "name", "System::String", 0, false, "System.String"),
+                new StoredParameter(1, "token", "System.Threading::CancellationToken", 0, false, "System.Threading.CancellationToken"),
             ],
             namespaceName: "Tokyo",
             isStatic: true,
-            returnTypeKey: "System.Threading.Tasks.Task<System.Int32>",
+            returnTypeKey: "System.Threading.Tasks::Task<System::Int32>",
+            returnTypeDisplay: "System.Threading.Tasks.Task<System.Int32>",
+            pathData: CreateCanonicalPath(
+                "Tokyo",
+                "Gamer",
+                "Gamer",
+                "Play(System.String,System.Threading.CancellationToken)",
+                "Play(System::String,System.Threading::CancellationToken)"),
             accessibility: (int)IndexedAccessibility.Public);
         var context = new QueryContext(CreateProfile(), [symbol]);
 
         var output = CaptureText(() => CreateOutputFormatter("table", ShortSymbolPathOptions).WriteSymbols(context));
 
         Assert.Contains(
-            "public static async System.Threading.Tasks.Task<System.Int32> " +
-            "Gamer::Play(System.String,System.Threading.CancellationToken)",
+            "public static async Task<Int32> Gamer::Play(String,CancellationToken)",
             output);
     }
 
     [Fact]
-    public void WriteSymbolsJsonKeepsCanonicalFieldsAndOnlyShowsSourceWhenRequested()
+    public void WriteSymbolsJsonShortensAllTypeFieldsAndOnlyShowsSourceWhenRequested()
     {
         var symbol = CreateSymbol(
             AsyncRole.DeclaredAsync,
             asyncInvolvementDepth: 0,
             displayName: "Tokyo.Gamer::Play(System.String)",
-            parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
+            parameters: [new StoredParameter(0, "name", "System::String", 0, false, "System.String")],
             namespaceName: "Tokyo",
             isStatic: true,
-            returnTypeKey: "System.Threading.Tasks.Task<System.Int32>",
+            returnTypeKey: "System.Threading.Tasks::Task<System::Int32>",
+            returnTypeDisplay: "System.Threading.Tasks.Task<System.Int32>",
+            pathData: CreateCanonicalPath(
+                "Tokyo",
+                "Gamer",
+                "Gamer",
+                "Play(System.String)",
+                "Play(System::String)"),
             normalizedSource: "public static async Task<int>Play(string name){return 1;}",
             accessibility: (int)IndexedAccessibility.Public);
 
         using var hiddenSource = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions)
             .WriteSymbols(new QueryContext(CreateProfile(), [symbol])));
         var hiddenSymbol = Assert.Single(hiddenSource.RootElement.GetProperty("matched").EnumerateArray());
-        Assert.Equal("Gamer::Play(System.String)", hiddenSymbol.GetProperty("displayName").GetString());
+        Assert.Equal("Gamer::Play(String)", hiddenSymbol.GetProperty("displayName").GetString());
         Assert.Equal(
-            "public static async System.Threading.Tasks.Task<System.Int32> Gamer::Play(System.String)",
+            "public static async Task<Int32> Gamer::Play(String)",
             hiddenSymbol.GetProperty("signature").GetString());
-        Assert.Equal("System.Threading.Tasks.Task<System.Int32>", hiddenSymbol.GetProperty("returnType").GetString());
-        Assert.Equal("System.String", Assert.Single(hiddenSymbol.GetProperty("parameters").EnumerateArray()).GetString());
+        Assert.Equal("Gamer::Play(String)", hiddenSymbol.GetProperty("fullyQualifiedName").GetString());
+        Assert.Equal("Task<Int32>", hiddenSymbol.GetProperty("returnType").GetString());
+        Assert.Equal("String", Assert.Single(hiddenSymbol.GetProperty("parameters").EnumerateArray()).GetString());
         Assert.Equal("public", hiddenSymbol.GetProperty("accessibility").GetString());
         Assert.True(hiddenSymbol.GetProperty("isStatic").GetBoolean());
         Assert.True(hiddenSymbol.GetProperty("isAsync").GetBoolean());
@@ -712,6 +741,92 @@ public sealed class OutputFormatterTests : IDisposable
     }
 
     [Fact]
+    public void WriteSymbolsTableShortNamesShortenRoslynStyleSignatureAndPreserveFullOutput()
+    {
+        var symbol = CreateRoslynatorSymbol();
+        var context = new QueryContext(CreateProfile(), [symbol]);
+
+        var shortOutput = CaptureText(() => CreateOutputFormatter("table", ShortSymbolPathOptions)
+            .WriteSymbols(context));
+        Assert.Contains(
+            "public static ForStatementSyntax " +
+            "SyntaxRefactorings::ConvertWhileStatementToForStatement(" +
+            "WhileStatementSyntax,VariableDeclarationSyntax?,SeparatedSyntaxList<ExpressionSyntax>)",
+            shortOutput,
+            StringComparison.Ordinal);
+
+        var fullOutput = CaptureText(() => CreateOutputFormatter("table", FullSymbolPathOptions)
+            .WriteSymbols(context));
+        Assert.Contains(
+            "public static Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax " +
+            "Roslynator.CSharp.SyntaxRefactorings::ConvertWhileStatementToForStatement(" +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax," +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?," +
+            "Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)",
+            fullOutput,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteSymbolsJsonShortNamesUseCanonicalTypePairsForEveryPresentationField()
+    {
+        var symbol = CreateRoslynatorSymbol();
+        var context = new QueryContext(CreateProfile(), [symbol]);
+        const string shortDisplayName =
+            "SyntaxRefactorings::ConvertWhileStatementToForStatement(" +
+            "WhileStatementSyntax,VariableDeclarationSyntax?,SeparatedSyntaxList<ExpressionSyntax>)";
+        const string fullDisplayName =
+            "Roslynator.CSharp.SyntaxRefactorings::ConvertWhileStatementToForStatement(" +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax," +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?," +
+            "Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)";
+
+        using var shortDocument = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions)
+            .WriteSymbols(context));
+        var shortValue = Assert.Single(shortDocument.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(shortDisplayName, shortValue.GetProperty("displayName").GetString());
+        Assert.Equal(
+            "public static ForStatementSyntax " + shortDisplayName,
+            shortValue.GetProperty("signature").GetString());
+        Assert.Equal(shortValue.GetProperty("displayName").GetString(), shortValue.GetProperty("fullyQualifiedName").GetString());
+        Assert.Equal(
+            new[] { "WhileStatementSyntax", "VariableDeclarationSyntax?", "SeparatedSyntaxList<ExpressionSyntax>" },
+            shortValue.GetProperty("parameters").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal("ForStatementSyntax", shortValue.GetProperty("returnType").GetString());
+        Assert.Equal("Roslynator.CSharp", shortValue.GetProperty("namespaceName").GetString());
+        Assert.Equal("symbol-1", shortValue.GetProperty("stableKey").GetString());
+        Assert.Equal("SyntaxRefactorings", shortValue.GetProperty("typeSimpleName").GetString());
+
+        var explicitOptions = new SymbolPathFormatOptions(SymbolPathStyle.Explicit, ShortNames: true);
+        using var explicitDocument = CaptureJson(() => CreateOutputFormatter("json", explicitOptions)
+            .WriteSymbols(context));
+        var explicitValue = Assert.Single(explicitDocument.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(
+            "**::" + shortDisplayName,
+            explicitValue.GetProperty("displayName").GetString());
+        Assert.Equal(shortDisplayName, explicitValue.GetProperty("fullyQualifiedName").GetString());
+
+        using var fullDocument = CaptureJson(() => CreateOutputFormatter("json", FullSymbolPathOptions)
+            .WriteSymbols(context));
+        var fullValue = Assert.Single(fullDocument.RootElement.GetProperty("matched").EnumerateArray());
+        Assert.Equal(fullDisplayName, fullValue.GetProperty("displayName").GetString());
+        Assert.Equal("public static Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax " + fullDisplayName,
+            fullValue.GetProperty("signature").GetString());
+        Assert.Equal(fullDisplayName, fullValue.GetProperty("fullyQualifiedName").GetString());
+        Assert.Equal(
+            new[]
+            {
+                "Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax",
+                "Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?",
+                "Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>",
+            },
+            fullValue.GetProperty("parameters").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal("Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax", fullValue.GetProperty("returnType").GetString());
+        Assert.Equal("Roslynator.CSharp", fullValue.GetProperty("namespaceName").GetString());
+        Assert.Equal("symbol-1", fullValue.GetProperty("stableKey").GetString());
+    }
+
+    [Fact]
     public void WriteSymbolsFormatsConstructorAndLambdaApplicableFieldsAndGatesSource()
     {
         var constructor = CreateSymbol(
@@ -719,7 +834,7 @@ public sealed class OutputFormatterTests : IDisposable
             asyncInvolvementDepth: null,
             id: 101,
             displayName: "Tokyo.Gamer::[constructor](string)",
-            parameters: [new StoredParameter(0, "name", "System.String", 0, false)],
+            parameters: [new StoredParameter(0, "name", "System::String", 0, false, "string")],
             namespaceName: "Tokyo",
             name: ".ctor",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.Constructor,
@@ -734,7 +849,8 @@ public sealed class OutputFormatterTests : IDisposable
             kind: IndexedSymbolKind.Lambda,
             name: "<lambda#1>",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.AnonymousFunction,
-            returnTypeKey: "System.Int32",
+            returnTypeKey: "System::Int32",
+            returnTypeDisplay: "System.Int32",
             normalizedSource: "()=>42",
             accessibility: (int)IndexedAccessibility.NotApplicable);
         var hiddenContext = new QueryContext(CreateProfile(), [constructor, lambda]);
@@ -795,7 +911,8 @@ public sealed class OutputFormatterTests : IDisposable
             displayName: "Test.A::Host().Local()",
             name: "Local",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.LocalFunction,
-            returnTypeKey: "System.Int32",
+            returnTypeKey: "System::Int32",
+            returnTypeDisplay: "System.Int32",
             accessibility: (int)IndexedAccessibility.NotApplicable);
         var getter = CreateSymbol(
             AsyncRole.None,
@@ -804,7 +921,8 @@ public sealed class OutputFormatterTests : IDisposable
             displayName: "Test.A::[get:Value]()",
             name: "get_Value",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.PropertyGet,
-            returnTypeKey: "System.Int32",
+            returnTypeKey: "System::Int32",
+            returnTypeDisplay: "System.Int32",
             accessibility: (int)IndexedAccessibility.Public);
         var addition = CreateSymbol(
             AsyncRole.None,
@@ -814,7 +932,8 @@ public sealed class OutputFormatterTests : IDisposable
             name: "op_Addition",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.UserDefinedOperator,
             isStatic: true,
-            returnTypeKey: "Test.A",
+            returnTypeKey: "Test::A",
+            returnTypeDisplay: "Test.A",
             accessibility: (int)IndexedAccessibility.Public);
         var conversion = CreateSymbol(
             AsyncRole.None,
@@ -824,7 +943,8 @@ public sealed class OutputFormatterTests : IDisposable
             name: "op_Implicit",
             methodKind: (int)Microsoft.CodeAnalysis.MethodKind.Conversion,
             isStatic: true,
-            returnTypeKey: "System.Int32",
+            returnTypeKey: "System::Int32",
+            returnTypeDisplay: "System.Int32",
             accessibility: (int)IndexedAccessibility.Public);
         var context = new QueryContext(CreateProfile(), [local, getter, addition, conversion]);
 
@@ -1871,19 +1991,31 @@ public sealed class OutputFormatterTests : IDisposable
                 AsyncRole.None,
                 null,
                 id: 1,
-                displayName: "Example.Features.Caller::Run(System.String)"),
+                displayName: "Example.Features.Caller::Run(System.String)",
+                pathData: CreateCanonicalPath(
+                    "Example.Features",
+                    "Caller",
+                    "Caller",
+                    "Run(System.String)",
+                    "Run(System::String)")),
             [2] = CreateSymbol(
                 AsyncRole.None,
                 null,
                 id: 2,
-                displayName: "Example.Services.Callee::Execute(System.Threading.Tasks.Task)"),
+                displayName: "Example.Services.Callee::Execute(System.Threading.Tasks.Task)",
+                pathData: CreateCanonicalPath(
+                    "Example.Services",
+                    "Callee",
+                    "Callee",
+                    "Execute(System.Threading.Tasks.Task)",
+                    "Execute(System.Threading.Tasks::Task)")),
         };
         var result = new CallResult(CreateSelection(context), [call], [], [], endpointSymbols);
 
         var output = CaptureText(() => CreateOutputFormatter("table", ShortSymbolPathOptions).WriteCalls(result, "call(s)"));
 
         Assert.Contains(
-            "Caller::Run(System.String) -> Callee::Execute(System.Threading.Tasks.Task)",
+            "Caller::Run(String) -> Callee::Execute(Task)",
             output);
     }
 
@@ -1923,7 +2055,13 @@ public sealed class OutputFormatterTests : IDisposable
         var symbol = CreateSymbol(
             AsyncRole.None,
             asyncInvolvementDepth: null,
-            displayName: "Example.Features.Worker::Run(System.Threading.Tasks.Task)");
+            displayName: "Example.Features.Worker::Run(System.Threading.Tasks.Task)",
+            pathData: CreateCanonicalPath(
+                "Example.Features",
+                "Worker",
+                "Worker",
+                "Run(System.Threading.Tasks.Task)",
+                "Run(System.Threading.Tasks::Task)"));
         var context = new QueryContext(CreateProfile(), [symbol]);
 
         using var document = CaptureJson(() => CreateOutputFormatter("json", ShortSymbolPathOptions).WriteSymbolList(context));
@@ -1931,7 +2069,7 @@ public sealed class OutputFormatterTests : IDisposable
         Assert.Equal("default", document.RootElement.GetProperty("profile").GetString());
         var outputSymbol = Assert.Single(document.RootElement.GetProperty("symbols").EnumerateArray());
         Assert.Equal(
-            "Worker::Run(System.Threading.Tasks.Task)",
+            "Worker::Run(Task)",
             outputSymbol.GetProperty("displayName").GetString());
         Assert.False(document.RootElement.TryGetProperty("matched", out _));
     }
@@ -2365,12 +2503,14 @@ public sealed class OutputFormatterTests : IDisposable
         int? methodKind = null,
         bool isStatic = false,
         string? returnTypeKey = null,
+        string? returnTypeDisplay = null,
         string? normalizedSource = null,
         int? accessibility = null,
         string? documentPath = null,
-        int? sourceStart = null)
+        int? sourceStart = null,
+        SymbolPathData? pathData = null)
     {
-        var path = CreatePath(displayName, namespaceName);
+        var path = pathData ?? CreatePath(displayName, namespaceName);
         var preferredDeclaration = normalizedSource is not null || documentPath is not null
             ? new StoredDeclaration(
                 Id: id,
@@ -2415,6 +2555,7 @@ public sealed class OutputFormatterTests : IDisposable
             TypeKind: null,
             Accessibility: accessibility) with
         {
+            ReturnTypeDisplay = returnTypeDisplay,
             Path = path,
             PreferredDeclarationId = preferredDeclaration?.Id,
             PreferredDocumentPath = preferredDeclaration?.DocumentPath,
@@ -2454,6 +2595,78 @@ public sealed class OutputFormatterTests : IDisposable
             executable,
             executable,
             CallablePathSegmentKind.Named);
+    }
+
+    private static SymbolPathData CreateCanonicalPath(
+        string namespacePath,
+        string typeDisplayPath,
+        string typeIdentityPath,
+        string executableDisplayPath,
+        string executableIdentityPath,
+        CallablePathSegmentKind segmentKind = CallablePathSegmentKind.Named) =>
+        new(
+            namespacePath,
+            typeDisplayPath,
+            typeIdentityPath,
+            executableDisplayPath,
+            executableIdentityPath,
+            executableDisplayPath,
+            executableIdentityPath,
+            segmentKind);
+
+    private static StoredSymbol CreateRoslynatorSymbol()
+    {
+        const string executableDisplay =
+            "ConvertWhileStatementToForStatement(" +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax," +
+            "Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?," +
+            "Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)";
+        const string executableIdentity =
+            "ConvertWhileStatementToForStatement(" +
+            "Microsoft.CodeAnalysis.CSharp.Syntax::WhileStatementSyntax," +
+            "Microsoft.CodeAnalysis.CSharp.Syntax::VariableDeclarationSyntax?," +
+            "Microsoft.CodeAnalysis::SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax::ExpressionSyntax>)";
+
+        return CreateSymbol(
+            AsyncRole.None,
+            asyncInvolvementDepth: null,
+            displayName: $"Roslynator.CSharp.SyntaxRefactorings::{executableDisplay}",
+            parameters:
+            [
+                new StoredParameter(
+                    0,
+                    "whileStatement",
+                    "Microsoft.CodeAnalysis.CSharp.Syntax::WhileStatementSyntax",
+                    0,
+                    false,
+                    "Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax"),
+                new StoredParameter(
+                    1,
+                    "declaration",
+                    "Microsoft.CodeAnalysis.CSharp.Syntax::VariableDeclarationSyntax",
+                    0,
+                    false,
+                    "Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?"),
+                new StoredParameter(
+                    2,
+                    "expression",
+                    "Microsoft.CodeAnalysis::SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax::ExpressionSyntax>",
+                    0,
+                    false,
+                    "Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>"),
+            ],
+            namespaceName: "Roslynator.CSharp",
+            name: "ConvertWhileStatementToForStatement",
+            isStatic: true,
+            returnTypeKey: "Microsoft.CodeAnalysis.CSharp.Syntax::ForStatementSyntax",
+            returnTypeDisplay: "Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax",
+            accessibility: (int)IndexedAccessibility.Public,
+            pathData: CreateCanonicalPath(
+                "Roslynator.CSharp",
+                "SyntaxRefactorings",
+                "SyntaxRefactorings",
+                executableDisplay,
+                executableIdentity));
     }
 
     private static IReadOnlyDictionary<long, StoredSymbol> CreateEndpointSymbols() =>

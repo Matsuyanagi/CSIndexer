@@ -444,6 +444,10 @@ internal sealed class OutputFormatter
         ArgumentNullException.ThrowIfNull(symbol);
         ArgumentNullException.ThrowIfNull(pathResolver);
 
+        var fullyQualifiedOptions = FullyQualifiedNameOptions with
+        {
+            ShortNames = symbolPathOptions.ShortNames,
+        };
         var value = new Dictionary<string, object?>
         {
             ["id"] = symbol.Id,
@@ -451,13 +455,14 @@ internal sealed class OutputFormatter
             ["kind"] = symbol.Kind.ToString().ToLowerInvariant(),
             ["displayName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, symbolPathOptions),
             ["signature"] = SymbolSignatureFormatter.Format(symbol, symbolPathOptions),
-            ["fullyQualifiedName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, FullyQualifiedNameOptions),
+            ["fullyQualifiedName"] = SymbolSignatureFormatter.FormatDisplayName(symbol, fullyQualifiedOptions),
             ["namespaceName"] = symbol.NamespaceName,
             ["typeSimpleName"] = symbol.TypeSimpleName,
             ["parameters"] = symbol.Parameters
-                .Select(parameter => string.IsNullOrEmpty(parameter.TypeDisplay)
-                    ? parameter.TypeKey
-                    : parameter.TypeDisplay)
+                .Select(parameter => SymbolSignatureFormatter.FormatType(
+                    parameter.TypeKey,
+                    parameter.TypeDisplay,
+                    symbolPathOptions))
                 .ToArray(),
             ["location"] = symbol.DocumentPath is null || symbol.SourceStart is null
                 ? null
@@ -474,7 +479,7 @@ internal sealed class OutputFormatter
             ["asyncRole"] = symbol.AsyncRole.ToString(),
             ["isAsyncInvolved"] = symbol.AsyncInvolvementDepth is not null,
             ["asyncInvolvementDepth"] = symbol.AsyncInvolvementDepth,
-            ["returnType"] = symbol.ReturnTypeDisplay ?? symbol.ReturnTypeKey,
+            ["returnType"] = SymbolSignatureFormatter.FormatReturnType(symbol, symbolPathOptions),
             ["methodKind"] = symbol.MethodKind,
             ["sourceAvailable"] = symbol.PreferredDeclarationId is not null,
         };

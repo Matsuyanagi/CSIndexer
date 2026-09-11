@@ -29,9 +29,9 @@ internal static class SymbolSignatureFormatter
             parts.Add("async");
         }
 
-        if (symbol.ReturnTypeDisplay is not null || symbol.ReturnTypeKey is not null)
+        if (FormatReturnType(symbol, symbolPathOptions) is { } returnType)
         {
-            parts.Add(symbol.ReturnTypeDisplay ?? symbol.ReturnTypeKey!);
+            parts.Add(returnType);
         }
 
         parts.Add(FormatDisplayName(symbol, symbolPathOptions));
@@ -52,7 +52,36 @@ internal static class SymbolSignatureFormatter
         return PathFormatter.Format(symbol.Path, symbolPathOptions);
     }
 
-    public static string FormatType(string typeName, SymbolPathFormatOptions symbolPathOptions) => typeName;
+    public static string FormatType(
+        string typeKey,
+        string typeDisplay,
+        SymbolPathFormatOptions symbolPathOptions)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeDisplay);
+        return SymbolSignatureCanonicalizer.FormatTypeDisplay(
+            new CanonicalTypeSignature(typeKey, typeDisplay),
+            symbolPathOptions.ShortNames);
+    }
+
+    internal static string? FormatReturnType(
+        StoredSymbol symbol,
+        SymbolPathFormatOptions symbolPathOptions)
+    {
+        ArgumentNullException.ThrowIfNull(symbol);
+        if (symbol.ReturnTypeKey is null && symbol.ReturnTypeDisplay is null)
+        {
+            return null;
+        }
+
+        if (symbol.ReturnTypeKey is null || symbol.ReturnTypeDisplay is null)
+        {
+            throw new InvalidOperationException(
+                $"Symbol ID {symbol.Id} has an incomplete return type identity/display pair.");
+        }
+
+        return FormatType(symbol.ReturnTypeKey, symbol.ReturnTypeDisplay, symbolPathOptions);
+    }
 
     public static bool IsDeclaredAsync(StoredSymbol symbol) =>
         (symbol.AsyncRole & AsyncRole.DeclaredAsync) != 0;
