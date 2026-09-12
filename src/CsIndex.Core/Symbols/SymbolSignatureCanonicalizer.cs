@@ -91,7 +91,7 @@ public static class SymbolSignatureCanonicalizer
             syntax = SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.VoidKeyword));
         }
 
-        var identity = ParseIdentityNode(type.IdentityKey);
+        var identity = ParseIdentityNodeForDisplay(type);
         return RewriteShortDisplay(identity, syntax, type).NormalizeWhitespace().ToFullString();
     }
 
@@ -241,6 +241,43 @@ public static class SymbolSignatureCanonicalizer
             _ => throw CreateDisplayMismatch(pair),
         };
 
+    private static TypeNode ParseIdentityNodeForDisplay(CanonicalTypeSignature pair)
+    {
+        TypeNode identity;
+        try
+        {
+            identity = ParseIdentityNode(pair.IdentityKey);
+        }
+        catch (ArgumentException)
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        if (!string.Equals(identity.IdentityKey, pair.IdentityKey, StringComparison.Ordinal) ||
+            ContainsInvalidPlaceholderOrdinal(identity))
+        {
+            throw CreateDisplayMismatch(pair);
+        }
+
+        return identity;
+    }
+
+    private static bool ContainsInvalidPlaceholderOrdinal(TypeNode node) =>
+        node switch
+        {
+            PlaceholderTypeNode placeholder => placeholder.Ordinal < 0,
+            NamedTypeNode named => named.Segments.Any(segment =>
+                segment.Arguments.Any(ContainsInvalidPlaceholderOrdinal)),
+            ArrayTypeNode array => ContainsInvalidPlaceholderOrdinal(array.Element),
+            PointerTypeNode pointer => ContainsInvalidPlaceholderOrdinal(pointer.Element),
+            TupleTypeNode tuple => tuple.Elements.Any(ContainsInvalidPlaceholderOrdinal),
+            NullableTypeNode nullable => ContainsInvalidPlaceholderOrdinal(nullable.Element),
+            FunctionPointerTypeNode functionPointer =>
+                functionPointer.Parameters.Any(parameter => ContainsInvalidPlaceholderOrdinal(parameter.Type)) ||
+                ContainsInvalidPlaceholderOrdinal(functionPointer.ReturnType),
+            _ => false,
+        };
+
     private static NameSyntax RewriteNamedTypeDisplay(
         NamedTypeNode identity,
         NameSyntax display,
@@ -301,7 +338,7 @@ public static class SymbolSignatureCanonicalizer
     {
         var keyword = display.Keyword.ValueText;
         if (!PredefinedTypeNames.TryGetValue(keyword, out var qualifiedName) ||
-            !identity.HasQualifiedName(qualifiedName) ||
+            !identity.HasCanonicalQualifiedName(qualifiedName) ||
             identity.Segments.Any(segment => segment.Arguments.Count != 0))
         {
             throw CreateDisplayMismatch(pair);
@@ -317,7 +354,7 @@ public static class SymbolSignatureCanonicalizer
     {
         var element = identity switch
         {
-            NamedTypeNode named when named.HasQualifiedName("System.Nullable") && named.Arguments.Count == 1 =>
+            NamedTypeNode named when named.HasCanonicalQualifiedName("System.Nullable") && named.Arguments.Count == 1 =>
                 named.Arguments[0],
             NullableTypeNode nullable => nullable.Element,
             TypeNode node when node.Classification != TypeClassification.Value => node,
@@ -437,13 +474,13 @@ public static class SymbolSignatureCanonicalizer
     private static bool IsDynamicDisplay(NamedTypeNode identity, IdentifierNameSyntax display) =>
         !IsEscapedIdentifier(display.Identifier) &&
         string.Equals(display.Identifier.ValueText, "dynamic", StringComparison.Ordinal) &&
-        identity.HasQualifiedName("System.Object") &&
+        identity.HasCanonicalQualifiedName("System.Object") &&
         identity.Arguments.Count == 0;
 
     private static bool IsPredefinedAliasDisplay(NamedTypeNode identity, IdentifierNameSyntax display) =>
         !IsEscapedIdentifier(display.Identifier) &&
         PredefinedTypeNames.TryGetValue(display.Identifier.ValueText, out var qualifiedName) &&
-        identity.HasQualifiedName(qualifiedName) &&
+        identity.HasCanonicalQualifiedName(qualifiedName) &&
         identity.Segments.All(segment => segment.Arguments.Count == 0);
 
     private static InvalidOperationException CreateDisplayMismatch(CanonicalTypeSignature pair) =>
@@ -1021,7 +1058,7 @@ public static class SymbolSignatureCanonicalizer
         if (selector is NullableTypeNode nullableSelector)
         {
             if (candidate is NamedTypeNode nullableCandidate &&
-                nullableCandidate.HasQualifiedName("System.Nullable") &&
+                nullableCandidate.HasTextualQualifiedName("System.Nullable") &&
                 nullableCandidate.Arguments.Count == 1)
             {
                 return Matches(
@@ -1036,7 +1073,7 @@ public static class SymbolSignatureCanonicalizer
         }
 
         if (candidate is NamedTypeNode namedCandidate &&
-            namedCandidate.HasQualifiedName("System.Nullable") &&
+            namedCandidate.HasTextualQualifiedName("System.Nullable") &&
             namedCandidate.Arguments.Count == 1)
         {
             return false;
@@ -1350,7 +1387,7 @@ public static class SymbolSignatureCanonicalizer
             }
         }
 
-        public bool HasQualifiedName(string qualifiedName)
+        public bool HasCanonicalQualifiedName(string qualifiedName)
         {
             var expectedSegments = qualifiedName.Split('.', StringSplitOptions.RemoveEmptyEntries);
             var namespaceSegmentCount = NamespaceSegmentCount ?? Math.Max(Segments.Count - 1, 0);
@@ -1359,6 +1396,9 @@ public static class SymbolSignatureCanonicalizer
                    Segments.Select(segment => segment.Name)
                        .SequenceEqual(expectedSegments, StringComparer.Ordinal);
         }
+
+        public bool HasTextualQualifiedName(string qualifiedName) =>
+            string.Equals(GetQualifiedName(), qualifiedName, StringComparison.Ordinal);
 
         private string GetQualifiedName() =>
             string.Join('.', Segments.Select(segment => segment.Name));

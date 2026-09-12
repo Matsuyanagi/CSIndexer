@@ -325,6 +325,36 @@ public sealed class SymbolSignatureCanonicalizerTests
     }
 
     [Theory]
+    [InlineData(
+        "System::String[bogus]",
+        "System.String[]",
+        "Canonical type identity 'System::String[bogus]' does not match display 'System.String[]'.")]
+    [InlineData(
+        "System..Collections::Widget",
+        "System.Collections.Widget",
+        "Canonical type identity 'System..Collections::Widget' does not match display 'System.Collections.Widget'.")]
+    [InlineData(
+        "!-1",
+        "T",
+        "Canonical type identity '!-1' does not match display 'T'.")]
+    [InlineData(
+        "^-1",
+        "T",
+        "Canonical type identity '^-1' does not match display 'T'.")]
+    public void FormatTypeDisplay_RejectsMalformedCanonicalIdentityFormsWithMismatchContract(
+        string identity,
+        string display,
+        string expectedMessage)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(
+                new CanonicalTypeSignature(identity, display),
+                shortNames: true));
+
+        Assert.Equal(expectedMessage, exception.Message);
+    }
+
+    [Theory]
     [InlineData("::System.Int32", "int")]
     [InlineData("::System.Object", "dynamic")]
     public void FormatTypeDisplay_RejectsGlobalOuterTypesThatResembleFrameworkNames(
@@ -798,6 +828,19 @@ public sealed class SymbolSignatureCanonicalizerTests
         Assert.True(SymbolSignatureCanonicalizer.IsMatch(
             valueSelector,
             new CanonicalTypeSignature(nullableValueCanonical.IdentityKey, nullableValueCanonical.DisplayText)));
+    }
+
+    [Fact]
+    public void IsMatch_PreservesTextualNullableCandidatePredicateForGlobalNamespaceCandidate()
+    {
+        var selector = SymbolSignatureCanonicalizer.ParseSelectorType(
+            "global::System.Nullable<int>",
+            EmptyPlaceholders());
+        var candidate = new CanonicalTypeSignature(
+            "::System.Nullable<System::Int32>",
+            "System.Nullable<int>");
+
+        Assert.False(SymbolSignatureCanonicalizer.IsMatch(selector, candidate));
     }
 
     [Fact]
