@@ -293,15 +293,15 @@ public sealed class CSharpSymbolPathAcceptanceTests(CSharpSymbolPathAcceptanceFi
             "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
             cancellationToken: Token);
         var copiedShortPath = fixture.FormatPath(nested, fixture.ShortCsharp);
-        Assert.Contains("Dictionary<string, List<int? []>>", copiedShortPath, StringComparison.Ordinal);
-        // The presentation short path is intentionally lossy; the existing selector grammar
-        // still requires non-alias parameter types to be fully qualified for re-resolution.
-        var resolverPath = copiedShortPath.Replace(
-            "Dictionary<string, List<int? []>>",
-            "System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>",
-            StringComparison.Ordinal);
-        Assert.StartsWith("Outer<T>.Inner<U>::", resolverPath, StringComparison.Ordinal);
-        Assert.Equal(nested.Id, Assert.Single(await ResolveAsync(resolverPath)).Id);
+        Assert.Equal(
+            "Outer<T>.Inner<U>::NestedGeneric(Dictionary<string, List<int? []>>)",
+            copiedShortPath);
+        var exception = await Assert.ThrowsAsync<SymbolQueryParseException>(
+            () => ResolveAsync(copiedShortPath));
+        Assert.Equal(
+            "Invalid symbol path: Named callable parameter type 'Dictionary<string, List<int? []>>' " +
+            "is invalid: Named selector types must be fully qualified: Dictionary (Parameter 'syntax').",
+            exception.Message);
     }
 
     [Fact]

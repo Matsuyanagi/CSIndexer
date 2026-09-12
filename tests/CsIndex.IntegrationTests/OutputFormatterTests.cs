@@ -1811,8 +1811,8 @@ public sealed class OutputFormatterTests : IDisposable
         Assert.DoesNotContain("Game.Models.", shortMermaid, StringComparison.Ordinal);
         Assert.DoesNotContain("System.Collections.Generic.", string.Join("\n", shortJsonNames), StringComparison.Ordinal);
         Assert.DoesNotContain("Game.Models.", string.Join("\n", shortJsonNames), StringComparison.Ordinal);
-        Assert.Contains("List<Widget>", shortTree, StringComparison.Ordinal);
-        Assert.Contains("List&lt;Widget&gt;", shortMermaid, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(shortTree, "List<Widget>"));
+        Assert.Equal(2, CountOccurrences(shortMermaid, "List&lt;Widget&gt;"));
 
         var fullTree = CaptureGraphText(FullSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "tree"));
         var fullMermaid = CaptureGraphText(FullSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "mermaid"));
@@ -1821,8 +1821,8 @@ public sealed class OutputFormatterTests : IDisposable
             .Select(node => node.GetProperty("symbol").GetProperty("displayName").GetString())
             .ToArray();
 
-        Assert.Contains(typeDisplay, fullTree, StringComparison.Ordinal);
-        Assert.Contains("System.Collections.Generic.List&lt;Game.Models.Widget&gt;", fullMermaid, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(fullTree, typeDisplay));
+        Assert.Equal(2, CountOccurrences(fullMermaid, "System.Collections.Generic.List&lt;Game.Models.Widget&gt;"));
         Assert.All(fullJsonNames, name => Assert.Contains(typeDisplay, name, StringComparison.Ordinal));
     }
 
@@ -2290,6 +2290,19 @@ public sealed class OutputFormatterTests : IDisposable
         return withoutTrailingTerminator
             .ReplaceLineEndings("\n")
             .Split('\n', StringSplitOptions.None);
+    }
+
+    private static int CountOccurrences(string value, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = value.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 
     private static IEnumerable<CallerTreeNode> CancelBeforeYieldingNode(CancellationTokenSource cancellation)
