@@ -261,8 +261,22 @@ public sealed class CSharpSymbolPathAcceptanceTests(CSharpSymbolPathAcceptanceFi
             {
                 "Acceptance.Special.SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
                 "Acceptance.Special::SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
-                "SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
-                "**::SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
+                "SpecialHost::[explicit:ISpecial.Map]<T>(T)",
+                "**::SpecialHost::[explicit:ISpecial.Map]<T>(T)",
+            }),
+            ("Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)", new[]
+            {
+                "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
+                "Acceptance.Signatures::Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
+                "Outer<T>.Inner<U>::NestedGeneric(Dictionary<string, List<int? []>>)",
+                "**::Outer<T>.Inner<U>::NestedGeneric(Dictionary<string, List<int? []>>)",
+            }),
+            ("Acceptance.Special.SpecialHost::[conversion:explicit:System.Guid](Acceptance.Special.SpecialHost)", new[]
+            {
+                "Acceptance.Special.SpecialHost::[conversion:explicit:System.Guid](Acceptance.Special.SpecialHost)",
+                "Acceptance.Special::SpecialHost::[conversion:explicit:System.Guid](Acceptance.Special.SpecialHost)",
+                "SpecialHost::[conversion:explicit:Guid](SpecialHost)",
+                "**::SpecialHost::[conversion:explicit:Guid](SpecialHost)",
             }),
         };
 
@@ -274,6 +288,20 @@ public sealed class CSharpSymbolPathAcceptanceTests(CSharpSymbolPathAcceptanceFi
             Assert.Equal(expected[2], fixture.FormatPath(symbol, fixture.ShortCsharp));
             Assert.Equal(expected[3], fixture.FormatPath(symbol, fixture.ShortExplicit));
         }
+
+        var nested = await fixture.GetSymbolAsync(
+            "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
+            cancellationToken: Token);
+        var copiedShortPath = fixture.FormatPath(nested, fixture.ShortCsharp);
+        Assert.Contains("Dictionary<string, List<int? []>>", copiedShortPath, StringComparison.Ordinal);
+        // The presentation short path is intentionally lossy; the existing selector grammar
+        // still requires non-alias parameter types to be fully qualified for re-resolution.
+        var resolverPath = copiedShortPath.Replace(
+            "Dictionary<string, List<int? []>>",
+            "System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>",
+            StringComparison.Ordinal);
+        Assert.StartsWith("Outer<T>.Inner<U>::", resolverPath, StringComparison.Ordinal);
+        Assert.Equal(nested.Id, Assert.Single(await ResolveAsync(resolverPath)).Id);
     }
 
     [Fact]
@@ -685,39 +713,58 @@ public sealed class CSharpSymbolPathAcceptanceTests(CSharpSymbolPathAcceptanceFi
     }
 
     [Fact]
-    public async Task SI04_NonAliasTypesAreFullyQualifiedInCanonicalOutput()
+    public async Task SI04_NonAliasTypesPreserveCanonicalFullAndShortPresentation()
     {
-        var paths = new[]
+        var cases = new[]
         {
-            "Acceptance.Special.SpecialHost::[conversion:explicit:System.Guid](Acceptance.Special.SpecialHost)",
-            "Acceptance.Special.SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
-            "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
-            "Acceptance.Signatures.Outer<T>.Inner<U>::NonAliasShapes((Acceptance.Special.SpecialHost, System.Collections.Generic.List<Acceptance.Special.SpecialHost>),delegate*<Acceptance.Special.SpecialHost, Acceptance.Special.SpecialHost>)",
+            (
+                "Acceptance.Special.SpecialHost::[conversion:explicit:System.Guid](Acceptance.Special.SpecialHost)",
+                "SpecialHost::[conversion:explicit:Guid](SpecialHost)",
+                "**::SpecialHost::[conversion:explicit:Guid](SpecialHost)",
+                new[] { "System.Guid", "Acceptance.Special.SpecialHost" },
+                new[] { "System.Guid", "Acceptance.Special.SpecialHost" }),
+            (
+                "Acceptance.Special.SpecialHost::[explicit:Acceptance.Special.ISpecial.Map]<T>(T)",
+                "SpecialHost::[explicit:ISpecial.Map]<T>(T)",
+                "**::SpecialHost::[explicit:ISpecial.Map]<T>(T)",
+                new[] { "Acceptance.Special.ISpecial" },
+                new[] { "Acceptance.Special.ISpecial" }),
+            (
+                "Acceptance.Signatures.Outer<T>.Inner<U>::NestedGeneric(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int? []>>)",
+                "Outer<T>.Inner<U>::NestedGeneric(Dictionary<string, List<int? []>>)",
+                "**::Outer<T>.Inner<U>::NestedGeneric(Dictionary<string, List<int? []>>)",
+                new[] { "System.Collections.Generic.Dictionary", "System.Collections.Generic.List" },
+                new[] { "System.Collections.Generic.Dictionary", "System.Collections.Generic.List" }),
+            (
+                "Acceptance.Signatures.Outer<T>.Inner<U>::NonAliasShapes((Acceptance.Special.SpecialHost, System.Collections.Generic.List<Acceptance.Special.SpecialHost>),delegate*<Acceptance.Special.SpecialHost, Acceptance.Special.SpecialHost>)",
+                "Outer<T>.Inner<U>::NonAliasShapes((SpecialHost, List<SpecialHost>),delegate*<SpecialHost, SpecialHost>)",
+                "**::Outer<T>.Inner<U>::NonAliasShapes((SpecialHost, List<SpecialHost>),delegate*<SpecialHost, SpecialHost>)",
+                new[] { "Acceptance.Special.SpecialHost", "System.Collections.Generic.List" },
+                new[] { "Acceptance.Special.SpecialHost", "System.Collections.Generic.List" }),
         };
 
-        foreach (var expectedFullCsharp in paths)
+        foreach (var (expectedFullCsharp, expectedShortCsharp, expectedShortExplicit, fullNames, removedPrefixes) in cases)
         {
             var matches = await ResolveAsync(expectedFullCsharp);
             Assert.True(matches.Count == 1,
                 $"SI04 expected one indexed match for '{expectedFullCsharp}', but found {matches.Count}.");
             var symbol = matches[0];
             Assert.Equal(expectedFullCsharp, fixture.FormatPath(symbol, fixture.FullCsharp));
-            foreach (var options in new[]
-                     {
-                         fixture.FullCsharp, fixture.FullExplicit, fixture.ShortCsharp, fixture.ShortExplicit,
-                     })
+            foreach (var options in new[] { fixture.FullCsharp, fixture.FullExplicit })
             {
                 var displayed = fixture.FormatPath(symbol, options);
-                foreach (var requiredName in expectedFullCsharp.Contains("NonAliasShapes", StringComparison.Ordinal)
-                             ? new[] { "Acceptance.Special.SpecialHost", "System.Collections.Generic.List" }
-                             : expectedFullCsharp.Contains("NestedGeneric", StringComparison.Ordinal)
-                                 ? new[] { "System.Collections.Generic.Dictionary", "System.Collections.Generic.List" }
-                                 : expectedFullCsharp.Contains("[explicit:", StringComparison.Ordinal)
-                                     ? new[] { "Acceptance.Special.ISpecial" }
-                                     : new[] { "System.Guid", "Acceptance.Special.SpecialHost" })
+                foreach (var requiredName in fullNames)
                 {
                     Assert.Contains(requiredName, displayed, StringComparison.Ordinal);
                 }
+            }
+
+            Assert.Equal(expectedShortCsharp, fixture.FormatPath(symbol, fixture.ShortCsharp));
+            Assert.Equal(expectedShortExplicit, fixture.FormatPath(symbol, fixture.ShortExplicit));
+            foreach (var removedPrefix in removedPrefixes)
+            {
+                Assert.DoesNotContain(removedPrefix, fixture.FormatPath(symbol, fixture.ShortCsharp), StringComparison.Ordinal);
+                Assert.DoesNotContain(removedPrefix, fixture.FormatPath(symbol, fixture.ShortExplicit), StringComparison.Ordinal);
             }
         }
     }

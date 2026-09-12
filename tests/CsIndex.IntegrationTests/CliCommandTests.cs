@@ -2052,7 +2052,7 @@ public sealed class CliCommandTests : IDisposable
               --output-format table|json  Output format (default: table)
               -o <path> | --output-file <path>  Write the result payload to a file
               --require-single  Fail unless the search matches exactly one symbol
-              --short-names  Shorten namespaces in displayed symbol names
+              --short-names  Omit namespaces from displayed owners and types
               --namespace <pattern>  Namespace component filter
               --type <pattern>  Type component filter
               --method <pattern>  Method component filter
@@ -2081,7 +2081,7 @@ public sealed class CliCommandTests : IDisposable
               --output-format tree|line|json  Output format (default: tree)
               -o <path> | --output-file <path>  Write the result payload to a file
               --max-nodes <count>  Maximum path nodes (default: 500)
-              --short-names  Shorten namespaces in displayed symbol names
+              --short-names  Omit namespaces from displayed owners and types
               --help  Show this help text
               --help-verbose  Show the full symbol-path and query grammar reference
               --verbose  With --help, show the full reference; index uses runtime progress
@@ -2101,7 +2101,7 @@ public sealed class CliCommandTests : IDisposable
               --depth <count>  Maximum caller depth; 0 is unlimited (default: 3)
               --max-nodes <count>  Maximum graph nodes (default: 500)
               --show-source  Include normalized source for every physical call site
-              --short-names  Shorten namespaces in displayed symbol names
+              --short-names  Omit namespaces from displayed owners and types
               --help  Show this help text
               --help-verbose  Show the full symbol-path and query grammar reference
               --verbose  With --help, show the full reference; index uses runtime progress
@@ -2119,7 +2119,7 @@ public sealed class CliCommandTests : IDisposable
               --output-format table|json  Output format (default: table)
               -o <path> | --output-file <path>  Write the result payload to a file
               --source-layout single-line|multi-line  Source table layout (default: single-line)
-              --short-names  Shorten namespaces in displayed symbol names
+              --short-names  Omit namespaces from displayed owners and types
               --help  Show this help text
               --help-verbose  Show the full symbol-path and query grammar reference
               --verbose  With --help, show the full reference; index uses runtime progress
@@ -2139,7 +2139,7 @@ public sealed class CliCommandTests : IDisposable
               --include <text>  Require normalized source text (repeatable)
               --exclude <text>  Reject normalized source text (repeatable)
               --source-layout single-line|multi-line  Source table layout (default: single-line)
-              --short-names  Shorten namespaces in displayed symbol names
+              --short-names  Omit namespaces from displayed owners and types
               --help  Show this help text
               --help-verbose  Show the full symbol-path and query grammar reference
               --verbose  With --help, show the full reference; index uses runtime progress

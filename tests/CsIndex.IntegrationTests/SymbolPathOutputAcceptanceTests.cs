@@ -15,7 +15,7 @@ public sealed class SymbolPathOutputAcceptanceTests(SemanticIndexFixture fixture
                 "symbol", "find", "Alpha.AsyncStatusCases::UniTaskResult()",
                 "--symbol-path-style", "explicit", "--short-names",
             ],
-            "Cysharp.Threading.Tasks.UniTask<int> **::AsyncStatusCases::UniTaskResult()"
+            "UniTask<int> **::AsyncStatusCases::UniTaskResult()"
         },
         {
             "symbol-list-json",
@@ -183,7 +183,7 @@ public sealed class SymbolPathOutputAcceptanceTests(SemanticIndexFixture fixture
     }
 
     [Fact]
-    public async Task SymbolJsonChangesOnlyPresentationFieldsAcrossStylesAndKeepsReturnTypeFullyQualified()
+    public async Task SymbolJsonShortNamesChangePresentationTypeFieldsAcrossStylesAndPreserveIdentityFields()
     {
         await fixture.BuildTask;
         var cases = new (string[] Options, string DisplayName, string Signature)[]
@@ -195,7 +195,7 @@ public sealed class SymbolPathOutputAcceptanceTests(SemanticIndexFixture fixture
             (
                 ["--short-names"],
                 "AsyncStatusCases::UniTaskResult()",
-                "public Cysharp.Threading.Tasks.UniTask<int> AsyncStatusCases::UniTaskResult()"),
+                "public UniTask<int> AsyncStatusCases::UniTaskResult()"),
             (
                 ["--symbol-path-style", "explicit"],
                 "Alpha::AsyncStatusCases::UniTaskResult()",
@@ -203,7 +203,7 @@ public sealed class SymbolPathOutputAcceptanceTests(SemanticIndexFixture fixture
             (
                 ["--symbol-path-style", "explicit", "--short-names"],
                 "**::AsyncStatusCases::UniTaskResult()",
-                "public Cysharp.Threading.Tasks.UniTask<int> **::AsyncStatusCases::UniTaskResult()"),
+                "public UniTask<int> **::AsyncStatusCases::UniTaskResult()"),
         };
 
         Dictionary<string, string>? semanticBaseline = null;
@@ -222,14 +222,19 @@ public sealed class SymbolPathOutputAcceptanceTests(SemanticIndexFixture fixture
             Assert.Equal(expectedDisplayName, symbol.GetProperty("displayName").GetString());
             Assert.Equal(expectedSignature, symbol.GetProperty("signature").GetString());
             Assert.Equal(
-                "Alpha.AsyncStatusCases::UniTaskResult()",
+                options.Contains("--short-names", StringComparer.Ordinal)
+                    ? "AsyncStatusCases::UniTaskResult()"
+                    : "Alpha.AsyncStatusCases::UniTaskResult()",
                 symbol.GetProperty("fullyQualifiedName").GetString());
             Assert.Equal(
-                "Cysharp.Threading.Tasks.UniTask<int>",
+                options.Contains("--short-names", StringComparer.Ordinal)
+                    ? "UniTask<int>"
+                    : "Cysharp.Threading.Tasks.UniTask<int>",
                 symbol.GetProperty("returnType").GetString());
 
             var semanticFields = symbol.EnumerateObject()
-                .Where(property => property.Name is not "displayName" and not "signature")
+                .Where(property => property.Name is not "displayName" and not "signature" and
+                                   not "fullyQualifiedName" and not "returnType")
                 .ToDictionary(property => property.Name, property => property.Value.GetRawText());
             if (semanticBaseline is null)
             {

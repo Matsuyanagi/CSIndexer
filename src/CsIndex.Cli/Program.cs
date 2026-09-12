@@ -117,7 +117,7 @@ internal static class Program
     private static readonly HelpOption ProfileHelpOption = new(
         "--profile <name>", "Analysis profile (default: most recently indexed profile)");
     private static readonly HelpOption ShortNamesHelpOption = new(
-        "--short-names", "Shorten namespaces in displayed symbol names");
+        "--short-names", "Omit namespaces from displayed owners and types");
     private static readonly HelpOption HelpHelpOption = new("--help", "Show this help text");
     private static readonly HelpOption HelpVerboseHelpOption = new(
         "--help-verbose", "Show the full symbol-path and query grammar reference");
@@ -1854,7 +1854,8 @@ internal static class Program
                 "path style defaults absolute",
                 "relative stored paths",
                 "symbol path style is presentation-only",
-                "short names remove owner namespace only")));
+                "short names omit namespaces from displayed owners, return types, parameters, and nested type arguments",
+                "JSON short names preserve stableKey and namespaceName")));
 
     private static void WriteVerboseReference()
     {
@@ -1907,7 +1908,7 @@ internal static class Program
               --exclude-generated         Exclude generated documents
               --only-generated            Include only generated documents
               --require-single            Fail unless the query matches one symbol
-              --short-names               Shorten namespaces in displayed symbol names
+              --short-names               Omit namespaces from displayed owners and types
               --include-overrides         Include descendant overrides and interface implementations (method queries only)
 
             Selection conditions (repeatable):

@@ -1749,6 +1749,84 @@ public sealed class OutputFormatterTests : IDisposable
     }
 
     [Fact]
+    public void GraphOutputFormatterShortNamesShortenQualifiedTypesAcrossTreeMermaidAndJson()
+    {
+        const string rootDisplay = "Game.Models.Target::Consume(System.Collections.Generic.List<Game.Models.Widget>)";
+        const string rootIdentity = "Consume(System.Collections.Generic::List<Game.Models::Widget>)";
+        const string callerDisplay = "Game.Models.Caller::Forward(System.Collections.Generic.List<Game.Models.Widget>)";
+        const string callerIdentity = "Forward(System.Collections.Generic::List<Game.Models::Widget>)";
+        const string typeKey = "System.Collections.Generic::List<Game.Models::Widget>";
+        const string typeDisplay = "System.Collections.Generic.List<Game.Models.Widget>";
+
+        var root = CreateSymbol(
+            AsyncRole.None,
+            null,
+            id: 301,
+            displayName: rootDisplay,
+            parameters: [new StoredParameter(0, "items", typeKey, 0, false, typeDisplay)],
+            namespaceName: "Game.Models",
+            returnTypeKey: typeKey,
+            returnTypeDisplay: typeDisplay,
+            pathData: CreateCanonicalPath(
+                "Game.Models",
+                "Target",
+                "Target",
+                rootDisplay[(rootDisplay.IndexOf("::", StringComparison.Ordinal) + 2)..],
+                rootIdentity));
+        var caller = CreateSymbol(
+            AsyncRole.None,
+            null,
+            id: 302,
+            displayName: callerDisplay,
+            parameters: [new StoredParameter(0, "items", typeKey, 0, false, typeDisplay)],
+            namespaceName: "Game.Models",
+            returnTypeKey: typeKey,
+            returnTypeDisplay: typeDisplay,
+            pathData: CreateCanonicalPath(
+                "Game.Models",
+                "Caller",
+                "Caller",
+                callerDisplay[(callerDisplay.IndexOf("::", StringComparison.Ordinal) + 2)..],
+                callerIdentity));
+        var result = new CallerTreeResult(
+            CreateSelection(CreateProfile(), root),
+            root,
+            [new CallerTreeNode(root, 0), new CallerTreeNode(caller, 1)],
+            [new CallerTreeEdge(caller.Id, root.Id)],
+            CallSites: [],
+            ShowSource: false,
+            Truncated: false);
+
+        var shortTree = CaptureGraphText(ShortSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "tree"));
+        var shortMermaid = CaptureGraphText(ShortSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "mermaid"));
+        using var shortJson = CaptureGraphJson(ShortSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "json"));
+        var shortJsonNames = shortJson.RootElement.GetProperty("nodes").EnumerateArray()
+            .Select(node => node.GetProperty("symbol").GetProperty("displayName").GetString())
+            .ToArray();
+
+        Assert.All(shortJsonNames, name => Assert.Contains("List<Widget>", name, StringComparison.Ordinal));
+        Assert.DoesNotContain("System.Collections.Generic.", shortTree, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game.Models.", shortTree, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Collections.Generic.", shortMermaid, StringComparison.Ordinal);
+        Assert.DoesNotContain("Game.Models.", shortMermaid, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Collections.Generic.", string.Join("\n", shortJsonNames), StringComparison.Ordinal);
+        Assert.DoesNotContain("Game.Models.", string.Join("\n", shortJsonNames), StringComparison.Ordinal);
+        Assert.Contains("List<Widget>", shortTree, StringComparison.Ordinal);
+        Assert.Contains("List&lt;Widget&gt;", shortMermaid, StringComparison.Ordinal);
+
+        var fullTree = CaptureGraphText(FullSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "tree"));
+        var fullMermaid = CaptureGraphText(FullSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "mermaid"));
+        using var fullJson = CaptureGraphJson(FullSymbolPathOptions, formatter => formatter.WriteCallerTree(result, "json"));
+        var fullJsonNames = fullJson.RootElement.GetProperty("nodes").EnumerateArray()
+            .Select(node => node.GetProperty("symbol").GetProperty("displayName").GetString())
+            .ToArray();
+
+        Assert.Contains(typeDisplay, fullTree, StringComparison.Ordinal);
+        Assert.Contains("System.Collections.Generic.List&lt;Game.Models.Widget&gt;", fullMermaid, StringComparison.Ordinal);
+        Assert.All(fullJsonNames, name => Assert.Contains(typeDisplay, name, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void GraphOutputFormatterNoFlagMermaidPreservesRawPipeInOperatorNodeLabel()
     {
         var root = CreateSymbol(AsyncRole.None, null, id: 401, displayName: "Example.Target()");
@@ -2158,12 +2236,22 @@ public sealed class OutputFormatterTests : IDisposable
     private static JsonDocument CaptureJson(Action write) => JsonDocument.Parse(CaptureText(write));
 
     private JsonDocument CaptureGraphJson(Action<GraphOutputFormatter> write) =>
-        JsonDocument.Parse(CaptureGraphText(write));
+        CaptureGraphJson(FullSymbolPathOptions, write);
+
+    private JsonDocument CaptureGraphJson(
+        SymbolPathFormatOptions symbolPathOptions,
+        Action<GraphOutputFormatter> write) =>
+        JsonDocument.Parse(CaptureGraphText(symbolPathOptions, write));
 
     private string CaptureGraphText(Action<GraphOutputFormatter> write)
+        => CaptureGraphText(FullSymbolPathOptions, write);
+
+    private string CaptureGraphText(
+        SymbolPathFormatOptions symbolPathOptions,
+        Action<GraphOutputFormatter> write)
     {
         using var payload = new StringWriter();
-        var consoleOutput = CaptureText(() => write(CreateGraphOutputFormatter(FullSymbolPathOptions, payload)));
+        var consoleOutput = CaptureText(() => write(CreateGraphOutputFormatter(symbolPathOptions, payload)));
 
         Assert.Equal(string.Empty, consoleOutput);
         return payload.ToString();
