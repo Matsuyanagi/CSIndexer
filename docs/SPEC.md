@@ -2536,7 +2536,7 @@ source-definedのメソッド、コンストラクター、ローカル関数、
 accessibility static async return-type display-name(parameters)
 ```
 
-コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`はpresentation-timeのidentity-aware変換として、表示上のownerとすべての表示型（戻り値型、引数型、generic引数、conversion target、explicit-interface payloadを含む）からnamespaceを省略する。ネストしたcontaining typeの経路は保持し、canonical field、検索意味、stored identityは変更しない。JSONでは`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`を短縮し、`stableKey`と完全な`namespaceName`は変更しない。
+コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`はpresentation-timeのidentity-aware変換として、表示上のownerとすべての表示型（戻り値型、引数型、generic引数、conversion target、explicit-interface payloadを含む）からnamespaceを省略する。ネストしたcontaining typeの経路は保持する。保存済みのcanonical identity/valueと検索意味は変更しない。JSONでは`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`を短縮し、`stableKey`と完全な`namespaceName`は変更しない。
 
 ## 33.4 シンボル検索と正規化ソース
 

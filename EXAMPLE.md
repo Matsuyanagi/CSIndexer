@@ -709,7 +709,7 @@ csindex symbol list --short-names
 For example, a Roslyn-style signature is fully qualified by default:
 
 ```text
-public static Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax SyntaxRefactorings::ConvertWhileStatementToForStatement(Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax,Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?,Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)
+public static Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax Roslynator.CSharp.SyntaxRefactorings::ConvertWhileStatementToForStatement(Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax,Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?,Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)
 ```
 
 With `--short-names`, the displayed owner and every displayed type are
