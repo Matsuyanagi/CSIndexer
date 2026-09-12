@@ -593,6 +593,41 @@ public sealed class SymbolPathFormatterTests
         Assert.Contains(display, exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("[explicit:IPlayer.Move]()", "[explicit:IPlayer.Move]()")]
+    [InlineData("[get:Game.Contracts.IPlayer.Name]()", "[get:Game.Contracts.IPlayer.Name]()")]
+    public void Format_ShortNamesRejectsMalformedNoBoundarySpecialPayloads(
+        string identity,
+        string display)
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = display,
+            ExecutableIdentityPath = identity,
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+
+        Assert.Equal(
+            $"Symbol executable path mismatch (special payload): identity '{identity}', display '{display}'.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void Format_ShortNamesAcceptsOrdinaryAccessorWithEscapedDisplayIdentifier()
+    {
+        var path = NestedMethod with
+        {
+            ExecutableDisplayPath = "[get:@Name]()",
+            ExecutableIdentityPath = "[get:Name]()",
+        };
+
+        Assert.Equal(
+            "Outer<T>.Inner<U>::[get:@Name]()",
+            new SymbolPathFormatter().Format(path, new(SymbolPathStyle.CSharp, ShortNames: true)));
+    }
+
     [Fact]
     public void Format_TypeOnlyPathHasNoTrailingExecutableSeparator()
     {

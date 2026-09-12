@@ -299,6 +299,19 @@ internal static class SymbolPathDisplayShortener
 
             if (!identityPayload.Content.Contains("::", StringComparison.Ordinal))
             {
+                if (string.Equals(identityMarker, "explicit:", StringComparison.Ordinal))
+                {
+                    ThrowMismatch("special payload");
+                }
+
+                var ordinaryIdentityMemberDot = FindLastTopLevelDot(identityPayload.Content);
+                var ordinaryDisplayMemberDot = FindLastTopLevelDot(displayPayload.Content);
+                if (ordinaryIdentityMemberDot >= identityMarker!.Length ||
+                    ordinaryDisplayMemberDot >= displayMarker!.Length)
+                {
+                    ThrowMismatch("special payload");
+                }
+
                 var ordinaryIdentityMember = identityPayload.Content[identityMarker!.Length..];
                 var ordinaryDisplayMember = displayPayload.Content[displayMarker!.Length..];
                 if (!string.Equals(
