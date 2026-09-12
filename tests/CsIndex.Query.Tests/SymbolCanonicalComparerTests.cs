@@ -351,11 +351,11 @@ public sealed class SymbolCanonicalComparerTests
     {
         var symbolA = CreateSymbol(1, "z-identity-later", "Game", "A", "Run", "same.cs", 1) with
         {
-            Path = new SymbolPathData("Game", "z.Display", "A", "Run()", "Run", "Run()", "Run", CallablePathSegmentKind.Named),
+            Path = new SymbolPathData("Game", "z.Display", "A", "Run()", "Run()", "Run()", "Run()", CallablePathSegmentKind.Named),
         };
         var symbolB = CreateSymbol(2, "a-identity-later", "Game", "B", "Run", "same.cs", 1) with
         {
-            Path = new SymbolPathData("Game", "a.Display", "B", "Run()", "Run", "Run()", "Run", CallablePathSegmentKind.Named),
+            Path = new SymbolPathData("Game", "a.Display", "B", "Run()", "Run()", "Run()", "Run()", CallablePathSegmentKind.Named),
         };
         var ordered = CallerTreeBuilder.OrderCallers([symbolB, symbolA], CancellationToken.None);
         Assert.Equal(["z-identity-later", "a-identity-later"], ordered.Select(symbol => symbol.StableKey));

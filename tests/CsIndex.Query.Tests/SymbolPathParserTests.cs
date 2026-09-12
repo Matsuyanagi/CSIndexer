@@ -545,7 +545,7 @@ public sealed class SymbolPathParserTests
             "Outer<T>.Inner<U>",
             "Outer`1.Inner`1",
             "Run<V>(ref int,out string,in System.Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>",
-            "Run`1(ref int,out string,in System.Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>",
+            "Run`1(ref System::Int32,out System::String,in System::Guid,ref readonly System::Boolean,!0,!1,^0).Local(System::String).<lambda#1>",
             "<lambda#1>",
             "<lambda#1>",
             CallablePathSegmentKind.Lambda);
@@ -556,6 +556,26 @@ public sealed class SymbolPathParserTests
             foreach (var shortNames in new[] { false, true })
             {
                 var text = formatter.Format(path, new(style, shortNames));
+                var owner = style switch
+                {
+                    SymbolPathStyle.CSharp when shortNames => "Outer<T>.Inner<U>",
+                    SymbolPathStyle.CSharp => "Game.Core.Outer<T>.Inner<U>",
+                    SymbolPathStyle.Explicit when shortNames => "**::Outer<T>.Inner<U>",
+                    _ => "Game.Core::Outer<T>.Inner<U>",
+                };
+                var executable = shortNames
+                    ? "Run<V>(ref int,out string,in Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>"
+                    : "Run<V>(ref int,out string,in System.Guid,ref readonly bool,T,U,V).Local(string).<lambda#1>";
+                Assert.Equal($"{owner}::{executable}", text);
+
+                if (shortNames)
+                {
+                    var exception = Assert.Throws<SymbolQueryParseException>(
+                        () => SymbolPathParser.Parse(text));
+                    Assert.Contains("fully qualified", exception.Message, StringComparison.Ordinal);
+                    continue;
+                }
+
                 var selector = SymbolPathParser.Parse(text);
 
                 Assert.Equal(style, selector.Style);
@@ -629,6 +649,21 @@ public sealed class SymbolPathParserTests
                 ParameterListState.Present,
                 parameters);
 
+        static (
+            string Display,
+            string Identity,
+            string ShortDisplay,
+            IReadOnlyList<ExpectedExecutableSegment> FullSegments,
+            IReadOnlyList<ExpectedExecutableSegment> ShortSegments,
+            bool ParseShort) Case(
+            string display,
+            string identity,
+            IReadOnlyList<ExpectedExecutableSegment> fullSegments,
+            IReadOnlyList<ExpectedExecutableSegment>? shortSegments = null,
+            string? shortDisplay = null,
+            bool parseShort = true) =>
+            (display, identity, shortDisplay ?? display, fullSegments, shortSegments ?? fullSegments, parseShort);
+
         var outerTypeBindings = new[]
         {
             new ExpectedGenericPlaceholder("T", CanonicalGenericPlaceholderScope.Type, 0),
@@ -640,221 +675,403 @@ public sealed class SymbolPathParserTests
             new ExpectedGenericPlaceholder("U", CanonicalGenericPlaceholderScope.Type, 1),
         };
 
-        var cases = new (string Text, IReadOnlyList<ExpectedExecutableSegment> Segments)[]
+        var cases = new (
+            string Display,
+            string Identity,
+            string ShortDisplay,
+            IReadOnlyList<ExpectedExecutableSegment> FullSegments,
+            IReadOnlyList<ExpectedExecutableSegment> ShortSegments,
+            bool ParseShort)[]
         {
-            ("[constructor](int,string)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "constructor",
-                    null,
-                    null,
-                    null,
-                    null,
-                    Arity(
-                        Parameter("int", outerTypeBindings),
-                        Parameter("string", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[static-constructor]()",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "static-constructor",
-                    null,
-                    null,
-                    null,
-                    null,
-                    Arity(),
-                    PatternMode.Literal),
-            ]),
-            ("[destructor]()",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "destructor",
-                    null,
-                    null,
-                    null,
-                    null,
-                    Arity(),
-                    PatternMode.Literal),
-            ]),
-            ("[operator:*](Game.Number*,Game.Number)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "operator",
-                    "*",
-                    null,
-                    null,
-                    null,
-                    Arity(
-                        Parameter("Game.Number*", outerTypeBindings),
-                        Parameter("Game.Number", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[checked-operator:+](Game.Number,Game.Number)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "checked-operator",
-                    "+",
-                    null,
-                    null,
-                    null,
-                    Arity(
-                        Parameter("Game.Number", outerTypeBindings),
-                        Parameter("Game.Number", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[conversion:implicit:int](Game.Number)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "conversion",
-                    null,
-                    "implicit",
-                    Type("int", outerTypeBindings),
-                    null,
-                    Arity(Parameter("Game.Number", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[conversion:explicit:System.Guid](Game.Number)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "conversion",
-                    null,
-                    "explicit",
-                    Type("System.Guid", outerTypeBindings),
-                    null,
-                    Arity(Parameter("Game.Number", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[checked-conversion:explicit:System.Guid](Game.Number)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "checked-conversion",
-                    null,
-                    "explicit",
-                    Type("System.Guid", outerTypeBindings),
-                    null,
-                    Arity(Parameter("Game.Number", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[get:Name]()",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "get",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
-                    Arity(),
-                    PatternMode.Literal),
-            ]),
-            ("[set:Name](string)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "set",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
-                    Arity(Parameter("string", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[init:Name](string)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "init",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
-                    Arity(Parameter("string", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[add:Changed](System.EventHandler)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "add",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
-                    Arity(Parameter("System.EventHandler", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[remove:Changed](System.EventHandler)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "remove",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
-                    Arity(Parameter("System.EventHandler", outerTypeBindings)),
-                    PatternMode.Literal),
-            ]),
-            ("[explicit:System.IDisposable.Dispose]()",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "explicit",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(
-                        "System.IDisposable",
-                        Type("System.IDisposable", outerTypeBindings),
-                        "Dispose",
-                        PatternMode.Glob),
-                    Arity(),
-                    PatternMode.Literal),
-            ]),
-            ("[get:Game.Contracts.IPlayer.Name]()",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "get",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(
-                        "Game.Contracts.IPlayer",
-                        Type("Game.Contracts.IPlayer", outerTypeBindings),
-                        "Name",
-                        PatternMode.Glob),
-                    Arity(),
-                    PatternMode.Literal),
-            ]),
-            ("[explicit:Game.Contracts.IMapper.Map]<T>(T)",
-            [
-                new ExpectedSpecialExecutableSegment(
-                    "explicit",
-                    null,
-                    null,
-                    null,
-                    new ExpectedQualifiedMember(
-                        "Game.Contracts.IMapper",
-                        Type("Game.Contracts.IMapper", methodShadowedBindings),
-                        "Map",
-                        PatternMode.Glob),
-                    new ExpectedCallableArity(
-                        GenericListState.Present,
-                        ["T"],
-                        ParameterListState.Present,
-                        [
-                            Parameter("T", methodShadowedBindings),
-                        ]),
-                    PatternMode.Literal),
-            ]),
-            ("<initializer:member>.<lambda#1>",
-            [
-                new ExpectedInitializerExecutableSegment("member", PatternMode.Glob),
-                new ExpectedLambdaExecutableSegment(1),
-            ]),
-            ("<anonymous-method#2>",
-            [
-                new ExpectedAnonymousMethodExecutableSegment(2),
-            ]),
-            ("<top-level-statements>",
-            [
-                new ExpectedTopLevelStatementsExecutableSegment(),
-            ]),
+            Case(
+                "[constructor](int,string)",
+                "[constructor](System::Int32,System::String)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "constructor",
+                        null,
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("int", outerTypeBindings),
+                            Parameter("string", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "constructor",
+                        null,
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("int", outerTypeBindings),
+                            Parameter("string", outerTypeBindings)),
+                        PatternMode.Literal),
+                ]),
+            Case("[static-constructor]()", "[static-constructor]()",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "static-constructor",
+                        null,
+                        null,
+                        null,
+                        null,
+                        Arity(),
+                        PatternMode.Literal),
+                ]),
+            Case("[destructor]()", "[destructor]()",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "destructor",
+                        null,
+                        null,
+                        null,
+                        null,
+                        Arity(),
+                        PatternMode.Literal),
+                ]),
+            Case(
+                "[operator:*](Game.Number*,Game.Number)",
+                "[operator:*](Game::Number*,Game::Number)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "operator",
+                        "*",
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("Game.Number*", outerTypeBindings),
+                            Parameter("Game.Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "operator",
+                        "*",
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("Number*", outerTypeBindings),
+                            Parameter("Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[operator:*](Number*,Number)",
+                parseShort: false),
+            Case(
+                "[checked-operator:+](Game.Number,Game.Number)",
+                "[checked-operator:+](Game::Number,Game::Number)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "checked-operator",
+                        "+",
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("Game.Number", outerTypeBindings),
+                            Parameter("Game.Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "checked-operator",
+                        "+",
+                        null,
+                        null,
+                        null,
+                        Arity(
+                            Parameter("Number", outerTypeBindings),
+                            Parameter("Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[checked-operator:+](Number,Number)",
+                parseShort: false),
+            Case(
+                "[conversion:implicit:int](Game.Number)",
+                "[conversion:implicit:System::Int32](Game::Number)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "conversion",
+                        null,
+                        "implicit",
+                        Type("int", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Game.Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "conversion",
+                        null,
+                        "implicit",
+                        Type("int", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[conversion:implicit:int](Number)",
+                parseShort: false),
+            Case(
+                "[conversion:explicit:System.Guid](Game.Number)",
+                "[conversion:explicit:System::Guid](Game::Number)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "conversion",
+                        null,
+                        "explicit",
+                        Type("System.Guid", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Game.Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "conversion",
+                        null,
+                        "explicit",
+                        Type("Guid", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[conversion:explicit:Guid](Number)",
+                parseShort: false),
+            Case(
+                "[checked-conversion:explicit:System.Guid](Game.Number)",
+                "[checked-conversion:explicit:System::Guid](Game::Number)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "checked-conversion",
+                        null,
+                        "explicit",
+                        Type("System.Guid", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Game.Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "checked-conversion",
+                        null,
+                        "explicit",
+                        Type("Guid", outerTypeBindings),
+                        null,
+                        Arity(Parameter("Number", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[checked-conversion:explicit:Guid](Number)",
+                parseShort: false),
+            Case("[get:Name]()", "[get:Name]()",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "get",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
+                        Arity(),
+                        PatternMode.Literal),
+                ]),
+            Case("[set:Name](string)", "[set:Name](System::String)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "set",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
+                        Arity(Parameter("string", outerTypeBindings)),
+                        PatternMode.Literal),
+                ]),
+            Case("[init:Name](string)", "[init:Name](System::String)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "init",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Name", PatternMode.Glob),
+                        Arity(Parameter("string", outerTypeBindings)),
+                        PatternMode.Literal),
+                ]),
+            Case(
+                "[add:Changed](System.EventHandler)",
+                "[add:Changed](System::EventHandler)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "add",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
+                        Arity(Parameter("System.EventHandler", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "add",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
+                        Arity(Parameter("EventHandler", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[add:Changed](EventHandler)",
+                parseShort: false),
+            Case(
+                "[remove:Changed](System.EventHandler)",
+                "[remove:Changed](System::EventHandler)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "remove",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
+                        Arity(Parameter("System.EventHandler", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "remove",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
+                        Arity(Parameter("EventHandler", outerTypeBindings)),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[remove:Changed](EventHandler)",
+                parseShort: false),
+            Case(
+                "[explicit:System.IDisposable.Dispose]()",
+                "[explicit:System::IDisposable.Dispose]()",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "explicit",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "System.IDisposable",
+                            Type("System.IDisposable", outerTypeBindings),
+                            "Dispose",
+                            PatternMode.Glob),
+                        Arity(),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "explicit",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "IDisposable",
+                            Type("IDisposable", outerTypeBindings),
+                            "Dispose",
+                            PatternMode.Glob),
+                        Arity(),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[explicit:IDisposable.Dispose]()",
+                parseShort: false),
+            Case(
+                "[get:Game.Contracts.IPlayer.Name]()",
+                "[get:Game.Contracts::IPlayer.Name]()",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "get",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "Game.Contracts.IPlayer",
+                            Type("Game.Contracts.IPlayer", outerTypeBindings),
+                            "Name",
+                            PatternMode.Glob),
+                        Arity(),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "get",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "IPlayer",
+                            Type("IPlayer", outerTypeBindings),
+                            "Name",
+                            PatternMode.Glob),
+                        Arity(),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[get:IPlayer.Name]()",
+                parseShort: false),
+            Case(
+                "[explicit:Game.Contracts.IMapper.Map]<T>(T)",
+                "[explicit:Game.Contracts::IMapper.Map]`1(^0)",
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "explicit",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "Game.Contracts.IMapper",
+                            Type("Game.Contracts.IMapper", methodShadowedBindings),
+                            "Map",
+                            PatternMode.Glob),
+                        new ExpectedCallableArity(
+                            GenericListState.Present,
+                            ["T"],
+                            ParameterListState.Present,
+                            [
+                                Parameter("T", methodShadowedBindings),
+                            ]),
+                        PatternMode.Literal),
+                ],
+                [
+                    new ExpectedSpecialExecutableSegment(
+                        "explicit",
+                        null,
+                        null,
+                        null,
+                        new ExpectedQualifiedMember(
+                            "IMapper",
+                            Type("IMapper", methodShadowedBindings),
+                            "Map",
+                            PatternMode.Glob),
+                        new ExpectedCallableArity(
+                            GenericListState.Present,
+                            ["T"],
+                            ParameterListState.Present,
+                            [
+                                Parameter("T", methodShadowedBindings),
+                            ]),
+                        PatternMode.Literal),
+                ],
+                shortDisplay: "[explicit:IMapper.Map]<T>(T)",
+                parseShort: false),
+            Case("<initializer:member>.<lambda#1>", "<initializer:member>.<lambda#1>",
+                [
+                    new ExpectedInitializerExecutableSegment("member", PatternMode.Glob),
+                    new ExpectedLambdaExecutableSegment(1),
+                ]),
+            Case("<anonymous-method#2>", "<anonymous-method#2>",
+                [
+                    new ExpectedAnonymousMethodExecutableSegment(2),
+                ]),
+            Case("<top-level-statements>", "<top-level-statements>",
+                [
+                    new ExpectedTopLevelStatementsExecutableSegment(),
+                ]),
         };
         var formatter = new SymbolPathFormatter();
 
@@ -862,18 +1079,38 @@ public sealed class SymbolPathParserTests
         {
             foreach (var shortNames in new[] { false, true })
             {
-                foreach (var (executable, expectedSegments) in cases)
+                foreach (var (display, identity, shortDisplay, fullSegments, shortSegments, parseShort) in cases)
                 {
                     var path = new SymbolPathData(
                         "Game.Core",
                         "Outer<T>.Inner<U>",
                         "Outer`1.Inner`1",
-                        executable,
-                        executable,
-                        executable,
-                        executable,
+                        display,
+                        identity,
+                        display,
+                        identity,
                         CallablePathSegmentKind.Named);
-                    var selector = SymbolPathParser.Parse(formatter.Format(path, new(style, shortNames)));
+                    var formatted = formatter.Format(path, new(style, shortNames));
+                    var owner = style switch
+                    {
+                        SymbolPathStyle.CSharp when shortNames => "Outer<T>.Inner<U>",
+                        SymbolPathStyle.CSharp => "Game.Core.Outer<T>.Inner<U>",
+                        SymbolPathStyle.Explicit when shortNames => "**::Outer<T>.Inner<U>",
+                        _ => "Game.Core::Outer<T>.Inner<U>",
+                    };
+                    Assert.Equal(
+                        $"{owner}::{(shortNames ? shortDisplay : display)}",
+                        formatted);
+
+                    if (shortNames && !parseShort)
+                    {
+                        var exception = Assert.Throws<SymbolQueryParseException>(
+                            () => SymbolPathParser.Parse(formatted));
+                        Assert.Contains("fully qualified", exception.Message, StringComparison.Ordinal);
+                        continue;
+                    }
+
+                    var selector = SymbolPathParser.Parse(formatted);
                     Assert.Equal(style, selector.Style);
                     if (style == SymbolPathStyle.Explicit && shortNames)
                     {
@@ -894,7 +1131,9 @@ public sealed class SymbolPathParserTests
                         : ["Outer", "Inner"];
                     Assert.Equal(expectedType, selector.Type.Segments.Select(segment => segment.IdentifierPattern));
                     Assert.Equal([1, 1], selector.Type.Segments.TakeLast(2).Select(segment => segment.GenericArity));
-                    AssertExecutableSegments(expectedSegments, selector.ExecutableSegments);
+                    AssertExecutableSegments(
+                        shortNames ? shortSegments : fullSegments,
+                        selector.ExecutableSegments);
                 }
             }
         }
