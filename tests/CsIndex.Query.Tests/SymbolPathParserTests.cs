@@ -538,7 +538,7 @@ public sealed class SymbolPathParserTests
     }
 
     [Fact]
-    public void Parse_RoundTripsNestedGenericCallableAcrossAllStylesAndShortModes()
+    public void Format_NestedGenericCallableAcrossStylesAndRejectsLossyShortSelectors()
     {
         var path = new SymbolPathData(
             "Game.Core",
@@ -579,11 +579,7 @@ public sealed class SymbolPathParserTests
                 var selector = SymbolPathParser.Parse(text);
 
                 Assert.Equal(style, selector.Style);
-                if (style == SymbolPathStyle.Explicit && shortNames)
-                {
-                    Assert.Equal(["**"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
-                }
-                else if (style == SymbolPathStyle.Explicit)
+                if (style == SymbolPathStyle.Explicit)
                 {
                     Assert.Equal(["Game", "Core"], selector.Namespace!.Segments.Select(segment => segment.IdentifierPattern));
                 }
@@ -630,7 +626,7 @@ public sealed class SymbolPathParserTests
     }
 
     [Fact]
-    public void Parse_RoundTripsEveryConcreteSpecialAndSyntheticCallableCategory()
+    public void Format_ConcreteSpecialAndSyntheticCallablesAcrossStylesAndRejectsLossyShortSelectors()
     {
         static ExpectedTypeSelector Type(
             string syntaxText,
@@ -654,15 +650,13 @@ public sealed class SymbolPathParserTests
             string Identity,
             string ShortDisplay,
             IReadOnlyList<ExpectedExecutableSegment> FullSegments,
-            IReadOnlyList<ExpectedExecutableSegment> ShortSegments,
             bool ParseShort) Case(
             string display,
             string identity,
             IReadOnlyList<ExpectedExecutableSegment> fullSegments,
-            IReadOnlyList<ExpectedExecutableSegment>? shortSegments = null,
             string? shortDisplay = null,
             bool parseShort = true) =>
-            (display, identity, shortDisplay ?? display, fullSegments, shortSegments ?? fullSegments, parseShort);
+            (display, identity, shortDisplay ?? display, fullSegments, parseShort);
 
         var outerTypeBindings = new[]
         {
@@ -680,24 +674,11 @@ public sealed class SymbolPathParserTests
             string Identity,
             string ShortDisplay,
             IReadOnlyList<ExpectedExecutableSegment> FullSegments,
-            IReadOnlyList<ExpectedExecutableSegment> ShortSegments,
             bool ParseShort)[]
         {
             Case(
                 "[constructor](int,string)",
                 "[constructor](System::Int32,System::String)",
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "constructor",
-                        null,
-                        null,
-                        null,
-                        null,
-                        Arity(
-                            Parameter("int", outerTypeBindings),
-                            Parameter("string", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
                 [
                     new ExpectedSpecialExecutableSegment(
                         "constructor",
@@ -747,18 +728,6 @@ public sealed class SymbolPathParserTests
                             Parameter("Game.Number", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "operator",
-                        "*",
-                        null,
-                        null,
-                        null,
-                        Arity(
-                            Parameter("Number*", outerTypeBindings),
-                            Parameter("Number", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
                 shortDisplay: "[operator:*](Number*,Number)",
                 parseShort: false),
             Case(
@@ -776,18 +745,6 @@ public sealed class SymbolPathParserTests
                             Parameter("Game.Number", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "checked-operator",
-                        "+",
-                        null,
-                        null,
-                        null,
-                        Arity(
-                            Parameter("Number", outerTypeBindings),
-                            Parameter("Number", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
                 shortDisplay: "[checked-operator:+](Number,Number)",
                 parseShort: false),
             Case(
@@ -801,16 +758,6 @@ public sealed class SymbolPathParserTests
                         Type("int", outerTypeBindings),
                         null,
                         Arity(Parameter("Game.Number", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "conversion",
-                        null,
-                        "implicit",
-                        Type("int", outerTypeBindings),
-                        null,
-                        Arity(Parameter("Number", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
                 shortDisplay: "[conversion:implicit:int](Number)",
@@ -828,16 +775,6 @@ public sealed class SymbolPathParserTests
                         Arity(Parameter("Game.Number", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "conversion",
-                        null,
-                        "explicit",
-                        Type("Guid", outerTypeBindings),
-                        null,
-                        Arity(Parameter("Number", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
                 shortDisplay: "[conversion:explicit:Guid](Number)",
                 parseShort: false),
             Case(
@@ -851,16 +788,6 @@ public sealed class SymbolPathParserTests
                         Type("System.Guid", outerTypeBindings),
                         null,
                         Arity(Parameter("Game.Number", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "checked-conversion",
-                        null,
-                        "explicit",
-                        Type("Guid", outerTypeBindings),
-                        null,
-                        Arity(Parameter("Number", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
                 shortDisplay: "[checked-conversion:explicit:Guid](Number)",
@@ -911,16 +838,6 @@ public sealed class SymbolPathParserTests
                         Arity(Parameter("System.EventHandler", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "add",
-                        null,
-                        null,
-                        null,
-                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
-                        Arity(Parameter("EventHandler", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
                 shortDisplay: "[add:Changed](EventHandler)",
                 parseShort: false),
             Case(
@@ -934,16 +851,6 @@ public sealed class SymbolPathParserTests
                         null,
                         new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
                         Arity(Parameter("System.EventHandler", outerTypeBindings)),
-                        PatternMode.Literal),
-                ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "remove",
-                        null,
-                        null,
-                        null,
-                        new ExpectedQualifiedMember(null, null, "Changed", PatternMode.Glob),
-                        Arity(Parameter("EventHandler", outerTypeBindings)),
                         PatternMode.Literal),
                 ],
                 shortDisplay: "[remove:Changed](EventHandler)",
@@ -960,20 +867,6 @@ public sealed class SymbolPathParserTests
                         new ExpectedQualifiedMember(
                             "System.IDisposable",
                             Type("System.IDisposable", outerTypeBindings),
-                            "Dispose",
-                            PatternMode.Glob),
-                        Arity(),
-                        PatternMode.Literal),
-                ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "explicit",
-                        null,
-                        null,
-                        null,
-                        new ExpectedQualifiedMember(
-                            "IDisposable",
-                            Type("IDisposable", outerTypeBindings),
                             "Dispose",
                             PatternMode.Glob),
                         Arity(),
@@ -998,20 +891,6 @@ public sealed class SymbolPathParserTests
                         Arity(),
                         PatternMode.Literal),
                 ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "get",
-                        null,
-                        null,
-                        null,
-                        new ExpectedQualifiedMember(
-                            "IPlayer",
-                            Type("IPlayer", outerTypeBindings),
-                            "Name",
-                            PatternMode.Glob),
-                        Arity(),
-                        PatternMode.Literal),
-                ],
                 shortDisplay: "[get:IPlayer.Name]()",
                 parseShort: false),
             Case(
@@ -1026,26 +905,6 @@ public sealed class SymbolPathParserTests
                         new ExpectedQualifiedMember(
                             "Game.Contracts.IMapper",
                             Type("Game.Contracts.IMapper", methodShadowedBindings),
-                            "Map",
-                            PatternMode.Glob),
-                        new ExpectedCallableArity(
-                            GenericListState.Present,
-                            ["T"],
-                            ParameterListState.Present,
-                            [
-                                Parameter("T", methodShadowedBindings),
-                            ]),
-                        PatternMode.Literal),
-                ],
-                [
-                    new ExpectedSpecialExecutableSegment(
-                        "explicit",
-                        null,
-                        null,
-                        null,
-                        new ExpectedQualifiedMember(
-                            "IMapper",
-                            Type("IMapper", methodShadowedBindings),
                             "Map",
                             PatternMode.Glob),
                         new ExpectedCallableArity(
@@ -1079,7 +938,7 @@ public sealed class SymbolPathParserTests
         {
             foreach (var shortNames in new[] { false, true })
             {
-                foreach (var (display, identity, shortDisplay, fullSegments, shortSegments, parseShort) in cases)
+                foreach (var (display, identity, shortDisplay, fullSegments, parseShort) in cases)
                 {
                     var path = new SymbolPathData(
                         "Game.Core",
@@ -1131,9 +990,7 @@ public sealed class SymbolPathParserTests
                         : ["Outer", "Inner"];
                     Assert.Equal(expectedType, selector.Type.Segments.Select(segment => segment.IdentifierPattern));
                     Assert.Equal([1, 1], selector.Type.Segments.TakeLast(2).Select(segment => segment.GenericArity));
-                    AssertExecutableSegments(
-                        shortNames ? shortSegments : fullSegments,
-                        selector.ExecutableSegments);
+                    AssertExecutableSegments(fullSegments, selector.ExecutableSegments);
                 }
             }
         }
