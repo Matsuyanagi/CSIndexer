@@ -194,12 +194,16 @@ wildcardにはcomponent単位の`*`と`**`を使います。完全な文法と�
 | `--output-format <format>` | コマンドが対応する出力形式を選択します。 |
 | `-o <path>`、`--output-file <path>` | stdoutの代わりにファイルへアトミックに出力します。 |
 | `--symbol-path-style csharp\|explicit` | 表示用シンボルパス形式を選びます。identityは変えません。 |
-| `--short-names` | 表示上のowner namespaceだけを省略します。 |
+| `--short-names` | 表示上のownerと型からnamespaceを省略します。 |
 | `--base-dir <path>` | 保存済み相対パスを復元する基準を上書きします。 |
 | `--path-style absolute\|relative` | 絶対パス（既定）またはeffective baseからの相対パスで表示します。 |
 | `--help` | 簡潔なhelpを表示します。 |
 | `--help-verbose` | 完全なreferenceを表示します。 |
 | `--verbose` | queryではhelpとの併用時だけ完全なreferenceを表示します。単独指定は無効です。 |
+
+`--short-names`を指定すると、表示上のownerとすべての表示型（戻り値型、引数型、generic引数、conversion target、explicit-interface payloadを含む）からnamespaceを省略します。ネストしたcontaining typeの経路は保持されます。JSONでは`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`が短縮され、`stableKey`と完全な`namespaceName`は変わりません。
+
+`--short-names`を省略すると、JSONはcanonicalな機械処理向け（machine-oriented）の完全修飾表示になります。JSONのfield構成、既定の出力、結果の順序は変わりません。
 
 通常のコマンドは`table|json`、`async tree`は`tree|line|json`、
 `callers tree`は`tree|mermaid|json`を使います。

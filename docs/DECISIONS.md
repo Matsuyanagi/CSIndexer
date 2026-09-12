@@ -614,3 +614,38 @@ machine-independent. Warning and exclusion counts make the omission visible;
 the original absolute path may appear in diagnostics but is never persisted.
 
 Date: 2026-09-08
+
+## DEC-0033: Complete identity-aware short-name presentation
+
+Status: Accepted; supersedes the owner-only `--short-names` presentation rule.
+
+Context: The original `--short-names` behavior removed only the displayed owner
+namespace, which left return types, parameter types, generic arguments,
+conversion targets, and explicit-interface payloads unnecessarily qualified.
+The presentation contract must shorten those type positions without changing
+the semantic identity used by search, storage, or ordering.
+
+Decision: Apply `--short-names` at presentation time using the paired canonical
+identity and display values already stored for each type. Omit semantic
+namespace components from displayed owners and every displayed type, while
+preserving the complete outer-to-inner containing-type path. In JSON,
+`displayName`, `signature`, `fullyQualifiedName`, `parameters`, and `returnType`
+are shortened; `stableKey` and the complete `namespaceName` are preserved.
+The transformation is presentation-only: it requires no SQLite schema change
+and no reindex. Without the option, the default canonical machine-oriented
+JSON, output fields, and result ordering remain unchanged.
+
+Supersedes: The owner-only short-name wording in DEC-0018 and the active CLI,
+SPEC, README, and implementation-status descriptions. Historical design and
+plan documents retain their original wording as historical records.
+
+Alternatives: Keep shortening only the owner namespace, persist a second short
+representation, or infer namespace/type boundaries from punctuation or naming
+conventions.
+
+Consequences: Human-facing table, JSON, tree, line, and Mermaid output shares
+one identity-aware shortening rule. Short names remain intentionally lossy and
+do not affect selector parsing, search identity, stored values, cardinality, or
+canonical ordering.
+
+Date: 2026-09-12

@@ -205,12 +205,16 @@ option list.
 | `--output-format <format>` | Select a command-supported output format. |
 | `-o <path>`, `--output-file <path>` | Write the payload atomically to a file instead of stdout. |
 | `--symbol-path-style csharp\|explicit` | Choose displayed symbol-path notation; presentation only. |
-| `--short-names` | Omit only the displayed owner namespace. |
+| `--short-names` | Omit namespaces from displayed owners and types. |
 | `--base-dir <path>` | Override the base used to reconstruct stored relative paths. |
 | `--path-style absolute\|relative` | Display absolute paths (default) or effective-base-relative paths. |
 | `--help` | Show concise help. |
 | `--help-verbose` | Show the full reference. |
 | `--verbose` | With query help, show the full reference; otherwise invalid. |
+
+With --short-names, namespaces are omitted from displayed owners and every displayed type, including return types, parameters, generic arguments, conversion targets, and explicit-interface payloads. Nested containing types remain visible. In JSON, displayName, signature, fullyQualifiedName, parameters, and returnType shorten; stableKey and the complete namespaceName do not change.
+
+Omit --short-names when consumers require canonical machine-oriented JSON. Without the option, JSON remains fully qualified, and the default output, field presence, and ordering remain unchanged.
 
 Standard commands use `table|json`. `async tree` uses `tree|line|json`, and
 `callers tree` uses `tree|mermaid|json`.

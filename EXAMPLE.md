@@ -700,15 +700,35 @@ csindex symbol find "Game::Player::Run()" --symbol-path-style csharp
 csindex symbol find "Game::Player::Run()" --symbol-path-style explicit
 ```
 
-Shorten only the displayed owner namespace:
+Shorten namespaces in displayed owners and every displayed type:
 
 ```powershell
 csindex symbol list --short-names
 ```
 
-Canonical JSON identity fields such as `fullyQualifiedName`, stable keys,
-parameter types, return types, conversion targets, and explicit-interface
-payloads are not shortened.
+For example, a Roslyn-style signature is fully qualified by default:
+
+```text
+public static Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax SyntaxRefactorings::ConvertWhileStatementToForStatement(Microsoft.CodeAnalysis.CSharp.Syntax.WhileStatementSyntax,Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax?,Microsoft.CodeAnalysis.SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>)
+```
+
+With `--short-names`, the displayed owner and every displayed type are
+shortened:
+
+```text
+public static ForStatementSyntax SyntaxRefactorings::ConvertWhileStatementToForStatement(WhileStatementSyntax,VariableDeclarationSyntax?,SeparatedSyntaxList<ExpressionSyntax>)
+```
+
+The same rule applies to generic arguments, conversion targets, and
+explicit-interface payloads. Nested containing types remain visible; for
+example, `Game.Models.Outer<T>.Inner<U>` becomes `Outer<T>.Inner<U>` rather
+than losing `Outer<T>`.
+
+In JSON, `displayName`, `signature`, `fullyQualifiedName`, `parameters`, and
+`returnType` use the shortened presentation. `stableKey` and the complete
+`namespaceName` remain unchanged. Omit `--short-names` when consumers need
+canonical machine-oriented JSON; the default output and ordering are
+unchanged.
 
 ## 18. Output files and scripting
 

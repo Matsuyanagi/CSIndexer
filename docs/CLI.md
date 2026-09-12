@@ -156,7 +156,7 @@ the `D1` descendant branch. Its output can include `D2::Play()` but never a
 synthetic `D1::Play()` symbol or an override from another branch. A declared
 `new` member remains its own real declaration and is not an override.
 
-`symbol find`、`symbol list`、`definition`、`references`、`callers`、`callees`、`overrides`では、`--short-names`によりtable出力とJSONの`displayName`/`signature`にある所有者namespaceだけを省略できます。戻り値型、引数型、conversion target、explicit-interface payloadは短縮しません。既定は完全修飾表示です。
+`symbol find`、`symbol list`、`definition`、`references`、`callers`、`callees`、`overrides`では、`--short-names`により表示上のownerとすべての表示型（戻り値型、引数型、generic引数、conversion target、explicit-interface payloadを含む）からnamespaceを省略できます。ネストしたcontaining typeの経路は保持されます。JSONでは`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`が短縮され、`stableKey`と完全な`namespaceName`は変更されません。`fullyQualifiedName`は`--symbol-path-style`に関係なくcsharp形式のままです。既定の出力と順序は変わらず、schema変更やreindexも必要ありません。
 
 ### `symbol list`
 
@@ -167,9 +167,9 @@ synthetic `D1::Play()` symbol or an override from another branch. A declared
 - `--async-status all|async|sync`は保存済みの直接`AsyncRole`で絞り込みます。
   `async`と`sync`はmethod/lambdaだけを候補にし、型などを`sync`へ混入させません。
 - `--async-involved`は`asyncInvolvementDepth`を持つsymbolだけを返します。直接の非同期起点もdepth `0`として含まれます。
-- `--short-names`は表示パスの所有者namespaceだけを省略します。たとえば`Alpha.AClass::Play()`は`AClass::Play()`として表示されます。
+- `--short-names`は表示パスのownerと、パラメーターなどを含むすべての表示型からnamespaceを省略します。たとえば`Alpha.AClass::Play(System.Guid)`は`AClass::Play(Guid)`として表示されます。`Alpha.Outer<T>.Inner<U>`のようなネストしたcontaining typeの経路は`Outer<T>.Inner<U>`として残ります。
 
-JSONは`{ "profile": "...", "symbols": [...] }`です。各symbolには`id`、`stableKey`、`kind`、`displayName`、`signature`、`fullyQualifiedName`、`namespaceName`、`typeSimpleName`、`parameters`、`location`、`isGenerated`、`assemblyName`、`accessibility`、`isStatic`、`isAsync`、`asyncRole`、`isAsyncInvolved`、`asyncInvolvementDepth`、`returnType`、`methodKind`、`sourceAvailable`を出力します。`--short-names`を指定しても`fullyQualifiedName`、`stableKey`、`namespaceName`、`parameters`、`returnType`などのcanonical JSON fieldは変更されず、`displayName`と`signature`の所有者namespaceだけが省略されます。
+JSONは`{ "profile": "...", "symbols": [...] }`です。各symbolには`id`、`stableKey`、`kind`、`displayName`、`signature`、`fullyQualifiedName`、`namespaceName`、`typeSimpleName`、`parameters`、`location`、`isGenerated`、`assemblyName`、`accessibility`、`isStatic`、`isAsync`、`asyncRole`、`isAsyncInvolved`、`asyncInvolvementDepth`、`returnType`、`methodKind`、`sourceAvailable`を出力します。`--short-names`を指定すると`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`が短縮されますが、`stableKey`と完全な`namespaceName`は変更されません。`--short-names`を省略したJSONはcanonicalな機械処理向けの完全修飾表示です。
 
 ### `callees`とラムダ呼び出し
 
@@ -511,7 +511,7 @@ reconstruction only and never rewrites the database.
 --path-style relative     emit paths relative to the effective base
 --symbol-path-style csharp
 --symbol-path-style explicit
---short-names             omit only the displayed owner namespace
+--short-names             omit namespaces from displayed owners and types
 ```
 
 `definition --at` accepts rooted or effective-base-relative input. A relocated

@@ -2536,7 +2536,7 @@ source-definedのメソッド、コンストラクター、ローカル関数、
 accessibility static async return-type display-name(parameters)
 ```
 
-コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`は`displayName`と`signature`の所有者名前空間だけを省略し、戻り値型、引数型、conversion target、explicit-interface payload、canonical field、検索意味は変更しない。JSONでは`displayName`、`kind`、`accessibility`、`isStatic`、`isAsync`、`returnType`などを独立して出力する。
+コンストラクターには戻り値を表示しない。ローカル関数、ラムダ、static constructorなど、C#宣言上accessibilityを持たないものにはaccessibilityを表示しない。`--short-names`はpresentation-timeのidentity-aware変換として、表示上のownerとすべての表示型（戻り値型、引数型、generic引数、conversion target、explicit-interface payloadを含む）からnamespaceを省略する。ネストしたcontaining typeの経路は保持し、canonical field、検索意味、stored identityは変更しない。JSONでは`displayName`、`signature`、`fullyQualifiedName`、`parameters`、`returnType`を短縮し、`stableKey`と完全な`namespaceName`は変更しない。
 
 ## 33.4 シンボル検索と正規化ソース
 
@@ -3035,14 +3035,20 @@ location alone does not require file existence.
 ## 34.9 Presentation, ordering, help, and output
 
 `--symbol-path-style csharp|explicit` selects symbol formatting and
-`--short-names` omits only the owner namespace from displayed paths. It never
-shortens parameter, return, conversion-target, or explicit-interface payload
-types. Table, JSON, tree, line, and Mermaid output use
-the same formatters. Canonical ordering uses semantic identity plus stored
-relative location, never formatted text or reconstructed rooted paths. Style,
-short names, path style, base override, case mode, and output format therefore
-cannot reorder an equivalent result. Trees are parent-first; declaration rows
-then use role, stored path, and source position.
+`--short-names` omits namespaces from displayed owners and every displayed type,
+including return types, parameters, generic arguments, conversion targets, and
+explicit-interface payloads. Nested containing types remain visible. In JSON,
+`displayName`, `signature`, `fullyQualifiedName`, `parameters`, and `returnType`
+shorten; `stableKey` and the complete `namespaceName` do not change.
+`fullyQualifiedName` remains csharp-style regardless of `--symbol-path-style`.
+Without `--short-names`, JSON remains canonical machine-oriented output. This is
+a presentation-time transformation; no schema change or reindex is required.
+Table, JSON, tree, line, and Mermaid output use the same formatters. Canonical
+ordering uses semantic identity plus stored relative location, never formatted
+text or reconstructed rooted paths. Style, short names, path style, base
+override, case mode, and output format therefore cannot reorder an equivalent
+result. Trees are parent-first; declaration rows then use role, stored path, and
+source position.
 
 Normal help is concise. For global scope and every recognized command,
 `--help --verbose` and `--help-verbose` are byte-identical and order-independent.
