@@ -292,6 +292,35 @@ public sealed class SymbolSignatureCanonicalizerTests
         Assert.Equal(expected, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
     }
 
+    [Theory]
+    [InlineData(
+        "delegate*<void>",
+        "delegate*<,0:System::Void>",
+        "delegate*<void>")]
+    [InlineData(
+        "delegate*<Game.Models.Widget,void>",
+        "delegate*<0:Game.Models::Widget,0:System::Void>",
+        "delegate*<Widget, void>")]
+    [InlineData(
+        "delegate*<void>[]",
+        "delegate*<,0:System::Void>[]",
+        "delegate*<void> []")]
+    [InlineData(
+        "delegate*<void>*",
+        "delegate*<,0:System::Void>*",
+        "delegate*<void> *")]
+    public void FormatTypeDisplay_ShortNamesParsesRoslynCanonicalFunctionPointerShapes(
+        string typeText,
+        string expectedIdentity,
+        string expectedDisplay)
+    {
+        var canonical = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource(typeText));
+
+        Assert.Equal(expectedIdentity, canonical.IdentityKey);
+        Assert.Equal(expectedDisplay, SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+    }
+
     [Fact]
     public void FormatTypeDisplay_ShortNamesAcceptsNullableValueAndReferencePairs()
     {

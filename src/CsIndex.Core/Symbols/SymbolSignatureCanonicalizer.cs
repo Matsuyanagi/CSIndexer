@@ -246,7 +246,7 @@ public static class SymbolSignatureCanonicalizer
         TypeNode identity;
         try
         {
-            identity = ParseIdentityNode(pair.IdentityKey);
+            identity = ParseIdentityNodeForDisplay(pair.IdentityKey);
         }
         catch (ArgumentException)
         {
@@ -260,6 +260,179 @@ public static class SymbolSignatureCanonicalizer
         }
 
         return identity;
+    }
+
+    private static TypeNode ParseIdentityNodeForDisplay(string identity)
+    {
+        var arrayStart = identity.LastIndexOf('[');
+        if (arrayStart > 0 && identity.EndsWith(']'))
+        {
+            var rank = identity[arrayStart..].Count(character => character == ',') + 1;
+            return new ArrayTypeNode(ParseIdentityNodeForDisplay(identity[..arrayStart]), rank);
+        }
+
+        if (identity.EndsWith('*'))
+        {
+            return new PointerTypeNode(ParseIdentityNodeForDisplay(identity[..^1]));
+        }
+
+        if (identity.StartsWith("delegate*", StringComparison.Ordinal))
+        {
+            return ParseFunctionPointerIdentityNodeForDisplay(identity);
+        }
+
+        if (identity.StartsWith('(') && identity.EndsWith(')'))
+        {
+            return new TupleTypeNode(
+                SplitTopLevel(identity[1..^1], ',')
+                    .Select(ParseIdentityNodeForDisplay)
+                    .ToArray());
+        }
+
+        if (identity.EndsWith('?') && identity.Length > 1)
+        {
+            return new NullableTypeNode(ParseIdentityNodeForDisplay(identity[..^1]));
+        }
+
+        if (identity.StartsWith('!') && int.TryParse(identity[1..], out var typeOrdinal))
+        {
+            return new PlaceholderTypeNode(
+                CanonicalGenericPlaceholderScope.Type,
+                typeOrdinal,
+                TypeClassification.Unknown);
+        }
+
+        if (identity.StartsWith('^') && int.TryParse(identity[1..], out var methodOrdinal))
+        {
+            return new PlaceholderTypeNode(
+                CanonicalGenericPlaceholderScope.Method,
+                methodOrdinal,
+                TypeClassification.Unknown);
+        }
+
+        if (HasClassificationPrefix(identity, ValueTypeIdentityPrefix))
+        {
+            return WithClassification(
+                ParseIdentityNodeForDisplay(identity[ValueTypeIdentityPrefix.Length..]),
+                TypeClassification.Value);
+        }
+
+        if (HasClassificationPrefix(identity, ReferenceTypeIdentityPrefix))
+        {
+            return WithClassification(
+                ParseIdentityNodeForDisplay(identity[ReferenceTypeIdentityPrefix.Length..]),
+                TypeClassification.Reference);
+        }
+
+        return ParseNamedTypeIdentityForDisplay(identity);
+    }
+
+    private static FunctionPointerTypeNode ParseFunctionPointerIdentityNodeForDisplay(string identity)
+    {
+        var typeListStart = identity.IndexOf('<');
+        if (typeListStart < 0 || !identity.EndsWith('>'))
+        {
+            throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
+        }
+
+        var convention = identity["delegate*".Length..typeListStart].Trim();
+        var parts = SplitTopLevel(identity[(typeListStart + 1)..^1], ',');
+        if (parts.Count == 0)
+        {
+            throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
+        }
+
+        if (parts[0].Length == 0)
+        {
+            if (parts.Count != 2)
+            {
+                throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
+            }
+
+            var returnPart = ParseFunctionPointerIdentityPartForDisplay(parts[1]);
+            return new FunctionPointerTypeNode(
+                convention,
+                [],
+                returnPart.Type,
+                returnPart.RefKind);
+        }
+
+        var parsedParts = parts
+            .Select(ParseFunctionPointerIdentityPartForDisplay)
+            .ToArray();
+        return new FunctionPointerTypeNode(
+            convention,
+            parsedParts[..^1]
+                .Select(part => new FunctionPointerParameterNode(part.Type, part.RefKind))
+                .ToArray(),
+            parsedParts[^1].Type,
+            parsedParts[^1].RefKind);
+    }
+
+    private static (TypeNode Type, int RefKind) ParseFunctionPointerIdentityPartForDisplay(string part)
+    {
+        var separator = part.IndexOf(':');
+        if (separator <= 0 || !int.TryParse(part[..separator], out var refKind))
+        {
+            throw new ArgumentException($"Invalid function-pointer identity part: {part}", nameof(part));
+        }
+
+        return (ParseIdentityNodeForDisplay(part[(separator + 1)..]), refKind);
+    }
+
+    private static NamedTypeNode ParseNamedTypeIdentityForDisplay(
+        string identity,
+        TypeClassification classification = TypeClassification.Unknown)
+    {
+        var boundary = identity.IndexOf("::", StringComparison.Ordinal);
+        if (boundary < 0)
+        {
+            throw new ArgumentException($"Named-type identity has no namespace/type boundary: {identity}", nameof(identity));
+        }
+
+        var namespaceSegments = identity[..boundary]
+            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(name => new NamedTypeSegment(name, []))
+            .ToArray();
+        var typeIdentity = identity[(boundary + 2)..];
+        var typeSegments = SplitTopLevel(typeIdentity, '.')
+            .Select(ParseNamedTypeIdentitySegmentForDisplay)
+            .ToArray();
+        if (typeSegments.Length == 0 || typeSegments.Any(segment => string.IsNullOrEmpty(segment.Name)))
+        {
+            throw new ArgumentException($"Named-type identity has no type component: {identity}", nameof(identity));
+        }
+
+        var segments = namespaceSegments.Concat(typeSegments).ToArray();
+        var qualifiedName = string.Join('.', segments.Select(segment => segment.Name));
+        return new NamedTypeNode(
+            segments,
+            namespaceSegments.Length,
+            classification != TypeClassification.Unknown
+                ? classification
+                : ValueTypeNames.Contains(qualifiedName)
+                    ? TypeClassification.Value
+                    : TypeClassification.Unknown);
+    }
+
+    private static NamedTypeSegment ParseNamedTypeIdentitySegmentForDisplay(string segment)
+    {
+        var genericStart = segment.IndexOf('<');
+        if (genericStart < 0)
+        {
+            return new NamedTypeSegment(segment, []);
+        }
+
+        if (!segment.EndsWith('>'))
+        {
+            throw new ArgumentException($"Invalid named-type identity segment: {segment}", nameof(segment));
+        }
+
+        return new NamedTypeSegment(
+            segment[..genericStart],
+            SplitTopLevel(segment[(genericStart + 1)..^1], ',')
+                .Select(ParseIdentityNodeForDisplay)
+                .ToArray());
     }
 
     private static bool ContainsInvalidPlaceholderOrdinal(TypeNode node) =>
