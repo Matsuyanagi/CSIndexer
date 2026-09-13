@@ -322,6 +322,36 @@ public sealed class SymbolSignatureCanonicalizerTests
     }
 
     [Fact]
+    public void FormatTypeDisplay_RejectsExtraLeadingFunctionPointerSentinelParts()
+    {
+        const string identity = "delegate*<,0:System::Int32,0:System::Void>";
+        const string display = "delegate*<int, void>";
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(
+                new CanonicalTypeSignature(identity, display),
+                shortNames: true));
+
+        Assert.Equal(
+            "Canonical type identity 'delegate*<,0:System::Int32,0:System::Void>' does not match display 'delegate*<int, void>'.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void FormatTypeDisplay_ShortNamesParsesRoslynUnmanagedFunctionPointerArrayIdentity()
+    {
+        var canonical = SymbolSignatureCanonicalizer.CanonicalizeType(
+            GetParameterTypeFromDeclaredSource("delegate* unmanaged[Cdecl]<void>[]"));
+
+        Assert.Equal(
+            "delegate* cdecl<,0:System::Void>[]",
+            canonical.IdentityKey);
+        Assert.Equal(
+            "delegate* unmanaged[Cdecl]<void> []",
+            SymbolSignatureCanonicalizer.FormatTypeDisplay(canonical, shortNames: true));
+    }
+
+    [Fact]
     public void FormatTypeDisplay_ShortNamesAcceptsNullableValueAndReferencePairs()
     {
         var nullableValue = SymbolSignatureCanonicalizer.CanonicalizeType(

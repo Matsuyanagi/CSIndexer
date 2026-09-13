@@ -246,7 +246,7 @@ public static class SymbolSignatureCanonicalizer
         TypeNode identity;
         try
         {
-            identity = ParseIdentityNodeForDisplay(pair.IdentityKey);
+            identity = ParseIdentityNode(pair.IdentityKey, IdentityParseMode.CanonicalDisplay);
         }
         catch (ArgumentException)
         {
@@ -260,179 +260,6 @@ public static class SymbolSignatureCanonicalizer
         }
 
         return identity;
-    }
-
-    private static TypeNode ParseIdentityNodeForDisplay(string identity)
-    {
-        var arrayStart = identity.LastIndexOf('[');
-        if (arrayStart > 0 && identity.EndsWith(']'))
-        {
-            var rank = identity[arrayStart..].Count(character => character == ',') + 1;
-            return new ArrayTypeNode(ParseIdentityNodeForDisplay(identity[..arrayStart]), rank);
-        }
-
-        if (identity.EndsWith('*'))
-        {
-            return new PointerTypeNode(ParseIdentityNodeForDisplay(identity[..^1]));
-        }
-
-        if (identity.StartsWith("delegate*", StringComparison.Ordinal))
-        {
-            return ParseFunctionPointerIdentityNodeForDisplay(identity);
-        }
-
-        if (identity.StartsWith('(') && identity.EndsWith(')'))
-        {
-            return new TupleTypeNode(
-                SplitTopLevel(identity[1..^1], ',')
-                    .Select(ParseIdentityNodeForDisplay)
-                    .ToArray());
-        }
-
-        if (identity.EndsWith('?') && identity.Length > 1)
-        {
-            return new NullableTypeNode(ParseIdentityNodeForDisplay(identity[..^1]));
-        }
-
-        if (identity.StartsWith('!') && int.TryParse(identity[1..], out var typeOrdinal))
-        {
-            return new PlaceholderTypeNode(
-                CanonicalGenericPlaceholderScope.Type,
-                typeOrdinal,
-                TypeClassification.Unknown);
-        }
-
-        if (identity.StartsWith('^') && int.TryParse(identity[1..], out var methodOrdinal))
-        {
-            return new PlaceholderTypeNode(
-                CanonicalGenericPlaceholderScope.Method,
-                methodOrdinal,
-                TypeClassification.Unknown);
-        }
-
-        if (HasClassificationPrefix(identity, ValueTypeIdentityPrefix))
-        {
-            return WithClassification(
-                ParseIdentityNodeForDisplay(identity[ValueTypeIdentityPrefix.Length..]),
-                TypeClassification.Value);
-        }
-
-        if (HasClassificationPrefix(identity, ReferenceTypeIdentityPrefix))
-        {
-            return WithClassification(
-                ParseIdentityNodeForDisplay(identity[ReferenceTypeIdentityPrefix.Length..]),
-                TypeClassification.Reference);
-        }
-
-        return ParseNamedTypeIdentityForDisplay(identity);
-    }
-
-    private static FunctionPointerTypeNode ParseFunctionPointerIdentityNodeForDisplay(string identity)
-    {
-        var typeListStart = identity.IndexOf('<');
-        if (typeListStart < 0 || !identity.EndsWith('>'))
-        {
-            throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
-        }
-
-        var convention = identity["delegate*".Length..typeListStart].Trim();
-        var parts = SplitTopLevel(identity[(typeListStart + 1)..^1], ',');
-        if (parts.Count == 0)
-        {
-            throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
-        }
-
-        if (parts[0].Length == 0)
-        {
-            if (parts.Count != 2)
-            {
-                throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
-            }
-
-            var returnPart = ParseFunctionPointerIdentityPartForDisplay(parts[1]);
-            return new FunctionPointerTypeNode(
-                convention,
-                [],
-                returnPart.Type,
-                returnPart.RefKind);
-        }
-
-        var parsedParts = parts
-            .Select(ParseFunctionPointerIdentityPartForDisplay)
-            .ToArray();
-        return new FunctionPointerTypeNode(
-            convention,
-            parsedParts[..^1]
-                .Select(part => new FunctionPointerParameterNode(part.Type, part.RefKind))
-                .ToArray(),
-            parsedParts[^1].Type,
-            parsedParts[^1].RefKind);
-    }
-
-    private static (TypeNode Type, int RefKind) ParseFunctionPointerIdentityPartForDisplay(string part)
-    {
-        var separator = part.IndexOf(':');
-        if (separator <= 0 || !int.TryParse(part[..separator], out var refKind))
-        {
-            throw new ArgumentException($"Invalid function-pointer identity part: {part}", nameof(part));
-        }
-
-        return (ParseIdentityNodeForDisplay(part[(separator + 1)..]), refKind);
-    }
-
-    private static NamedTypeNode ParseNamedTypeIdentityForDisplay(
-        string identity,
-        TypeClassification classification = TypeClassification.Unknown)
-    {
-        var boundary = identity.IndexOf("::", StringComparison.Ordinal);
-        if (boundary < 0)
-        {
-            throw new ArgumentException($"Named-type identity has no namespace/type boundary: {identity}", nameof(identity));
-        }
-
-        var namespaceSegments = identity[..boundary]
-            .Split('.', StringSplitOptions.RemoveEmptyEntries)
-            .Select(name => new NamedTypeSegment(name, []))
-            .ToArray();
-        var typeIdentity = identity[(boundary + 2)..];
-        var typeSegments = SplitTopLevel(typeIdentity, '.')
-            .Select(ParseNamedTypeIdentitySegmentForDisplay)
-            .ToArray();
-        if (typeSegments.Length == 0 || typeSegments.Any(segment => string.IsNullOrEmpty(segment.Name)))
-        {
-            throw new ArgumentException($"Named-type identity has no type component: {identity}", nameof(identity));
-        }
-
-        var segments = namespaceSegments.Concat(typeSegments).ToArray();
-        var qualifiedName = string.Join('.', segments.Select(segment => segment.Name));
-        return new NamedTypeNode(
-            segments,
-            namespaceSegments.Length,
-            classification != TypeClassification.Unknown
-                ? classification
-                : ValueTypeNames.Contains(qualifiedName)
-                    ? TypeClassification.Value
-                    : TypeClassification.Unknown);
-    }
-
-    private static NamedTypeSegment ParseNamedTypeIdentitySegmentForDisplay(string segment)
-    {
-        var genericStart = segment.IndexOf('<');
-        if (genericStart < 0)
-        {
-            return new NamedTypeSegment(segment, []);
-        }
-
-        if (!segment.EndsWith('>'))
-        {
-            throw new ArgumentException($"Invalid named-type identity segment: {segment}", nameof(segment));
-        }
-
-        return new NamedTypeSegment(
-            segment[..genericStart],
-            SplitTopLevel(segment[(genericStart + 1)..^1], ',')
-                .Select(ParseIdentityNodeForDisplay)
-                .ToArray());
     }
 
     private static bool ContainsInvalidPlaceholderOrdinal(TypeNode node) =>
@@ -1304,31 +1131,52 @@ public static class SymbolSignatureCanonicalizer
 
     private static TypeNode ParseIdentityNode(string identity)
     {
-        if (identity.StartsWith("delegate*", StringComparison.Ordinal))
+        return ParseIdentityNode(identity, IdentityParseMode.QueryCompatibility);
+    }
+
+    private static TypeNode ParseIdentityNode(string identity, IdentityParseMode mode)
+    {
+        var arrayStart = identity.LastIndexOf('[');
+        var hasArraySuffix = arrayStart > 0 && identity.EndsWith(']');
+        if (mode == IdentityParseMode.QueryCompatibility &&
+            identity.StartsWith("delegate*", StringComparison.Ordinal))
         {
-            return ParseFunctionPointerIdentityNode(identity);
+            return ParseFunctionPointerIdentityNode(identity, mode);
+        }
+
+        if (mode == IdentityParseMode.CanonicalDisplay && hasArraySuffix)
+        {
+            var rank = identity[arrayStart..].Count(character => character == ',') + 1;
+            return new ArrayTypeNode(ParseIdentityNode(identity[..arrayStart], mode), rank);
         }
 
         if (identity.EndsWith('*'))
         {
-            return new PointerTypeNode(ParseIdentityNode(identity[..^1]));
+            return new PointerTypeNode(ParseIdentityNode(identity[..^1], mode));
         }
 
-        var arrayStart = identity.LastIndexOf('[');
-        if (arrayStart > 0 && identity.EndsWith(']'))
+        if (mode == IdentityParseMode.QueryCompatibility && hasArraySuffix)
         {
             var rank = identity[arrayStart..].Count(character => character == ',') + 1;
-            return new ArrayTypeNode(ParseIdentityNode(identity[..arrayStart]), rank);
+            return new ArrayTypeNode(ParseIdentityNode(identity[..arrayStart], mode), rank);
+        }
+
+        if (identity.StartsWith("delegate*", StringComparison.Ordinal))
+        {
+            return ParseFunctionPointerIdentityNode(identity, mode);
         }
 
         if (identity.StartsWith('(') && identity.EndsWith(')'))
         {
-            return new TupleTypeNode(SplitTopLevel(identity[1..^1], ',').Select(ParseIdentityNode).ToArray());
+            return new TupleTypeNode(
+                SplitTopLevel(identity[1..^1], ',')
+                    .Select(part => ParseIdentityNode(part, mode))
+                    .ToArray());
         }
 
         if (identity.EndsWith('?') && identity.Length > 1)
         {
-            return new NullableTypeNode(ParseIdentityNode(identity[..^1]));
+            return new NullableTypeNode(ParseIdentityNode(identity[..^1], mode));
         }
 
         if (identity.StartsWith('!') && int.TryParse(identity[1..], out var typeOrdinal))
@@ -1350,18 +1198,18 @@ public static class SymbolSignatureCanonicalizer
         if (HasClassificationPrefix(identity, ValueTypeIdentityPrefix))
         {
             return WithClassification(
-                ParseIdentityNode(identity[ValueTypeIdentityPrefix.Length..]),
+                ParseIdentityNode(identity[ValueTypeIdentityPrefix.Length..], mode),
                 TypeClassification.Value);
         }
 
         if (HasClassificationPrefix(identity, ReferenceTypeIdentityPrefix))
         {
             return WithClassification(
-                ParseIdentityNode(identity[ReferenceTypeIdentityPrefix.Length..]),
+                ParseIdentityNode(identity[ReferenceTypeIdentityPrefix.Length..], mode),
                 TypeClassification.Reference);
         }
 
-        return ParseNamedTypeIdentity(identity);
+        return ParseNamedTypeIdentity(identity, mode: mode);
     }
 
     private static bool HasClassificationPrefix(string identity, string prefix) =>
@@ -1379,7 +1227,9 @@ public static class SymbolSignatureCanonicalizer
                 nameof(node)),
         };
 
-    private static FunctionPointerTypeNode ParseFunctionPointerIdentityNode(string identity)
+    private static FunctionPointerTypeNode ParseFunctionPointerIdentityNode(
+        string identity,
+        IdentityParseMode mode)
     {
         var typeListStart = identity.IndexOf('<');
         if (typeListStart < 0 || !identity.EndsWith('>'))
@@ -1388,13 +1238,31 @@ public static class SymbolSignatureCanonicalizer
         }
 
         var convention = identity["delegate*".Length..typeListStart].Trim();
-        var parts = SplitTopLevel(identity[(typeListStart + 1)..^1], ',')
-            .Select(ParseFunctionPointerIdentityPart)
-            .ToArray();
-        if (parts.Length == 0)
+        var partTexts = SplitTopLevel(identity[(typeListStart + 1)..^1], ',');
+        if (partTexts.Count == 0)
         {
             throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
         }
+
+        if (mode == IdentityParseMode.CanonicalDisplay &&
+            partTexts[0].Length == 0)
+        {
+            if (partTexts.Count != 2)
+            {
+                throw new ArgumentException($"Invalid function-pointer identity: {identity}", nameof(identity));
+            }
+
+            var returnPart = ParseFunctionPointerIdentityPart(partTexts[1], mode);
+            return new FunctionPointerTypeNode(
+                convention,
+                [],
+                returnPart.Type,
+                returnPart.RefKind);
+        }
+
+        var parts = partTexts
+            .Select(part => ParseFunctionPointerIdentityPart(part, mode))
+            .ToArray();
 
         return new FunctionPointerTypeNode(
             convention,
@@ -1403,7 +1271,9 @@ public static class SymbolSignatureCanonicalizer
             parts[^1].RefKind);
     }
 
-    private static (TypeNode Type, int RefKind) ParseFunctionPointerIdentityPart(string part)
+    private static (TypeNode Type, int RefKind) ParseFunctionPointerIdentityPart(
+        string part,
+        IdentityParseMode mode)
     {
         var separator = part.IndexOf(':');
         if (separator <= 0 || !int.TryParse(part[..separator], out var refKind))
@@ -1411,12 +1281,13 @@ public static class SymbolSignatureCanonicalizer
             throw new ArgumentException($"Invalid function-pointer identity part: {part}", nameof(part));
         }
 
-        return (ParseIdentityNode(part[(separator + 1)..]), refKind);
+        return (ParseIdentityNode(part[(separator + 1)..], mode), refKind);
     }
 
     private static NamedTypeNode ParseNamedTypeIdentity(
         string identity,
-        TypeClassification classification = TypeClassification.Unknown)
+        TypeClassification classification = TypeClassification.Unknown,
+        IdentityParseMode mode = IdentityParseMode.QueryCompatibility)
     {
         var boundary = identity.IndexOf("::", StringComparison.Ordinal);
         if (boundary < 0)
@@ -1430,7 +1301,7 @@ public static class SymbolSignatureCanonicalizer
             .ToArray();
         var typeIdentity = identity[(boundary + 2)..];
         var typeSegments = SplitTopLevel(typeIdentity, '.')
-            .Select(ParseNamedTypeIdentitySegment)
+            .Select(segment => ParseNamedTypeIdentitySegment(segment, mode))
             .ToArray();
         if (typeSegments.Length == 0 || typeSegments.Any(segment => string.IsNullOrEmpty(segment.Name)))
         {
@@ -1449,7 +1320,9 @@ public static class SymbolSignatureCanonicalizer
                     : TypeClassification.Unknown);
     }
 
-    private static NamedTypeSegment ParseNamedTypeIdentitySegment(string segment)
+    private static NamedTypeSegment ParseNamedTypeIdentitySegment(
+        string segment,
+        IdentityParseMode mode)
     {
         var genericStart = segment.IndexOf('<');
         if (genericStart < 0)
@@ -1465,7 +1338,7 @@ public static class SymbolSignatureCanonicalizer
         return new NamedTypeSegment(
             segment[..genericStart],
             SplitTopLevel(segment[(genericStart + 1)..^1], ',')
-                .Select(ParseIdentityNode)
+                .Select(argument => ParseIdentityNode(argument, mode))
                 .ToArray());
     }
 
@@ -1518,6 +1391,12 @@ public static class SymbolSignatureCanonicalizer
         public abstract string IdentityKey { get; }
 
         public abstract TypeClassification Classification { get; }
+    }
+
+    private enum IdentityParseMode
+    {
+        QueryCompatibility,
+        CanonicalDisplay,
     }
 
     private enum TypeClassification
